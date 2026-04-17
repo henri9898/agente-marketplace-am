@@ -1121,6 +1121,78 @@ async function mlFetchMe(accessToken){
 }
 
 // ============================================================
+// TOKEN SYNC — servidor ↔ localStorage
+// O server faz auto-refresh em background (tokens.json);
+// o front puxa o valor fresco quando: (a) inicialização, (b) periodicamente,
+// (c) quando detecta 401, (d) quando access_token no servidor difere.
+// ============================================================
+async function fetchTokensStatus(){
+  try {
+    const r = await fetch('/api/tokens/status');
+    return await r.json();
+  } catch(e) { return null; }
+}
+async function fetchServerMLToken(){
+  try {
+    const r = await fetch('/api/tokens/ml');
+    return await r.json();
+  } catch(e) { return null; }
+}
+async function fetchServerBlingToken(){
+  try {
+    const r = await fetch('/api/tokens/bling');
+    return await r.json();
+  } catch(e) { return null; }
+}
+async function forceRefreshMLServer(){
+  try {
+    const r = await fetch('/api/tokens/refresh-ml', { method:'POST' });
+    return await r.json();
+  } catch(e) { return { success:false, error: e.message }; }
+}
+
+// Sincroniza access_token ML: se o servidor tem um valor (possivelmente renovado),
+// espelha no localStorage. Evita reconexão manual após auto-refresh.
+async function syncMLTokensFromServer(){
+  const local = loadMLTokens();
+  const srv = await fetchServerMLToken();
+  if (!srv || !srv.success || !srv.access_token) return local;
+  // Só sobrescreve se o access_token mudou ou se o local está vazio
+  if (!local || !local.access_token || local.access_token !== srv.access_token) {
+    const expires_at = srv.expires_at ? new Date(srv.expires_at).getTime() : Date.now() + 21600*1000;
+    const merged = {
+      ...(local || {}),
+      access_token: srv.access_token,
+      user_id:      srv.user_id || (local && local.user_id) || null,
+      expires_at,
+      connected_at: (local && local.connected_at) || Date.now(),
+      synced_from_server_at: Date.now(),
+    };
+    saveMLTokens(merged);
+    return merged;
+  }
+  return local;
+}
+async function syncBlingTokensFromServer(){
+  const local = loadBlingTokens();
+  const srv = await fetchServerBlingToken();
+  if (!srv || !srv.success || !srv.access_token) return local;
+  if (!local || !local.access_token || local.access_token !== srv.access_token) {
+    const expires_at = srv.expires_at ? new Date(srv.expires_at).getTime() : Date.now() + 21600*1000;
+    const merged = {
+      ...(local || {}),
+      access_token: srv.access_token,
+      expires_at,
+      connected_at: (local && local.connected_at) || Date.now(),
+      synced_from_server_at: Date.now(),
+    };
+    saveBlingTokens(merged);
+    return merged;
+  }
+  return local;
+}
+
+// ============================================================
 // BLING ERP — OAuth2 + helpers (tokens do cliente, não do dono)
 // ============================================================
 const BLING_TOKEN_KEY = 'agente_bling_oauth_tokens';
@@ -1239,21 +1311,65 @@ async function mlApi(pathname, { signal } = {}) {
 }
 
 // Hook global: status de conexão ML (para o indicador no header)
-// Verifica token local + valida com /api/ml/me + reage a events de storage
+// Checa:
+//   - localStorage (tem token?)
+//   - /api/tokens/status (expiração, auto_refresh, hours_left)
+//   - /api/ml/me (token ainda funciona?)
+// Também sincroniza localStorage ← servidor quando server renova token.
 function useMLConnectionStatus() {
-  const [tokens, setTokens] = useState(() => loadMLTokens());
-  const [live, setLive]     = useState(null);   // {connected, nickname, ...}
+  const [tokens, setTokens]     = useState(() => loadMLTokens());
+  const [live, setLive]         = useState(null);    // {connected, nickname, ...}
+  const [srvStatus, setSrvStatus] = useState(null);  // {ml:{...}, bling:{...}}
   const [checking, setChecking] = useState(false);
 
-  // Recarrega tokens do localStorage quando o Integrações muda
+  // Sync inicial + storage events
   useEffect(() => {
+    // sync inicial: se local não tem access_token, puxa do server
+    (async () => {
+      const merged = await syncMLTokensFromServer();
+      if (merged) setTokens(merged);
+      await syncBlingTokensFromServer();
+    })();
+
     const sync = () => setTokens(loadMLTokens());
     window.addEventListener('storage', sync);
     const id = setInterval(sync, 3000);
     return () => { window.removeEventListener('storage', sync); clearInterval(id); };
   }, []);
 
-  // Checa saúde do token contra /api/ml/me (só quando tem token)
+  // Poll /api/tokens/status (cada 5 min) — detecta auto-refresh server-side
+  useEffect(() => {
+    let cancelled = false;
+    const pull = async () => {
+      const s = await fetchTokensStatus();
+      if (cancelled || !s) return;
+      setSrvStatus(s);
+      // Se o server tem access_token diferente do local (porque renovou), sincroniza
+      if (s.ml?.connected) {
+        const srvTok = await fetchServerMLToken();
+        if (cancelled) return;
+        if (srvTok?.success && srvTok.access_token) {
+          const local = loadMLTokens();
+          if (!local?.access_token || local.access_token !== srvTok.access_token) {
+            const merged = {
+              ...(local || {}),
+              access_token: srvTok.access_token,
+              user_id:      srvTok.user_id || (local && local.user_id) || null,
+              expires_at:   srvTok.expires_at ? new Date(srvTok.expires_at).getTime() : Date.now() + 21600*1000,
+              synced_from_server_at: Date.now(),
+            };
+            saveMLTokens(merged);
+            setTokens(merged);
+          }
+        }
+      }
+    };
+    pull();
+    const id = setInterval(pull, 5 * 60 * 1000); // 5 min
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  // Valida token live contra /api/ml/me (quando tem token)
   useEffect(() => {
     if (!tokens || !tokens.access_token) { setLive(null); return; }
     let cancelled = false;
@@ -1262,26 +1378,32 @@ function useMLConnectionStatus() {
       .then(d => { if (!cancelled) setLive(d); })
       .catch(() => {})
       .finally(() => { if (!cancelled) setChecking(false); });
-    // re-valida a cada 60s
     const id = setInterval(() => {
       mlFetchMe(tokens.access_token).then(d => { if (!cancelled) setLive(d); }).catch(()=>{});
     }, 60000);
     return () => { cancelled = true; clearInterval(id); };
   }, [tokens?.access_token]);
 
-  let state = 'off';     // 'off' | 'ok' | 'expired'
+  // Derivar estado final
+  let state = 'off';     // 'off' | 'ok' | 'expired' | 'near_expiry'
   if (tokens && tokens.access_token) {
-    if (live === null && checking) state = 'ok'; // otimista até resposta
+    if (srvStatus?.ml?.expired) state = 'expired';
+    else if (srvStatus?.ml?.near_expiry) state = 'near_expiry';
+    else if (live === null && checking) state = 'ok';
     else if (live && live.connected) state = 'ok';
     else if (live && !live.connected) state = 'expired';
     else state = 'ok';
   }
+
   return {
     state,
     tokens,
-    nickname: (live?.nickname) || (tokens?.nickname) || null,
-    userId:   (live?.user_id)   || (tokens?.user_id)  || null,
+    nickname:   (live?.nickname) || (tokens?.nickname) || null,
+    userId:     (live?.user_id)   || (tokens?.user_id)  || null,
     reputation: live?.seller_reputation || tokens?.seller_reputation || null,
+    hoursLeft:  srvStatus?.ml?.hours_left != null ? srvStatus.ml.hours_left : null,
+    autoRefresh: !!srvStatus?.ml?.auto_refresh,
+    srvStatus,
   };
 }
 
@@ -3032,25 +3154,87 @@ function ProfileDropdown({ user, onLogout, onGoTo, onOpenNotifPanel }) {
 }
 
 // Indicador global ML — pílula colorida no header
-// 🟢 conectado · 🟡 expirado · 🔴 desconectado
+// 🟢 conectado (auto-refresh OK) · 🟡 expira em breve · 🟠 expirado · 🔴 sem token
 function MLStatusIndicator({onClickConnect}){
   const st = useMLConnectionStatus();
-  const cfg = st.state === 'ok'
-    ? { dot:'#22c55e', bg:'rgba(34,197,94,.12)', border:'rgba(34,197,94,.4)', label:'🟢 ML Conectado', sub: st.nickname || st.userId || 'online' }
-    : st.state === 'expired'
-      ? { dot:'#facc15', bg:'rgba(234,179,8,.12)',  border:'rgba(234,179,8,.4)', label:'🟡 Token expirado', sub:'Reconectar' }
-      : { dot:'#ef4444', bg:'rgba(239,68,68,.12)',  border:'rgba(239,68,68,.4)', label:'🔴 ML Desconectado', sub:'Conectar' };
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Monta rotulagem baseada no estado + hoursLeft
+  const hoursLeftTxt = st.hoursLeft != null
+    ? (st.hoursLeft >= 1 ? `${st.hoursLeft.toFixed(1)}h` : `${Math.round(st.hoursLeft*60)}min`)
+    : null;
+
+  let cfg;
+  if (st.state === 'ok') {
+    cfg = {
+      dot:'#22c55e', bg:'rgba(34,197,94,.12)', border:'rgba(34,197,94,.4)',
+      label:'🟢 ML',
+      sub: hoursLeftTxt
+        ? `${hoursLeftTxt} ${st.autoRefresh ? '· auto ✓' : ''}`
+        : (st.nickname || st.userId || 'online'),
+    };
+  } else if (st.state === 'near_expiry') {
+    cfg = {
+      dot:'#facc15', bg:'rgba(234,179,8,.12)', border:'rgba(234,179,8,.4)',
+      label: refreshing ? '🔄 renovando...' : '🟡 ML expirando',
+      sub: hoursLeftTxt || 'renovar',
+    };
+  } else if (st.state === 'expired') {
+    cfg = {
+      dot:'#f97316', bg:'rgba(249,115,22,.14)', border:'rgba(249,115,22,.4)',
+      label:'🟠 Token expirado',
+      sub: st.autoRefresh ? 'clicar p/ renovar' : 'reconectar',
+    };
+  } else {
+    cfg = {
+      dot:'#ef4444', bg:'rgba(239,68,68,.12)', border:'rgba(239,68,68,.4)',
+      label:'🔴 ML Desconectado',
+      sub:'Conectar',
+    };
+  }
+
+  // Ação: se expirado/near_expiry e tem auto_refresh no server, tenta renovar
+  const onClick = async () => {
+    if (refreshing) return;
+    if ((st.state === 'expired' || st.state === 'near_expiry') && st.autoRefresh) {
+      setRefreshing(true);
+      const r = await forceRefreshMLServer();
+      setRefreshing(false);
+      if (r.success) {
+        // Puxa o token novo do servidor e atualiza localStorage
+        const merged = await syncMLTokensFromServer();
+        if (merged) {
+          // force state refresh
+          window.dispatchEvent(new Event('storage'));
+        }
+        return;
+      }
+      // refresh falhou → abre Integrações para reconexão manual
+    }
+    onClickConnect && onClickConnect();
+  };
+
   return (
     <button
-      onClick={onClickConnect}
-      title={st.state === 'ok' ? `Conectado como ${cfg.sub}` : 'Abrir aba 🔌 Integrações'}
+      onClick={onClick}
+      title={
+        st.state === 'ok'
+          ? `Conectado como ${st.nickname || st.userId || '—'}${hoursLeftTxt ? ' · expira em ' + hoursLeftTxt : ''}${st.autoRefresh ? ' · auto-refresh habilitado' : ''}`
+          : st.state === 'near_expiry'
+            ? `Token expira em ${hoursLeftTxt || 'breve'} — clique para renovar agora`
+            : st.state === 'expired'
+              ? (st.autoRefresh ? 'Clique para renovar (auto-refresh disponível)' : 'Reconecte na aba Integrações')
+              : 'Abrir aba 🔌 Integrações para conectar'
+      }
+      disabled={refreshing}
       className="ml-status-pill"
       style={{
         display:'inline-flex', alignItems:'center', gap:8,
         padding:'6px 12px', borderRadius:999,
         background: cfg.bg, border:'1px solid ' + cfg.border,
         color:'var(--txt)', fontSize:12, fontWeight:700,
-        cursor:'pointer', transition:'.15s',
+        cursor: refreshing ? 'wait' : 'pointer', transition:'.15s',
+        opacity: refreshing ? .7 : 1,
       }}
     >
       <span style={{width:8, height:8, borderRadius:'50%', background:cfg.dot, boxShadow:`0 0 8px ${cfg.dot}`}}/>

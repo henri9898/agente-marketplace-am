@@ -17,6 +17,9 @@ pnpm-debug.log*
 # Dados de usuários locais (auth persistente em disco)
 users.json
 
+# Persistência de tokens OAuth (ML + Bling) — NUNCA commitar
+tokens.json
+
 # Logs
 *.log
 logs/

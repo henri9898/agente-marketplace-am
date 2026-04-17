@@ -59,6 +59,216 @@ function saveEnv(patch) {
 }
 let env = loadEnv();
 
+// ============================================================
+// PERSISTÊNCIA DE TOKENS (tokens.json) — auto-refresh em server
+// Fica lado a lado com o .env (não remove nada, complementa)
+// ============================================================
+const TOKENS_FILE = path.join(ROOT, 'tokens.json');
+
+function loadTokens() {
+  try {
+    if (fs.existsSync(TOKENS_FILE)) {
+      return JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('[tokens] load error:', e.message);
+  }
+  return {};
+}
+
+function saveTokens(patch) {
+  try {
+    const existing = loadTokens();
+    const updated = { ...existing, ...patch, updated_at: new Date().toISOString() };
+    fs.writeFileSync(TOKENS_FILE, JSON.stringify(updated, null, 2));
+    // Garante permissão 600 (dono leitura/escrita; outros nada) no Linux
+    try { fs.chmodSync(TOKENS_FILE, 0o600); } catch(_){}
+    return updated;
+  } catch (e) {
+    console.error('[tokens] save error:', e.message);
+    return null;
+  }
+}
+
+// Converte payload ML → formato canônico do tokens.json
+function persistMLTokens(data) {
+  if (!data || !data.access_token) return null;
+  const expiresIn = Number(data.expires_in) || 21600; // default 6h
+  return saveTokens({
+    ml_access_token:     data.access_token,
+    ml_refresh_token:    data.refresh_token || loadTokens().ml_refresh_token,
+    ml_expires_in:       expiresIn,
+    ml_token_expires_at: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    ml_user_id:          data.user_id != null ? String(data.user_id) : (loadTokens().ml_user_id || null),
+  });
+}
+function persistBlingTokens(data) {
+  if (!data || !data.access_token) return null;
+  const expiresIn = Number(data.expires_in) || 21600;
+  return saveTokens({
+    bling_access_token:     data.access_token,
+    bling_refresh_token:    data.refresh_token || loadTokens().bling_refresh_token,
+    bling_expires_in:       expiresIn,
+    bling_token_expires_at: new Date(Date.now() + expiresIn * 1000).toISOString(),
+  });
+}
+
+// ---------- refreshMLToken ----------
+async function refreshMLToken() {
+  const tokens = loadTokens();
+  const currentEnv = loadEnv();
+  const refresh = tokens.ml_refresh_token || currentEnv.ML_REFRESH_TOKEN || '';
+  if (!refresh) {
+    console.log('[ml-refresh] sem refresh_token — precisa reconectar via OAuth');
+    return null;
+  }
+  const clientId     = process.env.ML_CLIENT_ID     || currentEnv.ML_CLIENT_ID     || '3688973136843575';
+  const clientSecret = process.env.ML_CLIENT_SECRET || currentEnv.ML_CLIENT_SECRET || '';
+  if (!clientSecret) {
+    console.log('[ml-refresh] ML_CLIENT_SECRET ausente');
+    return null;
+  }
+  try {
+    console.log('[ml-refresh] 🔄 renovando token ML...');
+    const r = await fetch('https://api.mercadolibre.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+      body: new URLSearchParams({
+        grant_type:    'refresh_token',
+        client_id:     clientId,
+        client_secret: clientSecret,
+        refresh_token: refresh,
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!data.access_token) {
+      console.error('[ml-refresh] ❌ falhou:', data.error_description || data.error || data.message || 'sem access_token');
+      return null;
+    }
+    const saved = persistMLTokens(data);
+    // Espelha também no .env (compat com o resto do server que lê de .env)
+    saveEnv({
+      ML_ACCESS_TOKEN:     data.access_token,
+      ML_REFRESH_TOKEN:    data.refresh_token || refresh,
+      ML_TOKEN_EXPIRES_AT: String(Date.now() + (data.expires_in || 21600) * 1000),
+    });
+    const hoursLeft = ((data.expires_in || 21600) / 3600).toFixed(1);
+    console.log(`[ml-refresh] ✅ ok · expira em ${hoursLeft}h`);
+    return saved;
+  } catch (err) {
+    console.error('[ml-refresh] exceção:', err.message);
+    return null;
+  }
+}
+
+// ---------- refreshBlingToken ----------
+async function refreshBlingToken() {
+  const tokens = loadTokens();
+  const currentEnv = loadEnv();
+  const refresh = tokens.bling_refresh_token || '';
+  if (!refresh) return null;
+  const clientId     = process.env.BLING_CLIENT_ID     || currentEnv.BLING_CLIENT_ID     || '';
+  const clientSecret = process.env.BLING_CLIENT_SECRET || currentEnv.BLING_CLIENT_SECRET || '';
+  if (!clientId || !clientSecret) {
+    console.log('[bling-refresh] credenciais ausentes no .env');
+    return null;
+  }
+  try {
+    console.log('[bling-refresh] 🔄 renovando token Bling...');
+    const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    const r = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept':       '1.0',
+        'Authorization': 'Basic ' + credentials,
+      },
+      body: new URLSearchParams({
+        grant_type:    'refresh_token',
+        refresh_token: refresh,
+      }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!data.access_token) {
+      console.error('[bling-refresh] ❌ falhou:', data.error_description || data.error || 'sem access_token');
+      return null;
+    }
+    const saved = persistBlingTokens(data);
+    console.log('[bling-refresh] ✅ ok');
+    return saved;
+  } catch (err) {
+    console.error('[bling-refresh] exceção:', err.message);
+    return null;
+  }
+}
+
+// ---------- Timer: verifica a cada 5h + on-boot ----------
+const REFRESH_INTERVAL_MS = 5 * 60 * 60 * 1000; // 5h
+async function checkAndRefresh() {
+  const tokens = loadTokens();
+  const now = Date.now();
+  // ML: renova se expira em <1.5h (token dura 6h, margem de 1.5h pra compensar clock skew e erros)
+  if (tokens.ml_token_expires_at) {
+    const expAt = new Date(tokens.ml_token_expires_at).getTime();
+    const hoursLeft = (expAt - now) / 3600000;
+    if (hoursLeft < 1.5) {
+      console.log(`[ml-refresh] ⏰ token expira em ${hoursLeft.toFixed(2)}h, renovando...`);
+      await refreshMLToken();
+    }
+  }
+  // Bling: renova se expira em <0.5h
+  if (tokens.bling_token_expires_at) {
+    const expAt = new Date(tokens.bling_token_expires_at).getTime();
+    const hoursLeft = (expAt - now) / 3600000;
+    if (hoursLeft < 0.5) {
+      console.log(`[bling-refresh] ⏰ token expira em ${hoursLeft.toFixed(2)}h, renovando...`);
+      await refreshBlingToken();
+    }
+  }
+}
+setInterval(checkAndRefresh, REFRESH_INTERVAL_MS);
+
+// Migração on-boot: se o .env tem ML_ACCESS_TOKEN mas tokens.json está vazio,
+// semeia o tokens.json com os valores do .env (só na primeira execução).
+function seedTokensFromEnv() {
+  const tokens = loadTokens();
+  const e = loadEnv();
+  if (!tokens.ml_access_token && e.ML_ACCESS_TOKEN) {
+    const expAt = e.ML_TOKEN_EXPIRES_AT ? Number(e.ML_TOKEN_EXPIRES_AT) : (Date.now() + 21600*1000);
+    const expiresIn = Math.max(60, Math.floor((expAt - Date.now()) / 1000));
+    saveTokens({
+      ml_access_token:     e.ML_ACCESS_TOKEN,
+      ml_refresh_token:    e.ML_REFRESH_TOKEN || null,
+      ml_expires_in:       expiresIn,
+      ml_token_expires_at: new Date(expAt).toISOString(),
+      ml_user_id:          e.ML_USER_ID || null,
+    });
+    console.log('[tokens] semeado ML a partir do .env');
+  }
+}
+
+// Check on-boot: 3s depois do start, valida e refresha se necessário
+setTimeout(async () => {
+  seedTokensFromEnv();
+  const tokens = loadTokens();
+  if (tokens.ml_refresh_token) {
+    const expAt = new Date(tokens.ml_token_expires_at || 0);
+    if (expAt.getTime() < Date.now() + 3600000) { // se já expirou OU expira em <1h
+      console.log('[boot] 🔄 renovando ML na inicialização');
+      await refreshMLToken();
+    } else {
+      console.log(`[boot] ✅ token ML válido até ${expAt.toLocaleString()}`);
+    }
+  }
+  if (tokens.bling_refresh_token) {
+    const expAt = new Date(tokens.bling_token_expires_at || 0);
+    if (expAt.getTime() < Date.now() + 1800000) { // <30 min
+      console.log('[boot] 🔄 renovando Bling na inicialização');
+      await refreshBlingToken();
+    }
+  }
+}, 3000);
+
 // ---------- helpers ----------
 const MIME = {
   '.html':'text/html; charset=utf-8', '.js':'application/javascript',
@@ -103,6 +313,7 @@ async function refreshAccessToken() {
     ML_USER_ID: String(data.user_id || env.ML_USER_ID || ''),
     ML_TOKEN_EXPIRES_AT: String(Date.now() + (data.expires_in * 1000)),
   });
+  persistMLTokens(data);  // persistência adicional em tokens.json
   env = loadEnv();
   return env.ML_ACCESS_TOKEN;
 }
@@ -182,6 +393,7 @@ const server = http.createServer(async (req, res) => {
         ML_USER_ID: String(data.user_id),
         ML_TOKEN_EXPIRES_AT: String(Date.now() + data.expires_in * 1000),
       });
+      persistMLTokens(data);  // persistência adicional em tokens.json
       res.writeHead(302, { Location:'/?connected=1' }); return res.end();
     }
 
@@ -350,6 +562,7 @@ const server = http.createServer(async (req, res) => {
           ML_USER_ID:          String(data.user_id),
           ML_TOKEN_EXPIRES_AT: String(Date.now() + (data.expires_in || 21600) * 1000),
         });
+        persistMLTokens(data);  // persistência adicional em tokens.json
 
         // Busca dados do usuário ML
         let nickname = null, email = null, reputation = null;
@@ -408,6 +621,7 @@ const server = http.createServer(async (req, res) => {
             ML_REFRESH_TOKEN:    data.refresh_token || refreshToken,
             ML_TOKEN_EXPIRES_AT: String(Date.now() + (data.expires_in || 21600) * 1000),
           });
+          persistMLTokens(data);  // persistência adicional em tokens.json
           return send(res, 200, { success:true, ...data });
         }
         return send(res, 200, { success:false, error: data.error_description || data.message || data.error || 'Falha no refresh', raw: data });
@@ -710,6 +924,7 @@ const server = http.createServer(async (req, res) => {
             : (data.error_description || data.error || 'Erro ao obter token Bling');
           return send(res, 200, { success:false, error: msg, raw: data });
         }
+        persistBlingTokens(data);  // persistência + futuro auto-refresh
         return send(res, 200, {
           success: true,
           access_token:  data.access_token,
@@ -746,6 +961,7 @@ const server = http.createServer(async (req, res) => {
         });
         const data = await r.json().catch(() => ({}));
         if (!data.access_token) return send(res, 200, { success:false, error: data.error_description || data.error || 'Falha no refresh', raw: data });
+        persistBlingTokens(data);  // persiste o token renovado
         return send(res, 200, { success:true, ...data });
       } catch(err) {
         return send(res, 200, { success:false, error: err.message });
@@ -974,6 +1190,91 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         erros:      resultados.filter(r => !r.success).length,
         resultados,
       });
+    }
+
+    // ============= TOKEN MANAGEMENT (ML + Bling) =============
+    // GET /api/tokens/status — estado consolidado dos tokens (pro indicador do front)
+    if (u.pathname === '/api/tokens/status' && req.method === 'GET') {
+      const tokens = loadTokens();
+      const now = Date.now();
+
+      const mlExpAt = tokens.ml_token_expires_at ? new Date(tokens.ml_token_expires_at).getTime() : null;
+      const blExpAt = tokens.bling_token_expires_at ? new Date(tokens.bling_token_expires_at).getTime() : null;
+      const hoursLeft = (exp) => exp ? Math.max(0, (exp - now) / 3600000) : null;
+
+      return send(res, 200, {
+        ml: {
+          connected:     !!tokens.ml_access_token,
+          expires_at:    tokens.ml_token_expires_at || null,
+          expires_in_ms: mlExpAt ? Math.max(0, mlExpAt - now) : null,
+          hours_left:    hoursLeft(mlExpAt) != null ? Number(hoursLeft(mlExpAt).toFixed(2)) : null,
+          auto_refresh:  !!tokens.ml_refresh_token,
+          user_id:       tokens.ml_user_id || null,
+          expired:       mlExpAt ? (mlExpAt - now <= 0) : false,
+          near_expiry:   mlExpAt ? (mlExpAt - now < 3600000) : false, // <1h
+        },
+        bling: {
+          connected:     !!tokens.bling_access_token,
+          expires_at:    tokens.bling_token_expires_at || null,
+          expires_in_ms: blExpAt ? Math.max(0, blExpAt - now) : null,
+          hours_left:    hoursLeft(blExpAt) != null ? Number(hoursLeft(blExpAt).toFixed(2)) : null,
+          auto_refresh:  !!tokens.bling_refresh_token,
+          expired:       blExpAt ? (blExpAt - now <= 0) : false,
+          near_expiry:   blExpAt ? (blExpAt - now < 1800000) : false, // <30min
+        },
+        updated_at: tokens.updated_at || null,
+      });
+    }
+
+    // POST /api/tokens/refresh-ml — força refresh do ML (via server)
+    if (u.pathname === '/api/tokens/refresh-ml' && req.method === 'POST') {
+      const saved = await refreshMLToken();
+      if (saved) {
+        return send(res, 200, {
+          success: true,
+          message: 'Token ML renovado',
+          expires_at: saved.ml_token_expires_at,
+          user_id:    saved.ml_user_id,
+        });
+      }
+      return send(res, 200, { success:false, error: 'Falha no refresh — reconecte na aba 🔌 Integrações' });
+    }
+
+    // POST /api/tokens/refresh-bling — força refresh do Bling
+    if (u.pathname === '/api/tokens/refresh-bling' && req.method === 'POST') {
+      const saved = await refreshBlingToken();
+      if (saved) {
+        return send(res, 200, { success:true, expires_at: saved.bling_token_expires_at });
+      }
+      return send(res, 200, { success:false, error:'Falha no refresh Bling — reconecte' });
+    }
+
+    // GET /api/tokens/ml — fallback: front pega access_token do server
+    // (útil quando o localStorage está vazio ou o server renovou em background)
+    if (u.pathname === '/api/tokens/ml' && req.method === 'GET') {
+      const tokens = loadTokens();
+      if (tokens.ml_access_token) {
+        return send(res, 200, {
+          success:      true,
+          access_token: tokens.ml_access_token,
+          expires_at:   tokens.ml_token_expires_at,
+          user_id:      tokens.ml_user_id,
+        });
+      }
+      return send(res, 200, { success:false });
+    }
+
+    // GET /api/tokens/bling — idem pro Bling
+    if (u.pathname === '/api/tokens/bling' && req.method === 'GET') {
+      const tokens = loadTokens();
+      if (tokens.bling_access_token) {
+        return send(res, 200, {
+          success:      true,
+          access_token: tokens.bling_access_token,
+          expires_at:   tokens.bling_token_expires_at,
+        });
+      }
+      return send(res, 200, { success:false });
     }
 
     // Estáticos
