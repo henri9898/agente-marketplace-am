@@ -2051,6 +2051,36 @@ function useAgentStore({ notif } = {}) {
     for (let i = 0; i < elegiveis.length; i++) {
       const p = elegiveis[i];
       log('info', `⚡ [${i+1}/${elegiveis.length}] score=${p.score} · ${p.nome}`);
+
+      // 📝 Preview SEO antes de publicar (ajuda a diagnosticar duplicidades)
+      try {
+        const ml = loadMLTokens();
+        const seoResp = await fetch('/api/seo/gerar-completo', {
+          method:'POST',
+          headers:{ 'Authorization':'Bearer '+ml.access_token, 'Content-Type':'application/json' },
+          body: JSON.stringify({
+            nome: p.nome,
+            marca: p.marca?.nome || '',
+            partNumber: p.codigo || '',
+          }),
+        });
+        const seoData = await seoResp.json().catch(()=>({}));
+        if (seoData.success && seoData.titulos) {
+          log('info', `📝 Gerando SEO para "${p.nome.slice(0,40)}..."`);
+          seoData.titulos.forEach(t => {
+            const mark = seoData.recomendacao?.titulo?.variacao === t.variacao ? '✅' : '  ';
+            log('info', `📝 ${mark} Título ${t.variacao}: "${t.titulo}" (${t.chars}ch)`);
+          });
+          if (seoData.duplicidade) {
+            log(seoData.duplicidade.duplicado ? 'warn' : 'info',
+              `📝 Anti-duplicidade: ${seoData.duplicidade.aviso}`);
+          }
+          if (seoData.recomendacao) {
+            log('ok', `📝 Usando variação ${seoData.recomendacao.titulo.variacao} · ${seoData.recomendacao.motivo}`);
+          }
+        }
+      } catch(_) {}
+
       try {
         const r = await publishBlingToML(p.id);
         if (r.success) {
@@ -4930,6 +4960,29 @@ function BlingProdutosTab({ agent, onGoToAgent }) {
     else setSelected(new Set(filtered.map(p => p.id)));
   };
 
+  // SEO preview (modal) — mostra 3 títulos, 3 descrições, anti-duplicidade
+  const [seoPreview, setSeoPreview] = useState(null); // { produto, data, loading }
+  const abrirSeoPreview = async (produto) => {
+    setSeoPreview({ produto, data: null, loading: true });
+    try {
+      const ml = loadMLTokens();
+      const r = await fetch('/api/seo/gerar-completo', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + (ml?.access_token||''), 'Content-Type':'application/json' },
+        body: JSON.stringify({
+          nome: produto.nome,
+          marca: produto.marca?.nome || produto.marca || '',
+          partNumber: produto.codigo || '',
+          especificacoes: produto.descricaoCurta || '',
+        }),
+      });
+      const data = await r.json().catch(()=>({ success:false }));
+      setSeoPreview({ produto, data, loading:false });
+    } catch(e) {
+      setSeoPreview({ produto, data:{ success:false, error:e.message }, loading:false });
+    }
+  };
+
   const publicar = async () => {
     if (!hasML) {
       alert('⚠️ Conecte o Mercado Livre primeiro na aba 🔌 Integrações.');
@@ -4937,7 +4990,7 @@ function BlingProdutosTab({ agent, onGoToAgent }) {
     }
     const ids = Array.from(selected);
     if (ids.length === 0) return;
-    if (!confirm(`Publicar ${ids.length} produto(s) do Bling no Mercado Livre?\n\nServidor limita 1 publicação/s — estime ~${ids.length}s.`)) return;
+    if (!confirm(`Publicar ${ids.length} produto(s) do Bling no Mercado Livre?\n\nTítulos SEO e descrições geradas automaticamente.\nServidor limita 1 publicação/s — estime ~${ids.length}s.`)) return;
 
     setPublishing(true); setResults(null);
     setProgress({ done: 0, total: ids.length, currentId: ids[0] });
@@ -4989,6 +5042,7 @@ function BlingProdutosTab({ agent, onGoToAgent }) {
                   <th style={{width:90}}>Preço</th>
                   <th style={{width:70}}>Estoque</th>
                   <th style={{width:80}}>Situação</th>
+                  <th style={{width:110}}>SEO</th>
                 </tr>
               </thead>
               <tbody>
@@ -5007,10 +5061,84 @@ function BlingProdutosTab({ agent, onGoToAgent }) {
                         {p.situacao === 'A' ? 'ativo' : (p.situacao || '—')}
                       </span>
                     </td>
+                    <td>
+                      <button className="btn-ghost" style={{fontSize:11,padding:'4px 8px'}}
+                        onClick={() => abrirSeoPreview(p)} disabled={!hasML}>
+                        📝 Preview
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Modal SEO Preview */}
+        {seoPreview && (
+          <div onClick={() => setSeoPreview(null)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.7)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+            <div onClick={e=>e.stopPropagation()} className="card" style={{maxWidth:720,width:'100%',maxHeight:'90vh',overflow:'auto',padding:24}}>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-lg">📝 Gerador SEO Automático</h3>
+                <button className="btn-ghost" onClick={()=>setSeoPreview(null)} style={{padding:'4px 10px'}}>✕</button>
+              </div>
+              <div className="sub text-xs mb-3">
+                Produto: <span style={{color:'var(--green)'}}>{seoPreview.produto.nome}</span>
+                {seoPreview.produto.marca?.nome && <> · Marca: <span className="mono">{seoPreview.produto.marca.nome}</span></>}
+                {seoPreview.produto.codigo && <> · SKU: <span className="mono">{seoPreview.produto.codigo}</span></>}
+              </div>
+
+              {seoPreview.loading && <div className="ok">🔄 Gerando títulos SEO...</div>}
+              {!seoPreview.loading && seoPreview.data?.success === false && (
+                <div className="err">❌ {seoPreview.data.error || 'Falha ao gerar SEO'}</div>
+              )}
+              {!seoPreview.loading && seoPreview.data?.success && (
+                <>
+                  <div className="mb-4">
+                    <div className="sub text-xs uppercase tracking-wide mb-2">── Títulos Gerados ──</div>
+                    {seoPreview.data.titulos.map(t => {
+                      const rec = seoPreview.data.recomendacao?.titulo?.variacao === t.variacao;
+                      return (
+                        <div key={t.variacao} className="card p-3 mb-2" style={{borderColor: rec ? 'rgba(34,197,94,.45)' : undefined}}>
+                          <div className="flex items-center gap-2 flex-wrap mb-1">
+                            <span className="chip" style={{fontSize:11}}>Variação {t.variacao}</span>
+                            <span className="sub text-xs">{t.foco}</span>
+                            <span className="sub text-xs mono">· {t.chars} chars</span>
+                            {rec && <span className="chip" style={{color:'var(--green)',borderColor:'rgba(34,197,94,.5)',fontSize:11}}>✅ Recomendado</span>}
+                          </div>
+                          <div className="mono text-sm">{t.titulo}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mb-4">
+                    <div className="sub text-xs uppercase tracking-wide mb-2">── Anti-duplicidade ──</div>
+                    <div className={seoPreview.data.duplicidade?.duplicado ? 'err' : 'ok'} style={{fontSize:12}}>
+                      {seoPreview.data.duplicidade?.aviso || 'verificação não executada'}
+                    </div>
+                  </div>
+
+                  <div className="mb-4">
+                    <div className="sub text-xs uppercase tracking-wide mb-2">── Descrição recomendada ──</div>
+                    <div className="card p-3">
+                      <div className="sub text-xs mb-2">
+                        Variação {seoPreview.data.recomendacao?.descricao?.variacao} · {seoPreview.data.recomendacao?.descricao?.foco}
+                        · <span className="mono">{seoPreview.data.recomendacao?.descricao?.chars} chars</span>
+                      </div>
+                      <pre className="text-xs mono" style={{whiteSpace:'pre-wrap',maxHeight:200,overflow:'auto',margin:0}}>
+{seoPreview.data.recomendacao?.descricao?.descricao}
+                      </pre>
+                    </div>
+                  </div>
+
+                  <div className="sub text-xs">
+                    💡 Ao publicar, a IA usa automaticamente o título e descrição recomendados.
+                    Se a variação A for duplicada, usa B (ou C).
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         )}
         {!loading && filtered.length === 0 && !err && (
