@@ -37,3 +37,6 @@ coverage/
 
 # Claude Code
 .claude/
+
+# Scripts de setup com segredos embutidos (ML_CLIENT_SECRET)
+deploy/vps-setup.sh
