@@ -1,0 +1,39 @@
+# ============================================================
+# Agente Marketplace AM — .gitignore
+# ============================================================
+
+# Dependências
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Variáveis de ambiente (NUNCA commitar — contém client_secret + tokens)
+.env
+.env.local
+.env.*.local
+
+# Dados de usuários locais (auth persistente em disco)
+users.json
+
+# Logs
+*.log
+logs/
+
+# Cache de IDE/OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node e build
+dist/
+build/
+coverage/
+.cache/
+
+# Claude Code
+.claude/

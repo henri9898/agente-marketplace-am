@@ -1,0 +1,17 @@
+{
+  "name": "agente-marketplace-am",
+  "version": "1.0.0",
+  "description": "Agente Autônomo de Marketplace — painel e OAuth para Mercado Livre",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {},
+  "private": true,
+  "author": "Henrique Barbosa",
+  "license": "UNLICENSED"
+}

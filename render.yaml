@@ -1,0 +1,29 @@
+# ============================================================
+# Infrastructure-as-Code para Render.com
+# No painel do Render: "New +" → "Blueprint" → aponta pro repo
+# e esse arquivo provisiona tudo automaticamente.
+# ============================================================
+services:
+  - type: web
+    name: agente-marketplace-am
+    runtime: node
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: npm install
+    startCommand: node server.js
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ML_CLIENT_ID
+        sync: false          # preencher no painel do Render
+      - key: ML_CLIENT_SECRET
+        sync: false          # preencher no painel do Render (SECRETO)
+      - key: ML_REDIRECT_URI
+        sync: false          # preencher após receber a URL do Render
+      - key: ML_USER_ID
+        sync: false
+      - key: FIPE_API
+        value: https://parallelum.com.br/fipe/api/v1
