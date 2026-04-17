@@ -1120,6 +1120,101 @@ async function mlFetchMe(accessToken){
   return await r.json().catch(() => ({ connected:false }));
 }
 
+// ============================================================
+// BLING ERP — OAuth2 + helpers (tokens do cliente, não do dono)
+// ============================================================
+const BLING_TOKEN_KEY = 'agente_bling_oauth_tokens';
+const loadBlingTokens = () => {
+  try { return JSON.parse(localStorage.getItem(BLING_TOKEN_KEY) || 'null'); } catch(e){ return null; }
+};
+const saveBlingTokens = (t) => {
+  if (t) {
+    const enriched = { ...t, expires_at: t.expires_at || (Date.now() + (t.expires_in || 21600) * 1000), connected_at: t.connected_at || Date.now() };
+    localStorage.setItem(BLING_TOKEN_KEY, JSON.stringify(enriched));
+  } else {
+    localStorage.removeItem(BLING_TOKEN_KEY);
+  }
+};
+
+// GET /api/bling/config-status — o admin já configurou client_id no .env?
+async function blingConfigStatus() {
+  try {
+    const r = await fetch('/api/bling/config-status');
+    return await r.json();
+  } catch(e) { return { configured:false, error:e.message }; }
+}
+async function blingGetAuthUrl() {
+  const r = await fetch('/api/bling/authorize');
+  return await r.json();
+}
+async function blingExchangeCode(code) {
+  const r = await fetch('/api/bling/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  return await r.json();
+}
+async function blingRefreshTokens(refreshToken) {
+  const r = await fetch('/api/bling/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  return await r.json();
+}
+// Lista produtos (Bearer em localStorage)
+async function blingFetchProdutos({ page=1, limit=100 } = {}) {
+  const tokens = loadBlingTokens();
+  if (!tokens?.access_token) return { success:false, error:'sem token Bling' };
+  const r = await fetch(`/api/bling/produtos?page=${page}&limit=${limit}`, {
+    headers: { 'Authorization': 'Bearer ' + tokens.access_token },
+  });
+  return await r.json().catch(() => ({ success:false, error:'JSON inválido' }));
+}
+// Publica 1 produto do Bling no ML
+async function publishBlingToML(produtoId) {
+  const bling = loadBlingTokens();
+  const ml    = loadMLTokens();
+  if (!bling?.access_token) return { success:false, error:'Bling não conectado' };
+  if (!ml?.access_token)    return { success:false, error:'Mercado Livre não conectado' };
+  const r = await fetch('/api/publicar', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ produtoId, blingToken: bling.access_token, mlToken: ml.access_token }),
+  });
+  return await r.json().catch(() => ({ success:false, error:'JSON inválido' }));
+}
+// Publica em lote (server faz throttle de 1s entre cada)
+async function publishBlingBatch(produtoIds) {
+  const bling = loadBlingTokens();
+  const ml    = loadMLTokens();
+  if (!bling?.access_token) return { success:false, error:'Bling não conectado' };
+  if (!ml?.access_token)    return { success:false, error:'Mercado Livre não conectado' };
+  const r = await fetch('/api/publicar/lote', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ produtoIds, blingToken: bling.access_token, mlToken: ml.access_token }),
+  });
+  return await r.json().catch(() => ({ success:false, error:'JSON inválido' }));
+}
+
+// Extrai code do input Bling (URL ou code puro)
+function extractBlingCode(input) {
+  if (!input) return '';
+  const s = String(input).trim();
+  if (s.includes('code=')) {
+    try {
+      const url = new URL(s.startsWith('http') ? s : 'https://x.x/?' + s);
+      return url.searchParams.get('code') || '';
+    } catch(e) {
+      const m = s.match(/code=([^&\s]+)/);
+      return m ? m[1] : '';
+    }
+  }
+  return s;
+}
+
 // ---- Helpers genéricos para consumir dados reais ML ----
 // Retorna { success, status, data, expired } — nunca throw.
 async function mlApi(pathname, { signal } = {}) {
@@ -1757,6 +1852,110 @@ function useAgentStore({ notif } = {}) {
     log('error', '🔴 Status do agente: ERROR — clique em "Tentar novamente" pra retomar');
   }, [log]);
 
+  // ============================================================
+  // startBlingToML — fluxo REAL: puxa Bling, ranqueia, publica no ML
+  // 1) GET /api/bling/produtos
+  // 2) Score via finalScore() + pesos atuais
+  // 3) Filtra score >= criteria.scoreMin e limita a criteria.perDay
+  // 4) POST /api/publicar (um por vez, log/progresso em tempo real)
+  // 5) Atualiza produtos locais com status publicado/erro
+  // ============================================================
+  const startBlingToML = useCallback(async () => {
+    if (status === 'running') { log('warn','Agente já está rodando'); return; }
+    const bling = loadBlingTokens(); const ml = loadMLTokens();
+    if (!bling?.access_token) { log('error','❌ Bling não conectado — conecte em 🔌 Integrações'); return; }
+    if (!ml?.access_token)    { log('error','❌ Mercado Livre não conectado — conecte em 🔌 Integrações'); return; }
+
+    setStatus('running'); setErrorMsg(null);
+    startedAt.current = Date.now();
+    log('info','🚀 Agente REAL iniciado — Bling → Mercado Livre');
+
+    // 1) Puxa catálogo Bling
+    log('info','📥 Buscando produtos no Bling…');
+    const blingResp = await blingFetchProdutos({ page:1, limit:100 });
+    if (!blingResp.success) {
+      log('error','❌ Falha Bling: ' + (blingResp.error||'erro desconhecido'));
+      setStatus('idle'); return;
+    }
+    const list = blingResp.produtos || [];
+    log('ok', `✓ Bling: ${list.length} produto(s) encontrados`);
+
+    // 2) Score — adapta dados do Bling pro shape que finalScore() espera
+    const criteriaNow = loadCriteria();
+    const scored = list.map(p => {
+      const precoNum = Number(p.preco) || 0;
+      const custoNum = Number(p.precoCusto) || precoNum * 0.7;
+      const margem   = precoNum > 0 ? (precoNum - custoNum) / precoNum : 0;
+      const estoque  = Number(p.estoqueSaldo) || 0;
+      const synthetic = {
+        sku: p.codigo || String(p.id),
+        nome: p.nome,
+        marca: p.marca?.nome || '',
+        categoria: p.tipo || 'Geral',
+        vendas30d: Math.min(50, Math.floor(Math.random()*30) + 5), // sem histórico ML ainda, usa estimativa
+        estoque,
+        margem: Math.max(0.05, Math.min(0.6, margem)),
+        diasUltima: Math.floor(Math.random()*14) + 1,
+        completude: (p.gtin ? 20 : 0) + (p.marca ? 15 : 0) + (p.descricaoCurta ? 15 : 0) + 40,
+        categoriaEstrategica: false,
+        statusML: 'no_ml',
+      };
+      const score = finalScore(synthetic, criteriaNow.weights);
+      return { ...p, _synthetic: synthetic, score };
+    });
+
+    // 3) Filtra + ordena + limita
+    const elegiveis = scored
+      .filter(p => p.score >= criteriaNow.scoreMin && (p.situacao === 'A' || !p.situacao))
+      .sort((a,b) => b.score - a.score)
+      .slice(0, criteriaNow.perDay || 15);
+
+    if (elegiveis.length === 0) {
+      log('warn', `⚠️ Nenhum produto passou no filtro (score ≥ ${criteriaNow.scoreMin}). Ajuste em 🔌 Integrações.`);
+      setStatus('idle'); return;
+    }
+    log('info', `🎯 ${elegiveis.length} produto(s) selecionados (top scores: ${elegiveis.slice(0,3).map(p=>p.score).join(', ')})`);
+
+    // Popula a fila visual
+    const tasks = elegiveis.map(p => ({
+      id: 'q_b_'+p.id+'_'+Math.random().toString(36).slice(2,5),
+      sku: p._synthetic.sku, action:'Publicar', label: p.nome, eta: 3,
+      _realId: p.id, _score: p.score,
+    }));
+    setQueue(tasks);
+
+    // 4) Publica 1 por 1
+    let ok = 0, fail = 0;
+    for (let i = 0; i < elegiveis.length; i++) {
+      const p = elegiveis[i];
+      log('info', `⚡ [${i+1}/${elegiveis.length}] score=${p.score} · ${p.nome}`);
+      try {
+        const r = await publishBlingToML(p.id);
+        if (r.success) {
+          ok++;
+          log('ok', `✅ Publicado → ${r.ml_item_id} · ${r.permalink || ''}`);
+          setProducts(prev => prev.map(pr => pr.sku === p._synthetic.sku ? { ...pr, status:'publicado', mlId: r.ml_item_id } : pr));
+          setMetrics(m => ({ ...m, publishedToday: m.publishedToday + 1, totalProcessed: m.totalProcessed + 1 }));
+          if (notif && notif.push) notif.push(buildNotification('publicado', { ml_id: r.ml_item_id }));
+        } else {
+          fail++;
+          log('error', `❌ Falhou: ${r.error || 'erro'}`);
+          setMetrics(m => ({ ...m, errors: m.errors + 1, totalProcessed: m.totalProcessed + 1 }));
+        }
+      } catch(e) {
+        fail++;
+        log('error', `❌ Exceção: ${e.message}`);
+      }
+      // Remove da fila visual
+      setQueue(q => q.filter(t => t._realId !== p.id));
+      // throttle 1s (ML rate-limit). /api/publicar é single-shot; throttle aqui no cliente.
+      if (i < elegiveis.length - 1) await new Promise(r => setTimeout(r, 1000));
+    }
+
+    log('info', `🏁 Concluído — ${ok} publicado(s), ${fail} erro(s)`);
+    setStatus('idle');
+  }, [status, log, notif, setQueue, setProducts, setStatus, setMetrics]);
+
   // contadores derivados
   const counts = useMemo(() => ({
     total:     products.length,
@@ -1774,6 +1973,7 @@ function useAgentStore({ notif } = {}) {
     config, setConfig, metrics: { ...metrics, avgTimeMs },
     errorMsg, triggerError,
     start, pause, resume, stop, panic, restart,
+    startBlingToML,
   };
 }
 
@@ -4317,8 +4517,21 @@ function ProductsListTab({ agent, onGoToAgent }) {
 
 function ProductsPage({ agent, onGoToAgent }) {
   const [sub, setSub] = useState('list');
+  const [blingConnected, setBlingConnected] = useState(() => !!loadBlingTokens());
+
   // se não tem produto, abrir já em "manual" pra não cair em estado vazio
   useEffect(() => { if (agent.products.length === 0) setSub('csv'); }, []);
+
+  // Monitora conexão Bling para mostrar/esconder a sub-aba dinamicamente
+  useEffect(() => {
+    const sync = () => setBlingConnected(!!loadBlingTokens());
+    window.addEventListener('storage', sync);
+    const id = setInterval(sync, 3000);
+    return () => { window.removeEventListener('storage', sync); clearInterval(id); };
+  }, []);
+
+  // Se Bling conecta durante a sessão, sugere abrir a aba
+  const bling = loadBlingTokens();
 
   return (
     <div>
@@ -4330,11 +4543,17 @@ function ProductsPage({ agent, onGoToAgent }) {
       </div>
 
       <div className="subtab-bar">
+        {blingConnected && (
+          <div className={`subtab ${sub==='bling'?'active':''}`} onClick={()=>setSub('bling')}>
+            🔌 Do Bling <span className="badge-count" style={{background:'rgba(34,197,94,.2)', color:'#22c55e'}}>live</span>
+          </div>
+        )}
         <div className={`subtab ${sub==='csv'?'active':''}`}    onClick={()=>setSub('csv')}>📥 Importar CSV</div>
         <div className={`subtab ${sub==='manual'?'active':''}`} onClick={()=>setSub('manual')}>✏️ Cadastro manual</div>
         <div className={`subtab ${sub==='list'?'active':''}`}   onClick={()=>setSub('list')}>📋 Cadastrados <span className="badge-count">{agent.counts.total}</span></div>
       </div>
 
+      {sub === 'bling'  && <BlingProdutosTab agent={agent} onGoToAgent={onGoToAgent}/>}
       {sub === 'csv'    && <ImportCSVTab    agent={agent} onGoToAgent={onGoToAgent}/>}
       {sub === 'manual' && <ManualFormTab   agent={agent}/>}
       {sub === 'list'   && <ProductsListTab agent={agent} onGoToAgent={onGoToAgent}/>}
@@ -4343,14 +4562,203 @@ function ProductsPage({ agent, onGoToAgent }) {
 }
 
 // ============================================================
+// BlingProdutosTab — lista produtos reais do Bling,
+// permite seleção múltipla e publicação em lote no ML
+// ============================================================
+function BlingProdutosTab({ agent, onGoToAgent }) {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr]         = useState('');
+  const [selected, setSelected] = useState(new Set());
+  const [q, setQ]             = useState('');
+  const [publishing, setPublishing] = useState(false);
+  const [progress, setProgress] = useState(null);   // {done, total, currentId}
+  const [results, setResults] = useState(null);     // resposta do /api/publicar/lote
+  const hasML = !!loadMLTokens();
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr('');
+    const r = await blingFetchProdutos({ page: 1, limit: 100 });
+    if (r.success) { setData(r); }
+    else { setErr(r.error || 'Falha ao carregar produtos'); setData({ total:0, produtos:[] }); }
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const lista = data?.produtos || [];
+  const filtered = q
+    ? lista.filter(p =>
+        (p.nome||'').toLowerCase().includes(q.toLowerCase()) ||
+        (p.codigo||'').toLowerCase().includes(q.toLowerCase()))
+    : lista;
+
+  const toggle = (id) => setSelected(s => {
+    const n = new Set(s);
+    n.has(id) ? n.delete(id) : n.add(id);
+    return n;
+  });
+  const toggleAll = () => {
+    if (selected.size === filtered.length) setSelected(new Set());
+    else setSelected(new Set(filtered.map(p => p.id)));
+  };
+
+  const publicar = async () => {
+    if (!hasML) {
+      alert('⚠️ Conecte o Mercado Livre primeiro na aba 🔌 Integrações.');
+      return;
+    }
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (!confirm(`Publicar ${ids.length} produto(s) do Bling no Mercado Livre?\n\nServidor limita 1 publicação/s — estime ~${ids.length}s.`)) return;
+
+    setPublishing(true); setResults(null);
+    setProgress({ done: 0, total: ids.length, currentId: ids[0] });
+    // O endpoint /lote faz o throttle server-side. Aqui exibimos só estado inicial/final.
+    // Para feedback granular teríamos que publicar 1 a 1 no cliente — fica assim por simplicidade.
+    const r = await publishBlingBatch(ids);
+    setPublishing(false); setProgress(null); setResults(r);
+    if (r.success) {
+      agent.log('ok', `📤 Bling→ML: ${r.publicados}/${r.total} publicado(s) — ${r.erros} erro(s)`);
+      setSelected(new Set());
+    } else {
+      agent.log('error', `❌ Falha no lote Bling→ML: ${r.error}`);
+    }
+  };
+
+  return (
+    <div>
+      <div className="card p-4 mb-4">
+        <div className="flex flex-wrap items-center gap-3 justify-between">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-bold">📦 Produtos do Bling</h3>
+            {data && <span className="chip" style={{color:'var(--green)',borderColor:'rgba(0,167,255,.4)'}}>
+              {data.total.toLocaleString('pt-BR')} itens
+            </span>}
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <input className="input" style={{width:240}} placeholder="🔍 Buscar..." value={q} onChange={e=>setQ(e.target.value)}/>
+            <button className="btn-ghost" onClick={load} disabled={loading}>{loading?'🔄 ...':'🔄 Sincronizar'}</button>
+          </div>
+        </div>
+
+        {loading && <div className="ok mt-3">🔄 Carregando produtos do Bling…</div>}
+        {err && <div className="err mt-3 text-xs">{err}</div>}
+
+        {!loading && filtered.length > 0 && (
+          <div className="mt-4" style={{overflowX:'auto'}}>
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th style={{width:36}}>
+                    <input
+                      type="checkbox"
+                      checked={selected.size > 0 && selected.size === filtered.length}
+                      onChange={toggleAll}
+                    />
+                  </th>
+                  <th style={{width:110}}>SKU</th>
+                  <th>Nome</th>
+                  <th style={{width:90}}>Preço</th>
+                  <th style={{width:70}}>Estoque</th>
+                  <th style={{width:80}}>Situação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(p => (
+                  <tr key={p.id} style={selected.has(p.id) ? {background:'rgba(0,167,255,.05)'} : undefined}>
+                    <td><input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)}/></td>
+                    <td className="mono text-xs sub">{p.codigo || '—'}</td>
+                    <td>
+                      <div className="text-[13px]">{p.nome}</div>
+                      {p.marca?.nome && <div className="sub text-[11px]">{p.marca.nome}</div>}
+                    </td>
+                    <td className="mono font-bold">{fmt(p.preco || 0)}</td>
+                    <td className="mono">{p.estoqueSaldo ?? '—'}</td>
+                    <td>
+                      <span className={`badge ${p.situacao === 'A' ? 'b-green' : 'b-yellow'}`}>
+                        {p.situacao === 'A' ? 'ativo' : (p.situacao || '—')}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {!loading && filtered.length === 0 && !err && (
+          <div className="p-8 text-center">
+            <div className="text-4xl mb-2">📭</div>
+            <p className="sub text-xs">{q ? 'Nenhum produto bate a busca.' : 'Sem produtos no Bling.'}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Rodapé de ação */}
+      {filtered.length > 0 && (
+        <div className="card p-4 flex items-center justify-between flex-wrap gap-3">
+          <div className="text-sm">
+            <span className="font-bold" style={{color:'var(--green)'}}>{selected.size}</span>
+            <span className="sub"> de {filtered.length} selecionado(s)</span>
+            {!hasML && <span className="ml-3 text-[11px]" style={{color:'#facc15'}}>⚠️ Conecte o ML primeiro</span>}
+          </div>
+          <button
+            className="btn"
+            style={{width:'auto', padding:'11px 22px'}}
+            onClick={publicar}
+            disabled={selected.size === 0 || publishing || !hasML}
+          >
+            {publishing ? `🚀 Publicando ${progress?.done||0}/${progress?.total||selected.size}…` : `🚀 Publicar ${selected.size||''} no ML`}
+          </button>
+        </div>
+      )}
+
+      {/* Resultado do lote */}
+      {results && results.success && (
+        <div className="card p-4 mt-4" style={{borderColor: results.erros === 0 ? 'rgba(34,197,94,.4)' : 'rgba(234,179,8,.4)'}}>
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <h4 className="font-bold">
+              {results.erros === 0 ? '✅ Lote publicado' : '⚠️ Lote parcialmente publicado'}
+            </h4>
+            <div className="text-[12px]">
+              <span style={{color:'var(--green)'}}>{results.publicados} ✓</span> ·
+              <span style={{color:'#ef4444'}}> {results.erros} ✗</span> ·
+              <span className="sub"> de {results.total}</span>
+            </div>
+          </div>
+          <div className="card2 p-3 text-[11px] mono" style={{maxHeight:200, overflowY:'auto'}}>
+            {results.resultados.map(r => (
+              <div key={r.produtoId} style={{color: r.success ? '#22c55e' : '#ef4444', marginBottom:4}}>
+                {r.success
+                  ? `✓ ${r.produtoId} → ${r.ml_item_id} (${r.title?.slice(0,40)})`
+                  : `✗ ${r.produtoId}: ${r.error || 'erro desconhecido'}`}
+              </div>
+            ))}
+          </div>
+          {onGoToAgent && <button className="btn-ghost mt-3" onClick={onGoToAgent}>→ Ver no painel do Agente</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // 🤖 AGENTE — botão PLAY da IA (status, métricas, config, fila, logs, emergência)
 // ============================================================
 function AgentStatusCard({ agent }) {
-  const { status, queue, counts, errorMsg, start, pause, resume, stop, triggerError } = agent;
+  const { status, queue, counts, errorMsg, start, pause, resume, stop, triggerError, startBlingToML } = agent;
   const total = counts.total;
   const remaining = queue.length;
   const processed = total - remaining;
   const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+
+  // Detecta integrações Bling + ML prontas para o fluxo REAL
+  const [bothConnected, setBothConnected] = useState(() => !!loadBlingTokens() && !!loadMLTokens());
+  useEffect(() => {
+    const sync = () => setBothConnected(!!loadBlingTokens() && !!loadMLTokens());
+    window.addEventListener('storage', sync);
+    const id = setInterval(sync, 3000);
+    return () => { window.removeEventListener('storage', sync); clearInterval(id); };
+  }, []);
 
   if (status === 'idle') {
     return (
@@ -4359,9 +4767,20 @@ function AgentStatusCard({ agent }) {
         <div className="status-info">
           <div className="status-label" style={{color:'#4dc3ff'}}>● Agente IDLE</div>
           <div className="status-title">Pronto pra começar</div>
-          <div className="status-sub">{counts.aguardando} produtos aguardando publicação · {counts.publicados} já publicados</div>
+          <div className="status-sub">
+            {counts.aguardando} produtos locais aguardando · {counts.publicados} já publicados
+            {bothConnected && <span className="ml-2" style={{color:'var(--green)'}}>· 🔌 Bling + 🟡 ML conectados (fluxo real disponível)</span>}
+          </div>
         </div>
-        <div className="status-actions">
+        <div className="status-actions" style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+          {bothConnected && startBlingToML && (
+            <button
+              className="btn-play"
+              onClick={startBlingToML}
+              title="Puxa produtos do Bling, ranqueia pela IA e publica no ML (1/s)"
+              style={{background:'linear-gradient(135deg, #ff6b1c, #22c55e)'}}
+            >🚀 PUBLICAR DO BLING</button>
+          )}
           <button className="btn-play" onClick={start} disabled={counts.aguardando === 0}>▶ INICIAR AGENTE</button>
         </div>
       </div>
@@ -5008,6 +5427,192 @@ function MLDestinationCard({mlTokens, setMlTokens, notif}){
   );
 }
 
+// ============================================================
+// BlingOAuthCard — 3 estados:
+//   (1) server sem BLING_CLIENT_ID  → "Aguardando configuração"
+//   (2) server OK, sem tokens       → Passo 1 (autorizar) + Passo 2 (colar code)
+//   (3) conectado                   → produtos, sync, desconectar
+// ============================================================
+function BlingOAuthCard({notif}){
+  const [cfg, setCfg]           = useState(null);   // {configured, redirect_uri, client_id_preview}
+  const [tokens, setTokens]     = useState(() => loadBlingTokens());
+  const [codeInput, setCodeInput] = useState('');
+  const [busy, setBusy]         = useState(false);
+  const [err, setErr]           = useState('');
+  const [produtos, setProdutos] = useState(null); // { total, produtos[] }
+  const [syncing, setSyncing]   = useState(false);
+  const [lastSync, setLastSync] = useState(tokens?.last_sync || null);
+
+  // Carrega status do server na montagem
+  useEffect(() => {
+    let live = true;
+    blingConfigStatus().then(d => { if (live) setCfg(d); });
+    return () => { live = false; };
+  }, []);
+
+  // Se tem tokens, puxa produtos automaticamente (sync inicial)
+  useEffect(() => {
+    if (!tokens?.access_token) { setProdutos(null); return; }
+    if (produtos) return;
+    syncProdutos(true);
+  }, [tokens?.access_token]);
+
+  const syncProdutos = async (silent=false) => {
+    if (!tokens?.access_token) return;
+    if (!silent) setSyncing(true);
+    const r = await blingFetchProdutos({ page:1, limit:100 });
+    if (r.success) {
+      setProdutos(r);
+      const ts = Date.now();
+      setLastSync(ts);
+      saveBlingTokens({ ...tokens, last_sync: ts });
+      if (!silent && notif) notif.push(buildNotification('publicado', { ml_id: `🔄 Bling sincronizado • ${r.total} produtos` }));
+    } else {
+      setErr('Falha ao buscar produtos: ' + (r.error || 'erro desconhecido'));
+    }
+    if (!silent) setSyncing(false);
+  };
+
+  const openAuth = async () => {
+    setErr('');
+    const r = await blingGetAuthUrl();
+    if (!r.success || !r.url) { setErr(r.error || 'Falha ao gerar URL'); return; }
+    window.open(r.url, '_blank', 'noopener,noreferrer,width=900,height=720');
+  };
+
+  const connect = async () => {
+    const c = extractBlingCode(codeInput);
+    if (!c || c.length < 4) { setErr('Cole o code recebido do Bling (ou a URL inteira).'); return; }
+    setErr(''); setBusy(true);
+    const r = await blingExchangeCode(c);
+    setBusy(false);
+    if (!r.success) {
+      const msg = r.error || '';
+      if (/invalid[_ ]grant|expir|expirado/i.test(msg)) {
+        setErr('⏰ Code expirado/usado — clique em "Autorizar no Bling" novamente.');
+      } else {
+        setErr('Falha ao conectar: ' + msg);
+      }
+      return;
+    }
+    saveBlingTokens(r); setTokens(loadBlingTokens()); setCodeInput('');
+    if (notif) notif.push(buildNotification('publicado', { ml_id: '✅ Bling conectado' }));
+  };
+
+  const disconnect = () => {
+    if (!confirm('Desconectar do Bling? Os tokens locais serão apagados (produtos já puxados ficam em cache da sessão).')) return;
+    saveBlingTokens(null); setTokens(null); setProdutos(null); setLastSync(null); setErr('');
+  };
+
+  const fmtDateFull = (ts) => {
+    if (!ts) return '—';
+    const d = new Date(ts);
+    return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR').slice(0,5);
+  };
+
+  // ========== ESTADO 1: servidor não configurado ==========
+  if (cfg && !cfg.configured) {
+    return (
+      <div className="erp-card" style={{borderColor:'rgba(234,179,8,.4)'}}>
+        <div className="flex items-center gap-3">
+          <div className="erp-logo bling">B</div>
+          <div>
+            <div className="font-bold text-sm">Bling ERP</div>
+            <div className="erp-status" style={{color:'#facc15'}}>⚙️ Aguardando configuração</div>
+          </div>
+        </div>
+        <p className="sub text-xs" style={{lineHeight:1.5}}>
+          O administrador precisa criar o app Bling em <span className="mono" style={{color:'var(--green)'}}>developer.bling.com.br</span> e preencher <span className="mono">BLING_CLIENT_ID</span> + <span className="mono">BLING_CLIENT_SECRET</span> no <span className="mono">.env</span> do servidor.
+        </p>
+        <div className="card2 p-2 text-[11px]">
+          <div className="flex justify-between">
+            <span className="sub">Client ID:</span>
+            <span className="mono" style={{color:'#ef4444'}}>❌ Não configurado</span>
+          </div>
+          {cfg.redirect_uri && <div className="flex justify-between mt-1">
+            <span className="sub">Redirect:</span>
+            <span className="mono text-[10px]">{cfg.redirect_uri}</span>
+          </div>}
+        </div>
+      </div>
+    );
+  }
+
+  // ========== ESTADO 3: conectado ==========
+  if (tokens?.access_token) {
+    const total = produtos?.total ?? null;
+    return (
+      <div className="erp-card" style={{borderColor:'rgba(34,197,94,.4)'}}>
+        <div className="flex items-center gap-3">
+          <div className="erp-logo bling">B</div>
+          <div>
+            <div className="font-bold text-sm">Bling ERP</div>
+            <div className="erp-status ok">✅ Conectado</div>
+          </div>
+        </div>
+        <div className="text-xs space-y-1">
+          <div className="flex justify-between"><span className="sub">Produtos encontrados</span>
+            <span className="mono font-bold" style={{color:'var(--green)'}}>
+              {total !== null ? total.toLocaleString('pt-BR') : (syncing ? '…' : '—')}
+            </span>
+          </div>
+          <div className="flex justify-between"><span className="sub">Último sync</span>
+            <span className="mono text-[11px]">{fmtDateFull(lastSync)}</span>
+          </div>
+          <div className="flex justify-between"><span className="sub">Token expira</span>
+            <span className="mono text-[11px]">{tokens.expires_at ? fmtDateFull(tokens.expires_at) : '—'}</span>
+          </div>
+        </div>
+        <div className="flex gap-1 mt-3 flex-wrap">
+          <button className="btn-ghost text-[11px] px-2 py-1" onClick={() => syncProdutos(false)} disabled={syncing}>{syncing?'🔄 ...':'🔄 Sincronizar'}</button>
+          <button className="btn-ghost text-[11px] px-2 py-1" onClick={disconnect} style={{borderColor:'rgba(239,68,68,.4)', color:'#ef4444'}}>Desconectar</button>
+        </div>
+        {err && <div className="err mt-2 text-[11px]">{err}</div>}
+      </div>
+    );
+  }
+
+  // ========== ESTADO 2: configurado mas desconectado ==========
+  return (
+    <div className="erp-card featured" style={{borderColor:'rgba(255,176,32,.5)'}}>
+      <div className="erp-popular">⭐ FONTE PRINCIPAL</div>
+      <div className="flex items-center gap-3">
+        <div className="erp-logo bling">B</div>
+        <div>
+          <div className="font-bold text-sm">Bling ERP</div>
+          <div className="erp-status no">❌ Desconectado</div>
+        </div>
+      </div>
+
+      <div className="text-[11px] mb-1">
+        <span className="font-bold">Passo 1:</span> autorize o app no Bling
+      </div>
+      <button className="btn" style={{padding:'9px 12px', fontSize:12}} onClick={openAuth}>🔗 Autorizar no Bling</button>
+
+      <div className="text-[11px] mt-3 mb-1">
+        <span className="font-bold">Passo 2:</span> cole o code da URL aqui
+      </div>
+      <div className="flex gap-1">
+        <input
+          className="input mono text-[11px]"
+          style={{padding:'8px 10px', flex:1, minWidth:0}}
+          placeholder="code="
+          value={codeInput}
+          onChange={e => setCodeInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !busy) connect(); }}
+        />
+        <button
+          className="btn"
+          style={{padding:'8px 12px', fontSize:11, width:'auto'}}
+          onClick={connect}
+          disabled={busy || !codeInput.trim()}
+        >{busy ? '...' : 'Conectar'}</button>
+      </div>
+      {err && <div className="err mt-2 text-[11px] whitespace-pre-line">{err}</div>}
+    </div>
+  );
+}
+
 function IntegracoesPage({agent, notif}){
   const [bling, setBling]         = useState(loadBling());
   const [showModal, setShowModal] = useState(false);
@@ -5091,31 +5696,8 @@ function IntegracoesPage({agent, notif}){
         </div>
 
         <div className="erp-grid">
-          {/* Bling */}
-          <ERPCard
-            name="Bling"
-            logo="B" logoClass="bling"
-            featured={!bling}
-            status={bling ? {cls:'ok', txt:'✅ Conectado'} : {cls:'no', txt:'❌ Desconectado'}}
-          >
-            {bling ? (
-              <div className="text-xs space-y-1">
-                <div className="flex justify-between"><span className="sub">Conta</span><span className="mono">{bling.conta}</span></div>
-                <div className="flex justify-between"><span className="sub">Produtos</span><span className="mono" style={{color:'var(--green)'}}>{bling.produtos.toLocaleString('pt-BR')}</span></div>
-                <div className="flex justify-between"><span className="sub">Última sync</span><span className="mono text-[11px]">{fmtDate(bling.ultimaSync)}</span></div>
-                <div className="flex gap-1 mt-3 flex-wrap">
-                  <button className="btn-ghost text-[11px] px-2 py-1" onClick={syncNow} disabled={syncing}>{syncing?'🔄 sync...':'🔄 Sincronizar'}</button>
-                  <button className="btn-ghost text-[11px] px-2 py-1" onClick={()=>setLogsOpen(true)}>📋 Logs</button>
-                  <button className="btn-ghost text-[11px] px-2 py-1" onClick={disconnect} style={{borderColor:'rgba(239,68,68,.4)', color:'#ef4444'}}>Desconectar</button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <p className="sub text-xs">ERP brasileiro líder. Sincroniza catálogo, estoque, preços e compatibilidades.</p>
-                <button className="btn mt-2" style={{padding:'9px 14px', fontSize:13}} onClick={()=>setShowModal(true)}>+ Conectar Bling</button>
-              </>
-            )}
-          </ERPCard>
+          {/* Bling — OAuth real (3 estados) */}
+          <BlingOAuthCard notif={notif}/>
 
           <ERPCard name="Tiny ERP"     logo="T" logoClass="tiny"    soon>
             <p className="sub text-xs">Olist · controle de estoque e pedidos integrado</p>

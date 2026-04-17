@@ -631,6 +631,351 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // ============= BLING ERP — OAuth + API =============
+    // Helpers locais
+    const blingCreds = () => {
+      env = loadEnv();
+      return {
+        clientId:     process.env.BLING_CLIENT_ID     || env.BLING_CLIENT_ID     || '',
+        clientSecret: process.env.BLING_CLIENT_SECRET || env.BLING_CLIENT_SECRET || '',
+        redirectUri:  process.env.BLING_REDIRECT_URI  || env.BLING_REDIRECT_URI  || 'http://localhost:3000/callback/bling',
+      };
+    };
+    const getBlingBearer = () => {
+      const hdr = req.headers['authorization'] || req.headers['Authorization'] || '';
+      return hdr.replace(/^Bearer\s+/i, '');
+    };
+    const blingFetch = async (url, token, method='GET', body=null) => {
+      const opts = {
+        method,
+        headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' },
+      };
+      if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+      const r = await fetch(url, opts);
+      const data = await r.json().catch(() => ({}));
+      return { ok: r.ok, status: r.status, data };
+    };
+
+    // GET /api/bling/config-status — sinaliza pro front se o app está configurado
+    if (u.pathname === '/api/bling/config-status' && req.method === 'GET') {
+      const { clientId, redirectUri } = blingCreds();
+      return send(res, 200, {
+        configured: !!clientId,
+        client_id_preview: clientId ? (clientId.slice(0,4) + '…' + clientId.slice(-2)) : null,
+        redirect_uri: redirectUri,
+      });
+    }
+
+    // GET /api/bling/authorize — retorna a URL de autorização OAuth
+    if (u.pathname === '/api/bling/authorize' && req.method === 'GET') {
+      const { clientId, redirectUri } = blingCreds();
+      if (!clientId) return send(res, 400, { success:false, error:'BLING_CLIENT_ID não configurado no servidor (.env)' });
+      const state = crypto.randomBytes(8).toString('hex');
+      const url = 'https://www.bling.com.br/Api/v3/oauth/authorize?' + new URLSearchParams({
+        response_type: 'code',
+        client_id:     clientId,
+        redirect_uri:  redirectUri,
+        state,
+      }).toString();
+      return send(res, 200, { success:true, url, state });
+    }
+
+    // POST /api/bling/token — troca authorization_code por access_token
+    if (u.pathname === '/api/bling/token' && req.method === 'POST') {
+      const { clientId, clientSecret, redirectUri } = blingCreds();
+      if (!clientId || !clientSecret) return send(res, 400, { success:false, error:'Bling não configurado no servidor' });
+      const body = await readBody(req);
+      const code = (body.code || '').trim();
+      if (!code) return send(res, 400, { success:false, error:'code obrigatório' });
+
+      try {
+        const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+        const r = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept':       '1.0',
+            'Authorization': 'Basic ' + credentials,
+          },
+          body: new URLSearchParams({
+            grant_type:   'authorization_code',
+            code,
+            redirect_uri: redirectUri,
+          }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!data.access_token) {
+          const msg = data.error === 'invalid_grant'
+            ? 'Code expirado ou já usado — gere um novo clicando em "Autorizar no Bling" novamente.'
+            : (data.error_description || data.error || 'Erro ao obter token Bling');
+          return send(res, 200, { success:false, error: msg, raw: data });
+        }
+        return send(res, 200, {
+          success: true,
+          access_token:  data.access_token,
+          refresh_token: data.refresh_token,
+          expires_in:    data.expires_in,
+          token_type:    data.token_type,
+          scope:         data.scope || '',
+        });
+      } catch(err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // POST /api/bling/refresh — renova access_token via refresh_token
+    if (u.pathname === '/api/bling/refresh' && req.method === 'POST') {
+      const { clientId, clientSecret } = blingCreds();
+      if (!clientId || !clientSecret) return send(res, 400, { success:false, error:'Bling não configurado no servidor' });
+      const body = await readBody(req);
+      const refreshToken = (body.refresh_token || '').trim();
+      if (!refreshToken) return send(res, 400, { success:false, error:'refresh_token obrigatório' });
+      try {
+        const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+        const r = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept':       '1.0',
+            'Authorization': 'Basic ' + credentials,
+          },
+          body: new URLSearchParams({
+            grant_type:    'refresh_token',
+            refresh_token: refreshToken,
+          }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!data.access_token) return send(res, 200, { success:false, error: data.error_description || data.error || 'Falha no refresh', raw: data });
+        return send(res, 200, { success:true, ...data });
+      } catch(err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // GET /callback/bling — callback humano (redirect do Bling)
+    // Mostra o code na tela pro usuário copiar de volta pro painel
+    if (u.pathname === '/callback/bling' && req.method === 'GET') {
+      const code = u.query.code || '';
+      const err  = u.query.error || '';
+      const html = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Bling OAuth Callback</title>
+<style>body{font-family:sans-serif;background:#0a0a0a;color:#e5e7eb;padding:40px;max-width:720px;margin:0 auto}
+.card{background:#141414;border:1px solid #222;border-radius:12px;padding:24px;margin-top:20px}
+.code{background:#0e0e0e;border:1px solid #00A7FF;color:#86efac;padding:12px 16px;border-radius:8px;word-break:break-all;font-family:monospace;font-size:14px;user-select:all}
+.err{background:rgba(220,38,38,.15);border:1px solid #dc2626;color:#fca5a5;padding:14px;border-radius:8px}
+h1{color:#00A7FF}.btn{background:#00A7FF;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;display:inline-block;margin-top:14px;font-weight:700}</style>
+</head><body>
+<h1>🔌 Bling OAuth</h1>
+${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''}</div>` :
+  code ? `<div class="card">
+    <p>✅ Autorização recebida. Copie o código abaixo e cole no painel AM (aba 🔌 Integrações):</p>
+    <div class="code">${code}</div>
+    <a href="/" class="btn">Voltar ao painel →</a>
+  </div>` :
+  `<div class="err">Sem code na URL — tente autorizar novamente.</div>`}
+</body></html>`;
+      res.writeHead(200, { 'Content-Type':'text/html; charset=utf-8' });
+      return res.end(html);
+    }
+
+    // GET /api/bling/produtos — lista paginada de produtos
+    if (u.pathname === '/api/bling/produtos' && req.method === 'GET') {
+      const token = getBlingBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token Bling não fornecido' });
+      const pagina = Math.max(1, parseInt(u.query.page || u.query.pagina || '1', 10));
+      const limite = Math.min(100, Math.max(1, parseInt(u.query.limit || u.query.limite || '100', 10)));
+      try {
+        const r = await blingFetch(`https://www.bling.com.br/Api/v3/produtos?pagina=${pagina}&limite=${limite}`, token);
+        if (!r.ok) return send(res, 200, { success:false, error: r.data.error?.description || 'Falha ao listar produtos', status:r.status });
+        const list = Array.isArray(r.data.data) ? r.data.data : [];
+        return send(res, 200, {
+          success: true,
+          total: list.length,
+          pagina,
+          produtos: list.map(p => ({
+            id:              p.id,
+            nome:            p.nome,
+            codigo:          p.codigo,
+            preco:           p.preco,
+            precoCusto:      p.precoCusto,
+            situacao:        p.situacao,
+            tipo:            p.tipo,
+            formato:         p.formato,
+            unidade:         p.unidade,
+            pesoLiquido:     p.pesoLiquido,
+            pesoBruto:       p.pesoBruto,
+            gtin:            p.gtin,
+            gtinEmbalagem:   p.gtinEmbalagem,
+            marca:           p.marca,
+            descricaoCurta:  p.descricaoCurta,
+            estoqueSaldo:    p.estoque?.saldoVirtualTotal ?? null,
+          })),
+        });
+      } catch(err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // GET /api/bling/produtos/:id/estoques — estoque do produto
+    if (u.pathname.match(/^\/api\/bling\/produtos\/\d+\/estoques$/) && req.method === 'GET') {
+      const token = getBlingBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token Bling não fornecido' });
+      const id = u.pathname.split('/')[4];
+      try {
+        const r = await blingFetch(`https://www.bling.com.br/Api/v3/estoques/produtos/${id}`, token);
+        return send(res, 200, { success: r.ok, estoque: r.data.data || null, raw: r.ok ? null : r.data });
+      } catch(err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // GET /api/bling/produtos/:id — detalhe de um produto
+    if (u.pathname.match(/^\/api\/bling\/produtos\/\d+$/) && req.method === 'GET') {
+      const token = getBlingBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token Bling não fornecido' });
+      const id = u.pathname.split('/').pop();
+      try {
+        const r = await blingFetch(`https://www.bling.com.br/Api/v3/produtos/${id}`, token);
+        return send(res, 200, { success: r.ok, produto: r.data.data || null, raw: r.ok ? null : r.data });
+      } catch(err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // ============= FLUXO COMPLETO: BLING → ML =============
+    // POST /api/publicar — puxa 1 produto do Bling, otimiza, publica no ML
+    if (u.pathname === '/api/publicar' && req.method === 'POST') {
+      const body = await readBody(req);
+      const { produtoId, blingToken, mlToken } = body || {};
+      if (!produtoId || !blingToken || !mlToken) {
+        return send(res, 400, { success:false, error:'produtoId, blingToken e mlToken obrigatórios' });
+      }
+      try {
+        // 1) Detalhe do produto no Bling
+        const pr = await blingFetch(`https://www.bling.com.br/Api/v3/produtos/${produtoId}`, blingToken);
+        if (!pr.ok || !pr.data.data) return send(res, 200, { success:false, error:'Produto não encontrado no Bling', raw: pr.data });
+        const produto = pr.data.data;
+
+        // 2) Predição de categoria no ML
+        let categoryId = 'MLB1747'; // fallback autopeças
+        try {
+          const cr = await fetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?q=${encodeURIComponent(produto.nome || '')}`, {
+            headers: { 'Authorization': 'Bearer ' + mlToken }
+          });
+          const cj = await cr.json().catch(() => []);
+          if (Array.isArray(cj) && cj[0]?.category_id) categoryId = cj[0].category_id;
+        } catch(_) {}
+
+        // 3) Atributos obrigatórios
+        let requiredAttrs = [];
+        try {
+          const ar = await fetch(`https://api.mercadolibre.com/categories/${categoryId}/attributes`, {
+            headers: { 'Authorization': 'Bearer ' + mlToken }
+          });
+          const attrs = await ar.json().catch(() => []);
+          if (Array.isArray(attrs)) {
+            requiredAttrs = attrs
+              .filter(a => a.tags && a.tags.required)
+              .map(a => ({
+                id: a.id,
+                value_name:
+                  a.id === 'BRAND'      ? (produto.marca || 'Genérico') :
+                  a.id === 'GTIN'       ? (produto.gtin || '') :
+                  a.id === 'SELLER_SKU' ? (produto.codigo || '') :
+                  (a.values?.[0]?.name || ''),
+              }))
+              .filter(a => a.value_name);
+          }
+        } catch(_) {}
+
+        // 4) Título otimizado (ML limita 60)
+        let titulo = (produto.nome || '').trim();
+        if (titulo.length > 60) titulo = titulo.slice(0, 57) + '...';
+
+        // 5) Body do anúncio
+        const imagens = (produto.midia?.imagens?.internas || [])
+          .map(img => ({ source: img.link }))
+          .filter(i => i.source);
+        const estoque = produto.estoque?.saldoVirtualTotal ?? 1;
+        const anuncio = {
+          title:       titulo,
+          category_id: categoryId,
+          price:       Number(produto.preco) || 0,
+          currency_id: 'BRL',
+          available_quantity: Math.max(1, Number(estoque) || 1),
+          buying_mode:  'buy_it_now',
+          listing_type_id: 'gold_special',
+          condition:    'new',
+          description:  { plain_text: (produto.descricaoCurta || titulo + ' — produto novo, com garantia. Envio rápido para todo Brasil.').slice(0, 50000) },
+          attributes:   requiredAttrs,
+          pictures:     imagens,
+        };
+
+        // 6) POST /items no ML
+        const mr = await fetch('https://api.mercadolibre.com/items', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + mlToken, 'Content-Type': 'application/json' },
+          body: JSON.stringify(anuncio),
+        });
+        const mj = await mr.json().catch(() => ({}));
+        if (mj.id) {
+          return send(res, 200, {
+            success: true,
+            message: 'Anúncio publicado com sucesso',
+            ml_item_id: mj.id,
+            permalink:  mj.permalink,
+            title:      mj.title,
+            price:      mj.price,
+            status:     mj.status,
+            category_id: categoryId,
+          });
+        }
+        return send(res, 200, {
+          success: false,
+          error:   mj.message || mj.error || 'Erro ao publicar no ML',
+          details: mj.cause || mj,
+        });
+      } catch(err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // POST /api/publicar/lote — publica vários com throttle 1s entre cada
+    if (u.pathname === '/api/publicar/lote' && req.method === 'POST') {
+      const body = await readBody(req);
+      const { produtoIds, blingToken, mlToken } = body || {};
+      if (!Array.isArray(produtoIds) || produtoIds.length === 0) {
+        return send(res, 400, { success:false, error:'produtoIds (array) obrigatório' });
+      }
+      if (!blingToken || !mlToken) return send(res, 400, { success:false, error:'blingToken e mlToken obrigatórios' });
+
+      const base = `http://127.0.0.1:${PORT}`;
+      const resultados = [];
+      for (let i = 0; i < produtoIds.length; i++) {
+        const produtoId = produtoIds[i];
+        try {
+          const r = await fetch(`${base}/api/publicar`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ produtoId, blingToken, mlToken }),
+          });
+          const j = await r.json().catch(() => ({ success:false, error:'JSON inválido' }));
+          resultados.push({ produtoId, ...j });
+        } catch(err) {
+          resultados.push({ produtoId, success:false, error: err.message });
+        }
+        // throttle 1s pro rate-limit ML (exceto no último)
+        if (i < produtoIds.length - 1) await new Promise(r => setTimeout(r, 1000));
+      }
+      return send(res, 200, {
+        success: true,
+        total:      produtoIds.length,
+        publicados: resultados.filter(r => r.success).length,
+        erros:      resultados.filter(r => !r.success).length,
+        resultados,
+      });
+    }
+
     // Estáticos
     return serveStatic(req, res);
   } catch (e) {
