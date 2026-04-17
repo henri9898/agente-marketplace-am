@@ -228,6 +228,43 @@ async function checkAndRefresh() {
 }
 setInterval(checkAndRefresh, REFRESH_INTERVAL_MS);
 
+// ============================================================
+// COMPATIBILIDADE AUTO — stats + monitor de 6h
+// ============================================================
+const compatStats = {
+  tentativas: 0,
+  sucessos:   0,
+  falhas:     0,
+  ultima:     null,
+  ultimaVerificacao: null,
+  historico:  [], // últimas 50 resoluções: { ts, itemId, metodo, resumo }
+};
+
+async function rodarMonitorCompat() {
+  const tokens = loadTokens();
+  if (!tokens.ml_access_token) return;
+  try {
+    console.log('🚗 [compat-monitor] verificando pendências...');
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/ml/compat/auto-resolver-todos`, {
+      method:'POST',
+      headers:{ 'Authorization':'Bearer '+tokens.ml_access_token, 'Content-Type':'application/json' },
+    });
+    const data = await r.json().catch(()=>({}));
+    compatStats.ultimaVerificacao = new Date().toISOString();
+    if (data.total > 0) {
+      console.log(`🚗 [compat-monitor] ${data.resolvidos}/${data.total} resolvidas automaticamente`);
+    } else {
+      console.log('🚗 [compat-monitor] nenhum anúncio pendente');
+    }
+  } catch(err) {
+    console.error('🚗 [compat-monitor] erro:', err.message);
+  }
+}
+// A cada 6h
+setInterval(rodarMonitorCompat, 6 * 60 * 60 * 1000);
+// Primeira verificação 30s depois do boot (dá tempo do token estar pronto)
+setTimeout(rodarMonitorCompat, 30_000);
+
 // Migração on-boot: se o .env tem ML_ACCESS_TOKEN mas tokens.json está vazio,
 // semeia o tokens.json com os valores do .env (só na primeira execução).
 function seedTokensFromEnv() {
@@ -1135,6 +1172,26 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         });
         const mj = await mr.json().catch(() => ({}));
         if (mj.id) {
+          // 🚗 Dispara compatibilidade automática em background (3s depois do ML indexar)
+          setTimeout(async () => {
+            try {
+              console.log(`🚗 Resolvendo compatibilidade para ${mj.id}...`);
+              const cr = await fetch(`http://127.0.0.1:${PORT}/api/ml/compat/auto-resolver`, {
+                method:'POST',
+                headers:{ 'Authorization':'Bearer '+mlToken, 'Content-Type':'application/json' },
+                body: JSON.stringify({ itemId: mj.id }),
+              });
+              const cd = await cr.json().catch(()=>({}));
+              if (cd.sucesso) {
+                console.log(`🚗 ${mj.id} → compat ✅ via ${cd.metodo}${cd.resumo?` (${cd.resumo})`:''}`);
+              } else {
+                console.log(`🚗 ${mj.id} → compat ⚠️ pendente`);
+              }
+            } catch(err) {
+              console.error(`🚗 ${mj.id} → erro compat:`, err.message);
+            }
+          }, 3000);
+
           return send(res, 200, {
             success: true,
             message: 'Anúncio publicado com sucesso',
@@ -1144,6 +1201,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
             price:      mj.price,
             status:     mj.status,
             category_id: categoryId,
+            compatibilidade: 'auto-resolvendo em background',
           });
         }
         return send(res, 200, {
@@ -1275,6 +1333,394 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         });
       }
       return send(res, 200, { success:false });
+    }
+
+    // ============= COMPATIBILIDADE AUTOPEÇAS (AUTO via IA) =============
+    // Domínio ML: MLB-CARS_AND_VANS · O usuário NÃO cadastra manualmente.
+    // Helper: pega o token ML do header Authorization OU do tokens.json
+    const getMlToken = () => {
+      const h = req.headers.authorization;
+      if (h && /^Bearer\s+/i.test(h)) return h.replace(/^Bearer\s+/i,'').trim();
+      return loadTokens().ml_access_token || null;
+    };
+
+    // ETAPA 1 — Sugestões do próprio ML pro anúncio
+    if (u.pathname === '/api/ml/compat/sugestoes' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { itemId, productId } = await readBody(req);
+        const body = {
+          domain_id: 'MLB-CARS_AND_VANS',
+          site_id:   'MLB',
+          filter:    'SUGGESTED',
+          item_id:   itemId,
+        };
+        if (productId) body.secondary_product_id = productId;
+        const r = await fetch('https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks', {
+          method:'POST',
+          headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await r.json().catch(()=>({}));
+        return send(res, 200, { success:true, sugestoes: data.results || [], total: data.paging?.total || 0 });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ETAPA 2 — Buscar produto no catálogo ML pelo part number
+    if (u.pathname.startsWith('/api/ml/catalogo/buscar/') && req.method === 'GET') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      const partNumber = decodeURIComponent(u.pathname.replace('/api/ml/catalogo/buscar/',''));
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/products/search?status=active&site_id=MLB&q=${encodeURIComponent(partNumber)}`, {
+          headers:{ 'Authorization':'Bearer '+token },
+        });
+        const data = await r.json().catch(()=>({}));
+        return send(res, 200, { success:true, produtos: data.results || [] });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ETAPA 3 — Marcas do domínio
+    if (u.pathname === '/api/ml/compat/marcas' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const r = await fetch('https://api.mercadolibre.com/catalog_domains/MLB-CARS_AND_VANS/attributes/BRAND/top_values', {
+          method:'POST',
+          headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+          body: JSON.stringify({}),
+        });
+        const data = await r.json().catch(()=>({}));
+        return send(res, 200, { success:true, marcas: data });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Modelos de uma marca
+    if (u.pathname === '/api/ml/compat/modelos' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { brandId } = await readBody(req);
+        const r = await fetch('https://api.mercadolibre.com/catalog_domains/MLB-CARS_AND_VANS/attributes/MODEL/top_values', {
+          method:'POST',
+          headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+          body: JSON.stringify({ known_attributes: [{ id:'BRAND', value_id: brandId }] }),
+        });
+        const data = await r.json().catch(()=>({}));
+        return send(res, 200, { success:true, modelos: data });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ETAPA 4 — Cadastrar compatibilidade manualmente (fallback)
+    if (u.pathname === '/api/ml/compat/cadastrar' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { itemId, products, productsFamilies, universal } = await readBody(req);
+        let body;
+        if (universal) {
+          body = { products: [], products_families: [], products_group: [], universal: true };
+        } else {
+          body = {
+            products: (products || []).map(p => ({ id: p.id })),
+            products_families: (productsFamilies || []).map(pf => ({
+              domain_id: 'MLB-CARS_AND_VANS',
+              attributes: pf.attributes,
+            })),
+          };
+        }
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+          method:'POST',
+          headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await r.json().catch(()=>({}));
+        return send(res, 200, r.ok ? { success:true, data } : { success:false, error: data.message, details: data });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ETAPA 5 — Listar compatibilidades de um anúncio
+    if (u.pathname.startsWith('/api/ml/compat/listar/') && req.method === 'GET') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      const itemId = u.pathname.replace('/api/ml/compat/listar/','');
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+          headers:{ 'Authorization':'Bearer '+token },
+        });
+        const data = await r.json().catch(()=>({}));
+        return send(res, 200, { success:true, compatibilidades: data });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ETAPA 6 — Listar anúncios com compatibilidade PENDENTE
+    if (u.pathname === '/api/ml/compat/pendentes' && req.method === 'GET') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+          headers:{ 'Authorization':'Bearer '+token },
+        });
+        const me = await meResp.json();
+        const itemsResp = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?tags=incomplete_compatibilities&status=active`, {
+          headers:{ 'Authorization':'Bearer '+token },
+        });
+        const itemsData = await itemsResp.json();
+        return send(res, 200, { success:true, total: itemsData.paging?.total || 0, items: itemsData.results || [] });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // =========================================================
+    // AUTO-RESOLVER — a IA faz TUDO sozinha pra 1 anúncio
+    // =========================================================
+    if (u.pathname === '/api/ml/compat/auto-resolver' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { itemId } = await readBody(req);
+        const resultados = { itemId, etapas: [], sucesso: false };
+
+        // 1) Detalhes do anúncio
+        const itemResp = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          headers:{ 'Authorization':'Bearer '+token },
+        });
+        const item = await itemResp.json();
+        resultados.etapas.push({ etapa:'Buscar anúncio', status:'ok', titulo: item.title });
+        if (item.catalog_product_id) {
+          resultados.etapas.push({ etapa:'Produto do catálogo encontrado', id: item.catalog_product_id });
+        }
+
+        // 2) Sugestões do ML
+        const sugResp = await fetch('https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks', {
+          method:'POST',
+          headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+          body: JSON.stringify({
+            domain_id: 'MLB-CARS_AND_VANS',
+            site_id:   'MLB',
+            filter:    'SUGGESTED',
+            item_id:   itemId,
+            ...(item.catalog_product_id ? { secondary_product_id: item.catalog_product_id } : {}),
+          }),
+        });
+        const sugData = await sugResp.json().catch(()=>({}));
+        const sugestoes = sugData.results || [];
+        resultados.etapas.push({ etapa:'Sugestões do ML', total: sugestoes.length });
+
+        // 3) Aplica sugestões (até 200)
+        if (sugestoes.length > 0) {
+          const productsToAdd = sugestoes.slice(0, 200).map(s => ({ id: s.id }));
+          const cadR = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+            method:'POST',
+            headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+            body: JSON.stringify({ products: productsToAdd }),
+          });
+          const cadD = await cadR.json().catch(()=>({}));
+          if (cadR.ok) {
+            resultados.sucesso = true;
+            resultados.metodo  = 'sugestoes';
+            resultados.aplicadas = productsToAdd.length;
+            resultados.etapas.push({ etapa:'Compatibilidades aplicadas via sugestões', total: productsToAdd.length });
+          } else {
+            resultados.etapas.push({ etapa:'Erro ao aplicar sugestões', erro: cadD.message });
+          }
+        }
+
+        // 4) Fallback: analisar TÍTULO
+        if (!resultados.sucesso) {
+          const titulo = (item.title || '').toLowerCase();
+          const marcasML = {
+            'volkswagen':'60249','vw':'60249','gol':'60249','voyage':'60249',
+            'saveiro':'60249','polo':'60249','fox':'60249','up':'60249',
+            'ford':'66432','fiesta':'66432','focus':'66432','ka':'66432','ecosport':'66432',
+            'chevrolet':'58955','gm':'58955','onix':'58955','prisma':'58955',
+            'cobalt':'58955','spin':'58955','tracker':'58955','cruze':'58955',
+            'fiat':'67781','uno':'67781','palio':'67781','siena':'67781',
+            'strada':'67781','argo':'67781','mobi':'67781','toro':'67781','cronos':'67781',
+            'hyundai':'60376','hb20':'60376','creta':'60376','tucson':'60376',
+            'toyota':'60557','corolla':'60557','hilux':'60557','etios':'60557','yaris':'60557',
+            'honda':'60304','civic':'60304','fit':'60304','hr-v':'60304','city':'60304',
+            'renault':'9909','kwid':'9909','sandero':'9909','logan':'9909','duster':'9909',
+            'peugeot':'60279','208':'60279','308':'60279',
+            'citroen':'60094','c3':'60094','c4':'60094',
+            'nissan':'60421','kicks':'60421','march':'60421','versa':'60421',
+            'jeep':'60333','renegade':'60333','compass':'60333',
+            'mitsubishi':'60413','l200':'60413','pajero':'60413','outlander':'60413',
+          };
+          const modelosConhecidos = {
+            'gol':'Gol','voyage':'Voyage','saveiro':'Saveiro','polo':'Polo',
+            'fox':'Fox','up':'Up!','golf':'Golf','jetta':'Jetta','amarok':'Amarok',
+            'onix':'Onix','prisma':'Prisma','cobalt':'Cobalt','spin':'Spin',
+            'tracker':'Tracker','cruze':'Cruze','montana':'Montana','corsa':'Corsa',
+            'celta':'Celta','s10':'S10',
+            'uno':'Uno','palio':'Palio','siena':'Siena','strada':'Strada',
+            'argo':'Argo','mobi':'Mobi','toro':'Toro','cronos':'Cronos',
+            'ka':'Ka','fiesta':'Fiesta','focus':'Focus','ecosport':'EcoSport',
+            'ranger':'Ranger','fusion':'Fusion',
+            'hb20':'HB20','creta':'Creta','tucson':'Tucson','ix35':'ix35',
+            'corolla':'Corolla','hilux':'Hilux','etios':'Etios','yaris':'Yaris',
+            'civic':'Civic','fit':'Fit','hr-v':'HR-V','city':'City',
+            'kwid':'Kwid','sandero':'Sandero','logan':'Logan','duster':'Duster',
+            'kicks':'Kicks','march':'March','versa':'Versa',
+            'renegade':'Renegade','compass':'Compass',
+            'l200':'L200','pajero':'Pajero','outlander':'Outlander',
+          };
+          let marcaDetectada = null, modeloDetectado = null, anosDetectados = [];
+          for (const [pal, valueId] of Object.entries(marcasML)) {
+            const re = new RegExp(`\\b${pal.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b`);
+            if (re.test(titulo)) { marcaDetectada = { palavra: pal, valueId }; break; }
+          }
+          for (const [pal, nome] of Object.entries(modelosConhecidos)) {
+            const re = new RegExp(`\\b${pal.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b`);
+            if (re.test(titulo)) { modeloDetectado = { palavra: pal, nome }; break; }
+          }
+          const rangeMatch = titulo.match(/(\d{4})\s*(?:a|até|à|-)\s*(\d{4})/);
+          if (rangeMatch) {
+            const ini = parseInt(rangeMatch[1],10), fim = parseInt(rangeMatch[2],10);
+            if (ini >= 1970 && fim <= 2035 && fim >= ini && fim - ini <= 30) {
+              for (let a = ini; a <= fim; a++) anosDetectados.push(String(a));
+            }
+          } else {
+            const ind = titulo.match(/\b(19\d{2}|20[0-3]\d)\b/g);
+            if (ind) anosDetectados = [...new Set(ind)];
+          }
+
+          resultados.etapas.push({
+            etapa:'Análise do título',
+            marca:  marcaDetectada?.palavra || 'não encontrada',
+            modelo: modeloDetectado?.nome   || 'não encontrado',
+            anos:   anosDetectados.length ? anosDetectados : 'nenhum',
+          });
+
+          if (marcaDetectada && modeloDetectado) {
+            const families = [];
+            if (anosDetectados.length > 0) {
+              for (const ano of anosDetectados) {
+                families.push({
+                  domain_id:'MLB-CARS_AND_VANS',
+                  attributes:[
+                    { id:'BRAND', value_id: marcaDetectada.valueId },
+                    { id:'MODEL', value_name: modeloDetectado.nome },
+                    { id:'YEAR',  value_name: ano },
+                  ],
+                });
+              }
+            } else {
+              families.push({
+                domain_id:'MLB-CARS_AND_VANS',
+                attributes:[
+                  { id:'BRAND', value_id: marcaDetectada.valueId },
+                  { id:'MODEL', value_name: modeloDetectado.nome },
+                ],
+              });
+            }
+            const cadR = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+              method:'POST',
+              headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+              body: JSON.stringify({ products_families: families }),
+            });
+            const cadD = await cadR.json().catch(()=>({}));
+            if (cadR.ok) {
+              resultados.sucesso = true;
+              resultados.metodo  = 'titulo';
+              resultados.aplicadas = families.length;
+              resultados.resumo = `${modeloDetectado.nome}${anosDetectados.length?` ${anosDetectados[0]}-${anosDetectados[anosDetectados.length-1]}`:''}`;
+              resultados.etapas.push({ etapa:'Compatibilidade via análise de título', total: families.length });
+            } else {
+              resultados.etapas.push({ etapa:'Erro ao cadastrar via título', erro: cadD.message });
+            }
+          }
+        }
+
+        // 5) Universal (parafusos, óleos, genéricos)
+        if (!resultados.sucesso) {
+          const titulo = (item.title || '').toLowerCase();
+          const termos = ['universal','genérico','generico','parafuso','arruela','presilha',
+            'grampo','abraçadeira','fita','cola','adesivo','limpador','desengripante',
+            'óleo','oleo','fluido','aditivo'];
+          if (termos.some(t => titulo.includes(t))) {
+            const univR = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+              method:'POST',
+              headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+              body: JSON.stringify({ products:[], products_families:[], products_group:[], universal:true }),
+            });
+            if (univR.ok) {
+              resultados.sucesso = true;
+              resultados.metodo  = 'universal';
+              resultados.etapas.push({ etapa:'Marcado como UNIVERSAL' });
+            } else {
+              const eD = await univR.json().catch(()=>({}));
+              resultados.etapas.push({ etapa:'Erro ao marcar universal', erro: eD.message });
+            }
+          } else {
+            resultados.etapas.push({ etapa:'Não foi possível resolver automaticamente — precisa revisão manual' });
+          }
+        }
+
+        // Contabiliza na stats
+        compatStats.tentativas++;
+        if (resultados.sucesso) compatStats.sucessos++; else compatStats.falhas++;
+        compatStats.ultima = new Date().toISOString();
+        if (resultados.sucesso) {
+          compatStats.historico.unshift({
+            ts: compatStats.ultima, itemId, metodo: resultados.metodo,
+            resumo: resultados.resumo || (resultados.metodo === 'universal' ? 'universal' : null),
+          });
+          compatStats.historico = compatStats.historico.slice(0, 50);
+        }
+
+        return send(res, 200, resultados);
+      } catch(err) {
+        return send(res, 200, { sucesso:false, error: err.message });
+      }
+    }
+
+    // AUTO-RESOLVER TODOS os pendentes
+    if (u.pathname === '/api/ml/compat/auto-resolver-todos' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+          headers:{ 'Authorization':'Bearer '+token },
+        });
+        const me = await meResp.json();
+        const pendResp = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?tags=incomplete_compatibilities&status=active&limit=50`, {
+          headers:{ 'Authorization':'Bearer '+token },
+        });
+        const pendData = await pendResp.json().catch(()=>({}));
+        const itemIds = pendData.results || [];
+        const base = `http://127.0.0.1:${PORT}`;
+        const resultados = [];
+        for (let i = 0; i < itemIds.length; i++) {
+          const itemId = itemIds[i];
+          try {
+            const r = await fetch(`${base}/api/ml/compat/auto-resolver`, {
+              method:'POST',
+              headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+              body: JSON.stringify({ itemId }),
+            });
+            const rd = await r.json().catch(()=>({ sucesso:false, error:'JSON inválido' }));
+            resultados.push({ itemId, ...rd });
+          } catch(e) {
+            resultados.push({ itemId, sucesso:false, error: e.message });
+          }
+          if (i < itemIds.length - 1) await new Promise(r => setTimeout(r, 1000));
+        }
+        return send(res, 200, {
+          success: true,
+          total:     itemIds.length,
+          resolvidos: resultados.filter(r => r.sucesso).length,
+          falhas:     resultados.filter(r => !r.sucesso).length,
+          detalhes:   resultados,
+        });
+      } catch(err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // Stats + histórico pro dashboard
+    if (u.pathname === '/api/ml/compat/stats' && req.method === 'GET') {
+      return send(res, 200, { success:true, ...compatStats });
     }
 
     // Estáticos

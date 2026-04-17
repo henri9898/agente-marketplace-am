@@ -2059,6 +2059,28 @@ function useAgentStore({ notif } = {}) {
           setProducts(prev => prev.map(pr => pr.sku === p._synthetic.sku ? { ...pr, status:'publicado', mlId: r.ml_item_id } : pr));
           setMetrics(m => ({ ...m, publishedToday: m.publishedToday + 1, totalProcessed: m.totalProcessed + 1 }));
           if (notif && notif.push) notif.push(buildNotification('publicado', { ml_id: r.ml_item_id }));
+
+          // 🚗 Resolve compatibilidade automaticamente (fire-and-forget, sem bloquear fila)
+          (async (mlId, titulo) => {
+            try {
+              await new Promise(r => setTimeout(r, 3500)); // ML precisa indexar
+              const ml = loadMLTokens();
+              if (!ml?.access_token) return;
+              const cr = await fetch('/api/ml/compat/auto-resolver', {
+                method:'POST',
+                headers:{ 'Authorization': 'Bearer ' + ml.access_token, 'Content-Type':'application/json' },
+                body: JSON.stringify({ itemId: mlId }),
+              });
+              const cd = await cr.json().catch(()=>({}));
+              if (cd.sucesso) {
+                log('ok', `🚗 Compat ${mlId} aplicada via ${cd.metodo}${cd.resumo?` — ${cd.resumo}`:''} ✅`);
+              } else {
+                log('warn', `🚗 Compat ${mlId} pendente — aguardando sugestões do ML ⚠️`);
+              }
+            } catch(e) {
+              log('error', `🚗 Compat ${mlId} erro: ${e.message}`);
+            }
+          })(r.ml_item_id, p.nome);
         } else {
           fail++;
           log('error', `❌ Falhou: ${r.error || 'erro'}`);
@@ -3305,9 +3327,127 @@ function MLTokenExpiredBanner(){
   );
 }
 
+// Card: status da compatibilidade automática (IA resolve sozinha)
+function CompatCard({ compat }){
+  const pendCount = compat.pend?.total ?? null;
+  const s = compat.stats;
+  const ultima = s?.ultima ? new Date(s.ultima) : null;
+  const ultimaVer = s?.ultimaVerificacao ? new Date(s.ultimaVerificacao) : null;
+  const hAgo = (d) => {
+    if (!d) return null;
+    const diff = (Date.now() - d.getTime()) / 60000;
+    if (diff < 1) return 'agora';
+    if (diff < 60) return `há ${Math.round(diff)} min`;
+    return `há ${Math.round(diff/60)} h`;
+  };
+  const temPendente = pendCount != null && pendCount > 0;
+
+  return (
+    <div className="card p-5 mb-6" style={{borderColor: temPendente ? 'rgba(255,176,32,.45)' : 'rgba(34,197,94,.35)'}}>
+      <div className="flex items-start gap-4 flex-wrap">
+        <div className="text-3xl">🚗</div>
+        <div className="flex-1 min-w-[260px]">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-bold">Compatibilidade de autopeças</h3>
+            <span className="chip" style={{color: temPendente?'var(--yellow)':'var(--green)', borderColor: temPendente?'rgba(255,176,32,.5)':'rgba(34,197,94,.5)', fontSize:11}}>
+              {temPendente ? `⚠️ ${pendCount} pendente(s)` : '✅ tudo compatível'}
+            </span>
+            <span className="chip" style={{fontSize:11}}>🤖 IA automática</span>
+          </div>
+          <p className="sub text-xs mt-1">
+            {temPendente
+              ? 'IA tentando resolver automaticamente em background. Clique para forçar agora.'
+              : <>A IA resolveu <span className="mono" style={{color:'var(--green)'}}>{s?.sucessos || 0}</span> automaticamente
+                 {s?.tentativas ? <> · {Math.round((s.sucessos/Math.max(1,s.tentativas))*100)}% de sucesso</> : null}
+                 {ultima ? <> · última {hAgo(ultima)}</> : null}
+                 {ultimaVer ? <> · verificação {hAgo(ultimaVer)}</> : null}
+              </>}
+          </p>
+          {compat.msg && <p className="sub text-xs mt-2 mono" style={{color:'var(--green)'}}>{compat.msg}</p>}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <button className="btn-ghost" onClick={compat.refresh} disabled={compat.busy}>🔄 Atualizar</button>
+          <button className="btn" style={{width:'auto', padding:'10px 16px'}} onClick={compat.forcar} disabled={compat.busy}>
+            {compat.busy ? '🔄 resolvendo...' : '🤖 Forçar resolução'}
+          </button>
+        </div>
+      </div>
+      {s?.historico?.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-[var(--line)]">
+          <div className="sub text-xs mb-2 font-semibold">Últimas resoluções automáticas</div>
+          <div className="space-y-1">
+            {s.historico.slice(0,4).map((h,i) => (
+              <div key={i} className="text-xs flex gap-3 mono">
+                <span className="sub">{new Date(h.ts).toLocaleTimeString('pt-BR')}</span>
+                <span>{h.itemId}</span>
+                <span className="chip" style={{fontSize:10, padding:'1px 6px'}}>{h.metodo}</span>
+                {h.resumo && <span className="sub">{h.resumo}</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Hook: status da compatibilidade automática
+function useCompatStatus(){
+  const [stats, setStats]   = useState(null);
+  const [pend, setPend]     = useState(null);
+  const [busy, setBusy]     = useState(false);
+  const [msg, setMsg]       = useState(null);
+
+  const refresh = useCallback(async () => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) { setStats(null); setPend(null); return; }
+    try {
+      const [sR, pR] = await Promise.all([
+        fetch('/api/ml/compat/stats'),
+        fetch('/api/ml/compat/pendentes', { headers:{ 'Authorization':'Bearer '+ml.access_token }}),
+      ]);
+      const sJ = await sR.json().catch(()=>null);
+      const pJ = await pR.json().catch(()=>null);
+      if (sJ?.success) setStats(sJ);
+      if (pJ?.success) setPend(pJ);
+    } catch(_) {}
+  }, []);
+
+  const forcar = useCallback(async () => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await fetch('/api/ml/compat/auto-resolver-todos', {
+        method:'POST',
+        headers:{ 'Authorization':'Bearer '+ml.access_token, 'Content-Type':'application/json' },
+      });
+      const d = await r.json().catch(()=>({}));
+      if (d.success) {
+        setMsg(`🚗 ${d.resolvidos||0}/${d.total||0} resolvidas`);
+      } else {
+        setMsg('❌ Falha: ' + (d.error || 'erro'));
+      }
+      await refresh();
+    } catch(e) {
+      setMsg('❌ ' + e.message);
+    }
+    setBusy(false);
+  }, [refresh]);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 60_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return { stats, pend, busy, msg, refresh, forcar };
+}
+
 function OverviewPage({onGoToProducts, onGoToIntegrations}){
   const ml = useMLDashboard();
   const hasReal = !!ml.data && ml.data.success;
+  const compat  = useCompatStatus();
 
   const focusData = [
     {foco:'SEO', CTR:0, Conversão:0},
@@ -3397,6 +3537,10 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
           </div>
         </div>
       )}
+      {hasReal && (
+        <CompatCard compat={compat}/>
+      )}
+
       {hasReal && ml.data.orders.recent?.length > 0 && (
         <div className="card p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
