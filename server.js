@@ -265,6 +265,230 @@ setInterval(rodarMonitorCompat, 6 * 60 * 60 * 1000);
 // Primeira verificação 30s depois do boot (dá tempo do token estar pronto)
 setTimeout(rodarMonitorCompat, 30_000);
 
+// ============================================================
+// GERADOR SEO — helpers (títulos, descrições, anti-duplicidade)
+// Regras ML: máx 60 chars, PMME (Produto+Marca+Modelo+Especificação),
+// palavra-chave no início, sem preço/promoção/caps/especiais,
+// sem palavras repetidas, hífen para separar informações.
+// ============================================================
+function _limparNomeBling(nome) {
+  return String(nome || '')
+    .replace(/\b(p[çc]|und|un|par|jg|kit|cx)\b\.?/gi, '')
+    .replace(/[★♦●◆■□▪▫]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function _detectarPeca(nome) {
+  const pecas = {
+    'farol':'Farol','lanterna':'Lanterna','para-choque':'Para-Choque',
+    'parachoque':'Para-Choque','paragolpe':'Para-Choque',
+    'pastilha':'Pastilha de Freio','disco':'Disco de Freio',
+    'amortecedor':'Amortecedor','mola':'Mola','bandeja':'Bandeja',
+    'terminal':'Terminal de Direção','bieleta':'Bieleta',
+    'pivô':'Pivô','pivo':'Pivô','rolamento':'Rolamento',
+    'correia':'Correia','bomba':'Bomba','filtro':'Filtro',
+    'vela':'Vela de Ignição','bobina':'Bobina','sensor':'Sensor',
+    'retrovisor':'Retrovisor','espelho':'Espelho Retrovisor',
+    'vidro':'Vidro','maçaneta':'Maçaneta','fechadura':'Fechadura',
+    'radiador':'Radiador','condensador':'Condensador',
+    'compressor':'Compressor','evaporador':'Evaporador',
+    'embreagem':'Kit Embreagem','volante':'Volante Motor',
+    'junta':'Junta','retentor':'Retentor','coxim':'Coxim',
+    'barra':'Barra Estabilizadora','calha':'Calha de Chuva',
+    'palheta':'Palheta Limpador','limpador':'Palheta Limpador',
+    'bateria':'Bateria','alternador':'Alternador','motor de partida':'Motor de Partida',
+  };
+  const low = String(nome || '').toLowerCase();
+  for (const [chave, valor] of Object.entries(pecas)) {
+    if (low.includes(chave)) return valor;
+  }
+  return _limparNomeBling(nome).split(/\s+/).slice(0, 3).join(' ') || 'Peça';
+}
+
+function _detectarVeiculo(nome, veiculosCompativeis) {
+  if (veiculosCompativeis && veiculosCompativeis.length > 0) {
+    const v = veiculosCompativeis[0];
+    return `${v.marca || ''} ${v.modelo || ''} ${v.anos || ''}`.replace(/\s+/g,' ').trim();
+  }
+  const modelos = ['gol','voyage','saveiro','polo','fox','onix','prisma','cobalt','spin',
+    'tracker','cruze','uno','palio','siena','strada','argo','mobi','toro','cronos',
+    'ka','fiesta','focus','ecosport','hb20','creta','corolla','hilux','etios',
+    'civic','fit','hr-v','city','kwid','sandero','logan','duster','kicks',
+    'renegade','compass','l200','pajero'];
+  const low = String(nome || '').toLowerCase();
+  for (const m of modelos) {
+    const re = new RegExp(`\\b${m.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b`);
+    if (re.test(low)) return m.charAt(0).toUpperCase() + m.slice(1);
+  }
+  return '';
+}
+
+function _detectarAnos(nome) {
+  const s = String(nome || '');
+  const range = s.match(/(\d{4})\s*(?:a|até|à|-)\s*(\d{4})/);
+  if (range) return `${range[1]}-${range[2]}`;
+  const uni = s.match(/\b(20[0-3]\d|19\d{2})\b/);
+  return uni ? uni[1] : '';
+}
+
+// Remove palavras repetidas, limpa espaços, trunca em 60 preservando palavra
+function _finalizarTitulo(raw) {
+  const seen = new Set();
+  const out = [];
+  for (const p of String(raw).replace(/\s+/g,' ').trim().split(' ')) {
+    const k = p.toLowerCase();
+    if (k && !seen.has(k)) { seen.add(k); out.push(p); }
+  }
+  let t = out.join(' ');
+  if (t.length > 60) {
+    t = t.substring(0, 60);
+    const lastSpace = t.lastIndexOf(' ');
+    if (lastSpace > 40) t = t.substring(0, lastSpace);
+  }
+  return t.trim();
+}
+
+function gerarTitulosSEO({ nome, marca, partNumber, categoria, veiculosCompativeis }) {
+  const nomeLimpo = _limparNomeBling(nome);
+  const peca = _detectarPeca(nomeLimpo);
+  const marcaStr = (marca || '').trim();
+  const veiculo = _detectarVeiculo(nomeLimpo, veiculosCompativeis);
+  const anos = _detectarAnos(nomeLimpo) || (veiculosCompativeis?.[0]?.anos || '');
+
+  // A — SEO: Peça + Marca + Modelo + Anos
+  const tA = _finalizarTitulo(`${peca} ${marcaStr} ${veiculo} ${anos}`);
+  // B — Aplicação: Para Veículo + Peça + Marca
+  const tB = _finalizarTitulo(
+    veiculo
+      ? `Para ${veiculo} ${anos} - ${peca} ${marcaStr}`
+      : `${peca} ${marcaStr} Original ${anos}`
+  );
+  // C — Benefício: Peça Original + Marca + Veículo + Anos
+  const tC = _finalizarTitulo(
+    veiculo
+      ? `${peca} Original ${marcaStr} ${veiculo} ${anos}`
+      : `${peca} ${marcaStr} Novo Original ${anos}`
+  );
+
+  return [
+    { variacao:'A', foco:'SEO (Produto + Marca + Modelo)',    titulo:tA, chars:tA.length },
+    { variacao:'B', foco:'Aplicação (Para Veículo)',          titulo:tB, chars:tB.length },
+    { variacao:'C', foco:'Benefício (Original + Garantia)',   titulo:tC, chars:tC.length },
+  ];
+}
+
+function gerarDescricoesSEO({ nome, marca, partNumber, especificacoes, veiculosCompativeis }) {
+  const compatTexto = veiculosCompativeis?.length
+    ? veiculosCompativeis.map(v => `${v.marca||''} ${v.modelo||''} ${v.anos||''}`.trim()).join(', ')
+    : 'Consulte compatibilidade';
+
+  const descA = [
+    `${String(nome||'').toUpperCase()}`,
+    '',
+    'ESPECIFICAÇÕES TÉCNICAS:',
+    `• Marca: ${marca || 'Consulte'}`,
+    partNumber ? `• Part Number: ${partNumber}` : '',
+    `• Condição: Novo`,
+    especificacoes ? `• ${especificacoes}` : '',
+    '',
+    'COMPATIBILIDADE:',
+    `• ${compatTexto}`,
+    '',
+    'GARANTIA E ENVIO:',
+    '• Produto novo na caixa',
+    '• Garantia do fabricante',
+    '• Nota fiscal inclusa',
+    '• Envio rápido para todo Brasil',
+    '',
+    'Em caso de dúvidas sobre compatibilidade, consulte a tabela de veículos compatíveis no anúncio.',
+  ].filter(Boolean).join('\n');
+
+  const descB = [
+    `🔧 ${nome || ''}`,
+    '',
+    `Peça ${marca || 'de qualidade'} com garantia do fabricante.`,
+    '',
+    '✅ Por que comprar conosco?',
+    '• Peça original/equivalente de alta qualidade',
+    '• Encaixe perfeito — sem adaptações',
+    '• Nota fiscal em todas as compras',
+    '• Envio rápido e seguro para todo Brasil',
+    '• Suporte pós-venda via chat',
+    '',
+    `📋 Compatível com: ${compatTexto}`,
+    '',
+    partNumber ? `📦 Part Number: ${partNumber}` : '',
+    '',
+    'Não arrisque com peças de procedência duvidosa.',
+    'Compre com segurança e garantia!',
+  ].filter(Boolean).join('\n');
+
+  const descC = [
+    `${nome || ''} - ${marca || 'Original'}`,
+    partNumber ? `Part Number: ${partNumber}` : '',
+    `Condição: Novo, na caixa`,
+    `Compatibilidade: ${compatTexto}`,
+    `Garantia do fabricante`,
+    `Nota fiscal inclusa`,
+    `Envio em até 24h úteis`,
+    '',
+    'Consulte a tabela de compatibilidade para confirmar se serve no seu veículo.',
+  ].filter(Boolean).join('\n');
+
+  return [
+    { variacao:'A', foco:'Técnica (Especificações)',  descricao:descA, chars:descA.length },
+    { variacao:'B', foco:'Comercial (Benefícios)',    descricao:descB, chars:descB.length },
+    { variacao:'C', foco:'Direta (Objetiva)',         descricao:descC, chars:descC.length },
+  ];
+}
+
+// Similaridade de Jaccard entre dois títulos (0..1)
+function _jaccard(a, b) {
+  const wa = new Set(String(a).toLowerCase().trim().split(/\s+/).filter(Boolean));
+  const wb = new Set(String(b).toLowerCase().trim().split(/\s+/).filter(Boolean));
+  if (wa.size === 0 && wb.size === 0) return 1;
+  const inter = [...wa].filter(w => wb.has(w)).length;
+  const uni   = new Set([...wa, ...wb]).size;
+  return uni === 0 ? 0 : inter / uni;
+}
+
+async function verificarDuplicidadeSEO(titulo, token) {
+  const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+    headers:{ 'Authorization':'Bearer '+token },
+  });
+  const me = await meResp.json();
+  const itemsResp = await fetch(
+    `https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50`,
+    { headers:{ 'Authorization':'Bearer '+token }}
+  );
+  const itemsData = await itemsResp.json().catch(()=>({}));
+  const itemIds = itemsData.results || [];
+  if (itemIds.length === 0) {
+    return { duplicado:false, similaridade:0, tituloSimilar:null, aviso:'✅ Primeiro anúncio — sem duplicidade' };
+  }
+  const batch = itemIds.slice(0, 20).join(',');
+  const detResp = await fetch(`https://api.mercadolibre.com/items?ids=${batch}&attributes=title`, {
+    headers:{ 'Authorization':'Bearer '+token },
+  });
+  const det = await detResp.json().catch(()=>[]);
+  const titulos = Array.isArray(det) ? det.map(d => d.body?.title || '').filter(Boolean) : [];
+  let maxSim = 0, tituloSimilar = '';
+  for (const ex of titulos) {
+    const sim = _jaccard(titulo, ex);
+    if (sim > maxSim) { maxSim = sim; tituloSimilar = ex; }
+  }
+  const duplicado = maxSim > 0.6;
+  return {
+    duplicado,
+    similaridade: Math.round(maxSim * 100),
+    tituloSimilar: duplicado ? tituloSimilar : null,
+    aviso: duplicado
+      ? `⚠️ Título ${Math.round(maxSim*100)}% similar a "${tituloSimilar}" — ML pode penalizar`
+      : `✅ Título único (${Math.round(maxSim*100)}% máx de similaridade)`,
+  };
+}
+
 // Migração on-boot: se o .env tem ML_ACCESS_TOKEN mas tokens.json está vazio,
 // semeia o tokens.json com os valores do .env (só na primeira execução).
 function seedTokensFromEnv() {
@@ -1141,8 +1365,42 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           }
         } catch(_) {}
 
-        // 4) Título otimizado (ML limita 60)
-        let titulo = (produto.nome || '').trim();
+        // 4) Título + descrição otimizados via SEO (AUTOMÁTICO — IA faz tudo)
+        // Se o cliente mandou tituloOtimizado, respeita; senão gera.
+        let titulo = (body.tituloOtimizado || produto.nome || '').trim();
+        let descricaoPlain = null;
+        let seoInfo = null;
+        if (!body.tituloOtimizado) {
+          try {
+            const seoCompleto = await fetch(`http://127.0.0.1:${PORT}/api/seo/gerar-completo`, {
+              method:'POST',
+              headers:{ 'Authorization':'Bearer '+mlToken, 'Content-Type':'application/json' },
+              body: JSON.stringify({
+                nome: produto.nome,
+                marca: produto.marca?.nome || produto.marca || null,
+                partNumber: produto.codigo || null,
+                categoria: categoryId,
+                especificacoes: produto.descricaoCurta || null,
+                veiculosCompativeis: body.veiculosCompativeis || [],
+              }),
+            });
+            const seoData = await seoCompleto.json().catch(()=>({}));
+            if (seoData.success && seoData.recomendacao?.titulo?.titulo) {
+              titulo = seoData.recomendacao.titulo.titulo;
+              descricaoPlain = seoData.recomendacao.descricao?.descricao || null;
+              seoInfo = {
+                titulo_variacao: seoData.recomendacao.titulo.variacao,
+                descricao_variacao: seoData.recomendacao.descricao?.variacao,
+                motivo: seoData.recomendacao.motivo,
+                duplicidade: seoData.duplicidade,
+                todos_titulos: seoData.titulos,
+              };
+              console.log(`📝 SEO ${titulo} (${titulo.length}ch) · ${seoInfo.motivo}`);
+            }
+          } catch(err) {
+            console.error('📝 SEO erro:', err.message);
+          }
+        }
         if (titulo.length > 60) titulo = titulo.slice(0, 57) + '...';
 
         // 5) Body do anúncio
@@ -1150,6 +1408,9 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           .map(img => ({ source: img.link }))
           .filter(i => i.source);
         const estoque = produto.estoque?.saldoVirtualTotal ?? 1;
+        const descFinal = descricaoPlain
+          || produto.descricaoCurta
+          || (titulo + ' — produto novo, com garantia. Envio rápido para todo Brasil.');
         const anuncio = {
           title:       titulo,
           category_id: categoryId,
@@ -1159,7 +1420,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           buying_mode:  'buy_it_now',
           listing_type_id: 'gold_special',
           condition:    'new',
-          description:  { plain_text: (produto.descricaoCurta || titulo + ' — produto novo, com garantia. Envio rápido para todo Brasil.').slice(0, 50000) },
+          description:  { plain_text: String(descFinal).slice(0, 50000) },
           attributes:   requiredAttrs,
           pictures:     imagens,
         };
@@ -1721,6 +1982,80 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
     // Stats + histórico pro dashboard
     if (u.pathname === '/api/ml/compat/stats' && req.method === 'GET') {
       return send(res, 200, { success:true, ...compatStats });
+    }
+
+    // ============= SEO — GERADOR DE TÍTULOS + DESCRIÇÕES + ANTI-DUPLICIDADE =============
+    // Regras ML autopeças: máx 60 chars, técnica PMME, peça+marca+modelo+spec,
+    // sem preço/promoção/caps/caracteres especiais/palavras repetidas
+
+    // 3 variações de título
+    if (u.pathname === '/api/seo/gerar-titulos' && req.method === 'POST') {
+      try {
+        const { nome, marca, partNumber, categoria, veiculosCompativeis } = await readBody(req);
+        const titulos = gerarTitulosSEO({ nome, marca, partNumber, categoria, veiculosCompativeis });
+        return send(res, 200, { success:true, titulos });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // 3 variações de descrição
+    if (u.pathname === '/api/seo/gerar-descricoes' && req.method === 'POST') {
+      try {
+        const { nome, marca, partNumber, especificacoes, veiculosCompativeis } = await readBody(req);
+        const descricoes = gerarDescricoesSEO({ nome, marca, partNumber, especificacoes, veiculosCompativeis });
+        return send(res, 200, { success:true, descricoes });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Anti-duplicidade — similaridade Jaccard com meus anúncios ativos
+    if (u.pathname === '/api/seo/verificar-duplicidade' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { titulo } = await readBody(req);
+        const resultado = await verificarDuplicidadeSEO(titulo, token);
+        return send(res, 200, { success:true, ...resultado });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Gera tudo de uma vez: 3 títulos + 3 descrições + checagem duplicidade + recomendação
+    if (u.pathname === '/api/seo/gerar-completo' && req.method === 'POST') {
+      try {
+        const token = getMlToken();
+        const { nome, marca, partNumber, categoria, especificacoes, veiculosCompativeis } = await readBody(req);
+        const titulos = gerarTitulosSEO({ nome, marca, partNumber, categoria, veiculosCompativeis });
+        const descricoes = gerarDescricoesSEO({ nome, marca, partNumber, especificacoes, veiculosCompativeis });
+
+        let duplicidade = { duplicado:false, similaridade:0, tituloSimilar:null, aviso:'anti-duplicidade não executada (sem token)' };
+        if (token && titulos[0]) {
+          try { duplicidade = await verificarDuplicidadeSEO(titulos[0].titulo, token); } catch(_) {}
+        }
+
+        // Se título A é duplicado, tenta B; se B também, tenta C
+        let recTitulo = titulos[0];
+        let motivo = 'Título A é único — usando como principal';
+        if (duplicidade.duplicado && titulos[1]) {
+          const dupB = await verificarDuplicidadeSEO(titulos[1].titulo, token).catch(()=>({duplicado:false}));
+          if (!dupB.duplicado) {
+            recTitulo = titulos[1];
+            motivo = 'Título A era duplicado — usando variação B';
+          } else if (titulos[2]) {
+            recTitulo = titulos[2];
+            motivo = 'Títulos A e B eram duplicados — usando variação C';
+          }
+        }
+
+        return send(res, 200, {
+          success: true,
+          titulos,
+          descricoes,
+          duplicidade,
+          recomendacao: {
+            titulo: recTitulo,
+            descricao: descricoes[0],
+            motivo,
+          },
+        });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
     }
 
     // Estáticos
