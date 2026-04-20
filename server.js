@@ -617,7 +617,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/login') {
       env = loadEnv();
       const clientId    = process.env.ML_CLIENT_ID    || env.ML_CLIENT_ID;
-      const redirectUri = process.env.ML_REDIRECT_URI || env.ML_REDIRECT_URI || 'http://localhost:3000/callback';
+      const redirectUri = process.env.ML_REDIRECT_URI || env.ML_REDIRECT_URI || 'https://agentemarkt.com/callback';
       if (!clientId) return send(res, 400, 'Preencha ML_CLIENT_ID em .env', 'text/plain');
       const auth = 'https://auth.mercadolivre.com.br/authorization?' + new URLSearchParams({
         response_type:'code',
@@ -627,35 +627,59 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(302, { Location: auth }); return res.end();
     }
 
-    // Callback OAuth
-    if (u.pathname === '/callback') {
-      const code = u.query.code;
-      if (!code) return send(res, 400, 'Sem "code" na URL', 'text/plain');
+    // Callback OAuth — recebe ?code=TG-xxx, troca por access_token, salva e redireciona pro painel
+    if (u.pathname === '/callback' && req.method === 'GET') {
+      const code  = u.query.code;
+      const error = u.query.error;
+      // Se veio erro do ML (usuário cancelou/app inválido), redireciona com mensagem
+      if (error) {
+        const msg = encodeURIComponent(u.query.error_description || error);
+        res.writeHead(302, { Location:`/?ml_error=${msg}` });
+        return res.end();
+      }
+      if (!code) return send(res, 400, 'Sem "code" na URL — autorize primeiro em /login', 'text/plain');
       env = loadEnv();
       const clientId     = process.env.ML_CLIENT_ID     || env.ML_CLIENT_ID;
       const clientSecret = process.env.ML_CLIENT_SECRET || env.ML_CLIENT_SECRET;
-      const redirectUri  = process.env.ML_REDIRECT_URI  || env.ML_REDIRECT_URI || 'http://localhost:3000/callback';
-      const r = await fetch('https://api.mercadolibre.com/oauth/token', {
-        method:'POST',
-        headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
-        body: new URLSearchParams({
-          grant_type:'authorization_code',
-          client_id: clientId,
-          client_secret: clientSecret,
-          code,
-          redirect_uri: redirectUri,
-        }),
-      });
-      const data = await r.json();
-      if (!r.ok) return send(res, 400, data);
-      saveEnv({
-        ML_ACCESS_TOKEN: data.access_token,
-        ML_REFRESH_TOKEN: data.refresh_token,
-        ML_USER_ID: String(data.user_id),
-        ML_TOKEN_EXPIRES_AT: String(Date.now() + data.expires_in * 1000),
-      });
-      persistMLTokens(data);  // persistência adicional em tokens.json
-      res.writeHead(302, { Location:'/?connected=1' }); return res.end();
+      const redirectUri  = process.env.ML_REDIRECT_URI  || env.ML_REDIRECT_URI || 'https://agentemarkt.com/callback';
+      if (!clientId || !clientSecret) {
+        return send(res, 500, 'ML_CLIENT_ID/ML_CLIENT_SECRET não configurados no .env do servidor', 'text/plain');
+      }
+      try {
+        const r = await fetch('https://api.mercadolibre.com/oauth/token', {
+          method:'POST',
+          headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
+          body: new URLSearchParams({
+            grant_type:   'authorization_code',
+            client_id:    clientId,
+            client_secret:clientSecret,
+            code,
+            redirect_uri: redirectUri,
+          }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          const msg = encodeURIComponent(data.message || data.error || 'Falha ao trocar code por token');
+          console.error('[ml/callback] ❌', data);
+          res.writeHead(302, { Location:`/?ml_error=${msg}` });
+          return res.end();
+        }
+        saveEnv({
+          ML_ACCESS_TOKEN:     data.access_token,
+          ML_REFRESH_TOKEN:    data.refresh_token,
+          ML_USER_ID:          String(data.user_id),
+          ML_TOKEN_EXPIRES_AT: String(Date.now() + data.expires_in * 1000),
+        });
+        persistMLTokens(data);  // persistência adicional em tokens.json
+        console.log(`[ml/callback] ✅ conectado · user_id=${data.user_id}`);
+        res.writeHead(302, { Location:'/?connected=1&ml_user_id=' + encodeURIComponent(String(data.user_id)) });
+        return res.end();
+      } catch(err) {
+        console.error('[ml/callback] exceção:', err.message);
+        const msg = encodeURIComponent(err.message);
+        res.writeHead(302, { Location:`/?ml_error=${msg}` });
+        return res.end();
+      }
     }
 
     // ============= AUTENTICAÇÃO DO PAINEL (persistência em disco) =============
@@ -783,7 +807,7 @@ const server = http.createServer(async (req, res) => {
     // Categorias (teste rápido)
     if (u.pathname === '/api/categories') return send(res, 200, await ml('/sites/MLB/categories'));
 
-    // ============= ML OAuth — FLUXO SEMI-MANUAL (redirect = google.com) =============
+    // ============= ML OAuth — FLUXO SEMI-MANUAL (fallback: cola o code manualmente) =============
     // POST /api/ml/token — troca code por access_token + refresh_token + user info
     if (u.pathname === '/api/ml/token' && req.method === 'POST') {
       env = loadEnv();
@@ -793,7 +817,7 @@ const server = http.createServer(async (req, res) => {
 
       const clientId     = process.env.ML_CLIENT_ID     || env.ML_CLIENT_ID     || '3688973136843575';
       const clientSecret = process.env.ML_CLIENT_SECRET || env.ML_CLIENT_SECRET || 'wFVvYKcAFoaLedYEfUmnKnUN9vYQMcXW';
-      const redirectUri  = process.env.ML_REDIRECT_URI  || env.ML_REDIRECT_URI  || 'https://www.google.com';
+      const redirectUri  = process.env.ML_REDIRECT_URI  || env.ML_REDIRECT_URI  || 'https://agentemarkt.com/callback';
 
       try {
         const r = await fetch('https://api.mercadolibre.com/oauth/token', {

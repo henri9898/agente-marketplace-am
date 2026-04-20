@@ -1002,7 +1002,7 @@ const {ResponsiveContainer,BarChart,Bar,LineChart,Line,PieChart,Pie,Cell,XAxis,Y
 // ============================================================
 const ENV = {
   ML_CLIENT_ID:    '3688973136843575',
-  ML_REDIRECT_URI: 'https://www.google.com',
+  ML_REDIRECT_URI: 'https://agentemarkt.com/callback',
   ML_USER_ID:      '2947005156',
   FIPE_API:        'https://parallelum.com.br/fipe/api/v1',
 };
@@ -5627,16 +5627,16 @@ function MLConnectModal({onClose, onSuccess}){
         {step === 'intro' && (
           <>
             <p className="text-sm mb-3" style={{lineHeight:1.5}}>
-              Vamos abrir a tela oficial do Mercado Livre em uma nova aba. Após autorizar, você será redirecionado para <span className="mono" style={{color:'var(--green)'}}>google.com</span> com um parâmetro <span className="mono">?code=XXXX</span> na URL.
+              Vamos abrir a tela oficial do Mercado Livre em uma nova aba. Após autorizar, o sistema conecta automaticamente — você volta pro painel já logado.
             </p>
             <div className="card2 p-3 mb-4 text-xs" style={{lineHeight:1.5}}>
               <div className="font-bold mb-1">📋 Passo a passo:</div>
               <ol className="sub" style={{paddingLeft:18, listStyle:'decimal'}}>
                 <li>Clique em <b>"Abrir tela do ML"</b></li>
                 <li>Autorize o app no Mercado Livre</li>
-                <li>Copie a URL completa (ou só o <span className="mono">code=...</span>)</li>
-                <li>Cole aqui e clique em <b>Conectar</b></li>
+                <li>Pronto — você é redirecionado de volta pro painel, já conectado ✅</li>
               </ol>
+              <div className="sub mt-2">Se o redirect automático falhar, você ainda pode colar a URL manualmente no passo seguinte.</div>
             </div>
             <div className="flex gap-2">
               <button className="btn-ghost" style={{flex:1}} onClick={onClose}>Cancelar</button>
@@ -5647,12 +5647,12 @@ function MLConnectModal({onClose, onSuccess}){
 
         {step === 'paste' && (
           <>
-            <p className="sub text-xs mb-3">Cole abaixo a URL inteira que o Google abriu (ou apenas o valor depois de <span className="mono">code=</span>).</p>
+            <p className="sub text-xs mb-3">Se o redirect automático falhar, cole aqui a URL que abriu (ou só o valor depois de <span className="mono">code=</span>).</p>
             <label className="label">Code ou URL completa</label>
             <textarea
               className="input mono text-[12px]"
               rows={3}
-              placeholder="https://www.google.com/?code=TG-xxxxxx..."
+              placeholder="https://agentemarkt.com/callback?code=TG-xxxxxx..."
               value={code}
               onChange={e=>setCode(e.target.value)}
             />
@@ -5852,7 +5852,7 @@ function MLDestinationCard({mlTokens, setMlTokens, notif}){
           <div className="mb-3">
             <div className="font-bold text-[13px] mb-2">
               <span style={{background:'var(--green)', color:'#fff', borderRadius:'50%', width:22, height:22, display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:11, marginRight:8}}>2</span>
-              Depois de autorizar, copie o código que aparece na URL do Google (depois de <span className="mono" style={{color:'var(--green)'}}>?code=</span>) e cole aqui:
+              Após autorizar, o sistema conecta automaticamente. Caso precise colar o código manualmente (fallback), use o campo abaixo:
             </div>
             <div className="flex gap-2 flex-wrap">
               <input
@@ -6727,10 +6727,44 @@ function Dashboard({user, onLogout}){
   // (funciona se o redirect_uri apontar pra esta aba, ou se o usuário colar a URL)
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
-    const code = sp.get('code');
+    const code      = sp.get('code');
+    const connected = sp.get('connected');
+    const mlUserId  = sp.get('ml_user_id');
+    const mlError   = sp.get('ml_error');
+
+    // Caso 1: server já trocou o code e redirecionou com ?connected=1
+    // (fluxo totalmente automático via GET /callback)
+    if (connected === '1') {
+      (async () => {
+        try {
+          // Puxa o token que o server salvou em tokens.json
+          const r = await fetch('/api/tokens/ml');
+          const j = await r.json().catch(()=>({}));
+          if (j.success && j.access_token) {
+            saveMLTokens({
+              access_token: j.access_token,
+              user_id:      j.user_id || mlUserId || null,
+              expires_at:   j.expires_at || null,
+            });
+            notif.push(buildNotification('publicado', { ml_id: '✅ ML conectado automaticamente · user_id ' + (j.user_id || mlUserId || '?') }));
+          }
+        } catch(e) { console.warn('sync tokens /api/tokens/ml:', e); }
+        finally { window.history.replaceState({}, '', window.location.pathname); }
+      })();
+      return;
+    }
+
+    // Caso 2: server retornou erro na troca (redirect_uri_mismatch, invalid_grant, etc)
+    if (mlError) {
+      notif.push(buildNotification('problema', { score: 0 }));
+      console.warn('ML OAuth erro:', decodeURIComponent(mlError));
+      window.history.replaceState({}, '', window.location.pathname);
+      return;
+    }
+
+    // Caso 3: caiu aqui com ?code= direto (fallback — aba front recebeu o redirect)
     if (!code) return;
     if (loadMLTokens()) {
-      // já conectado — só limpa a URL
       window.history.replaceState({}, '', window.location.pathname);
       return;
     }
@@ -6743,7 +6777,6 @@ function Dashboard({user, onLogout}){
         notif.push(buildNotification('problema', { score: 0 }));
         console.warn('OAuth callback falhou:', e);
       } finally {
-        // limpa o ?code= da barra de endereço
         window.history.replaceState({}, '', window.location.pathname);
       }
     })();
