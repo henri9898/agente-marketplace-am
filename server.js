@@ -1072,6 +1072,26 @@ async function ml(pathname, opts={}) {
 const server = http.createServer(async (req, res) => {
   const u = url.parse(req.url, true);
   try {
+    // ============= PWA MANIFEST =============
+    if (u.pathname === '/manifest.json' && req.method === 'GET') {
+      return send(res, 200, {
+        name: 'Agente Marketplace',
+        short_name: 'AM',
+        description: 'Agente autônomo de autopeças para Mercado Livre',
+        start_url: '/',
+        scope: '/',
+        display: 'standalone',
+        orientation: 'portrait',
+        background_color: '#0a0a1a',
+        theme_color: '#16a34a',
+        lang: 'pt-BR',
+        icons: [
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+        ],
+      });
+    }
+
     // ============= WEBHOOK ML — PRIORIDADE MÁXIMA =============
     // Responde 200 em < 500ms e processa em background.
     // URL pública: https://agentemarkt.com/webhooks

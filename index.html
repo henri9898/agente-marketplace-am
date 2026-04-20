@@ -2,7 +2,13 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Agente Marketplace"/>
+<meta name="theme-color" content="#0a0a1a"/>
+<link rel="manifest" href="/manifest.json"/>
 <title>Agente Marketplace — Painel de Controle</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -986,6 +992,210 @@
     }
     .menu-item { padding: 12px 14px; font-size: 14px; }
     .menu-item .item-icon { font-size: 18px; width: 22px; }
+  }
+
+  /* ============================================================
+     MOBILE RESPONSIVE — NÍVEL INSTAGRAM/STRIPE/AIRBNB
+     Desktop fica intacto; apenas <768px sofre esses overrides
+     ============================================================ */
+
+  /* Bottom nav só aparece no mobile */
+  .mobile-bottom-nav { display: none; }
+
+  @media (max-width: 768px) {
+
+    /* ---- HEADER MOBILE: compacto, sem wrap horizontal ---- */
+    /* Esconde as abas no header (ficam na bottom nav) */
+    .desktop-header-tabs { display: none !important; }
+    /* Header fica mais compacto */
+    header .max-w-\[1400px\] {
+      padding: 8px 12px !important;
+      gap: 8px !important;
+    }
+    /* Logo + label: esconde o texto longo no mobile */
+    header .hide-on-mobile { display: none !important; }
+
+    /* ---- BOTTOM NAV (estilo Instagram/Airbnb) ---- */
+    .mobile-bottom-nav {
+      display: flex;
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: var(--card2);
+      border-top: 1px solid var(--line);
+      padding: 4px 0;
+      padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+      z-index: 9999;
+      justify-content: space-around;
+      align-items: stretch;
+      box-shadow: 0 -4px 16px rgba(0,0,0,.45);
+    }
+    .mobile-bottom-nav button {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      background: none;
+      border: none;
+      color: #888;
+      font-size: 10px;
+      padding: 8px 4px;
+      min-width: 48px;
+      min-height: 52px;
+      cursor: pointer;
+      transition: color .18s, transform .18s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .mobile-bottom-nav button:active { transform: scale(.92); }
+    .mobile-bottom-nav button.active {
+      color: var(--green);
+    }
+    .mobile-bottom-nav button.active .nav-icon {
+      filter: drop-shadow(0 0 8px rgba(0,167,255,.55));
+    }
+    .mobile-bottom-nav .nav-icon {
+      font-size: 22px;
+      line-height: 1;
+    }
+    .mobile-bottom-nav .nav-label {
+      font-weight: 600;
+      letter-spacing: .2px;
+    }
+
+    /* Empurra o conteúdo pro conteúdo não ficar atrás da bottom nav */
+    main { padding-bottom: 88px !important; }
+
+    /* ---- GRIDS: 1 coluna no mobile ---- */
+    .grid.grid-cols-2,
+    .grid.grid-cols-3,
+    .grid.grid-cols-4,
+    .grid.grid-cols-5 {
+      grid-template-columns: 1fr !important;
+      gap: 12px !important;
+    }
+    /* KPIs: 2 por linha, compactos */
+    .grid.grid-cols-5 > .kpi,
+    .grid.grid-cols-4 > .kpi,
+    .grid.grid-cols-5 .card.kpi {
+      padding: 12px !important;
+    }
+    /* Se tiver KPIs (Produtos/Anúncios/Vendas/Receita/Publicados) faz 2 cols */
+    .grid.grid-cols-5 {
+      grid-template-columns: 1fr 1fr !important;
+    }
+    .grid.grid-cols-5 > *:nth-child(5) {
+      grid-column: span 2;
+    }
+
+    /* ---- CARDS ---- */
+    .card {
+      border-radius: 12px !important;
+      padding: 14px !important;
+    }
+    .card h1, .card h2, .card h3 { line-height: 1.25; }
+
+    /* ---- TABELAS viram cards no mobile ---- */
+    table {
+      display: block !important;
+      overflow-x: auto !important;
+      -webkit-overflow-scrolling: touch;
+      width: 100%;
+    }
+    table thead { display: none !important; }
+    table tbody { display: block !important; width: 100%; }
+    table tbody tr {
+      display: block !important;
+      background: rgba(255,255,255,.03);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      border: 1px solid var(--line);
+    }
+    table tbody td {
+      display: flex !important;
+      justify-content: space-between;
+      align-items: center;
+      padding: 4px 0 !important;
+      border: none !important;
+      font-size: 13px !important;
+      gap: 8px;
+    }
+    table tbody td:first-child { font-weight: 600; }
+    /* Se o dev colocar data-label no <td>, vira rótulo no mobile */
+    table tbody td[data-label]::before {
+      content: attr(data-label);
+      font-weight: 600;
+      color: var(--mut);
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+
+    /* ---- CHARTS compactos ---- */
+    .recharts-responsive-container {
+      max-height: 220px !important;
+    }
+
+    /* ---- MODAIS full-screen no mobile ---- */
+    /* Modais criados inline com position:fixed já aparecem fullscreen.
+       Aqui só garantimos o card interno use 100%. */
+    [style*="position:fixed"] > .card,
+    [style*="position: fixed"] > .card {
+      max-width: 100% !important;
+      width: 100% !important;
+      max-height: 100vh !important;
+      border-radius: 0 !important;
+      margin: 0 !important;
+    }
+
+    /* ---- INPUTS e BOTÕES touch-friendly ---- */
+    input, select, textarea, .input {
+      font-size: 16px !important;  /* evita zoom iOS */
+      min-height: 44px;
+      padding: 12px !important;
+      border-radius: 10px !important;
+    }
+    button, .btn, .btn-ghost {
+      min-height: 44px;
+      min-width: 44px;
+      padding: 10px 16px !important;
+      font-size: 14px !important;
+      border-radius: 10px !important;
+      touch-action: manipulation;
+    }
+
+    /* ---- TIPOGRAFIA ---- */
+    body { font-size: 14px; }
+    h1, .text-2xl { font-size: 22px !important; line-height: 1.2; }
+    h2, .text-xl  { font-size: 19px !important; line-height: 1.25; }
+    h3, .text-lg  { font-size: 16px !important; line-height: 1.3; }
+
+    /* ---- LOGIN MOBILE: esconde mascote, full-width ---- */
+    .login-mascot-col { display: none !important; }
+    .login-form-col { width: 100% !important; max-width: 100% !important; padding: 20px 16px !important; }
+
+    /* ---- SAFE AREAS (notch iPhone) ---- */
+    body {
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-left: env(safe-area-inset-left, 0px);
+      padding-right: env(safe-area-inset-right, 0px);
+    }
+
+    /* ---- DROPDOWN PERFIL: vira bottom sheet ---- */
+    .profile-dropdown {
+      position: fixed !important;
+      top: auto !important;
+      bottom: 76px !important;  /* fica acima da bottom nav */
+      left: 8px !important;
+      right: 8px !important;
+      max-height: 70vh !important;
+      border-radius: 16px !important;
+    }
+  }
+
+  /* Desktop >= 769px */
+  @media (min-width: 769px) {
+    .mobile-bottom-nav { display: none !important; }
   }
 </style>
 </head>
@@ -2573,10 +2783,10 @@ function AuthShell({title, subtitle, children, footerContent, eyesCovered}){
     <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
       <AuthBackground/>
       <div className="w-full max-w-[1000px] grid md:grid-cols-[2fr_3fr] gap-10 items-center relative" style={{zIndex:1}}>
-        <div className="flex justify-center order-first md:order-none">
+        <div className="login-mascot-col flex justify-center order-first md:order-none">
           <Mascot eyesCovered={eyesCovered}/>
         </div>
-        <div className="w-full max-w-[440px] mx-auto md:mx-0">
+        <div className="login-form-col w-full max-w-[440px] mx-auto md:mx-0">
           <div className="flex flex-col items-center md:items-start mb-7">
             <div className="logo-ml">AM</div>
             <h1 className="mt-4 text-xl font-extrabold">Agente Marketplace</h1>
@@ -3369,12 +3579,12 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
       <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center gap-6">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-[var(--green)] flex items-center justify-center text-white font-extrabold text-sm">AM</div>
-          <div>
+          <div className="hide-on-mobile">
             <div className="text-[13px] font-bold tracking-wide">AGENTE MARKETPLACE</div>
             <div className="text-[10px] sub mono">painel de operação</div>
           </div>
         </div>
-        <nav className="flex gap-1 ml-6">
+        <nav className="desktop-header-tabs flex gap-1 ml-6">
           {tabs.map(([k,lbl])=>(
             <div key={k} className={`tab ${tab===k?'active':''}`} onClick={()=>setTab(k)}>{lbl}</div>
           ))}
@@ -3392,6 +3602,34 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
         </div>
       </div>
     </header>
+  );
+}
+
+// ======= MOBILE BOTTOM NAV (estilo Instagram/Airbnb) =======
+// 5 abas principais; as demais (Anúncios, Ranking, Saúde, Integrações) continuam no ProfileDropdown
+function MobileBottomNav({ tab, setTab }){
+  const items = [
+    { key:'overview', icon:'🏠', label:'Início' },
+    { key:'products', icon:'📦', label:'Produtos' },
+    { key:'agent',    icon:'🤖', label:'Agente' },
+    { key:'pricing',  icon:'💰', label:'Preço' },
+    { key:'config',   icon:'⚙️', label:'Config' },
+  ];
+  return (
+    <nav className="mobile-bottom-nav" role="navigation" aria-label="Navegação principal">
+      {items.map(it => (
+        <button
+          key={it.key}
+          className={tab === it.key ? 'active' : ''}
+          onClick={() => setTab(it.key)}
+          aria-current={tab === it.key ? 'page' : undefined}
+          aria-label={it.label}
+        >
+          <span className="nav-icon">{it.icon}</span>
+          <span className="nav-label">{it.label}</span>
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -8175,6 +8413,9 @@ function Dashboard({user, onLogout}){
           <span className="mono">logado como {user.email}</span>
         </div>
       </footer>
+
+      {/* Bottom nav — aparece só no mobile (CSS esconde em desktop) */}
+      <MobileBottomNav tab={tab} setTab={setTab}/>
 
       {/* Toasts e painel — globais ao dashboard */}
       <NotificationToasts items={notif.active} onClose={notif.dismissToast}/>
