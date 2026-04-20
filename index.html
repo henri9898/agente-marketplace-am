@@ -81,6 +81,7 @@
     to   { opacity: 1; transform: scale(1) rotate(0deg); }
   }
   @keyframes spin-slow { to { transform: rotate(360deg); } }
+  @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
   @keyframes float-up {
     0%   { transform: translateY(10vh) translateX(0); opacity: 0; }
     15%  { opacity: var(--op,.07); }
@@ -3477,6 +3478,267 @@ function CompatCard({ compat }){
   );
 }
 
+// =============== WEBHOOKS ML — TEMPO REAL ===============
+function useWebhooks(){
+  const [status, setStatus]   = useState(null);
+  const [vendas, setVendas]   = useState(null);
+  const [perdidas, setPerdidas] = useState(null);
+  const [busy, setBusy]       = useState(false);
+  const lastVendaIdRef        = useRef(null);
+  const [novaVendaToast, setNovaVendaToast] = useState(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [sR, vR] = await Promise.all([
+        fetch('/api/webhooks/status'),
+        fetch('/api/webhooks/vendas'),
+      ]);
+      const sJ = await sR.json().catch(()=>null);
+      const vJ = await vR.json().catch(()=>null);
+      if (sJ?.success) setStatus(sJ);
+      if (vJ?.success) {
+        setVendas(vJ);
+        // Detectar venda nova (primeira vez que carrega NÃO mostra)
+        const primeira = vJ.vendas?.[0];
+        if (primeira) {
+          if (lastVendaIdRef.current != null && primeira.orderId !== lastVendaIdRef.current) {
+            setNovaVendaToast({
+              valor: primeira.valor,
+              item: primeira.items?.[0]?.titulo || 'venda ML',
+              orderId: primeira.orderId,
+              ts: Date.now(),
+            });
+            // Som (se disponível)
+            try { new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAD//wA=').play().catch(()=>{}); } catch(_){}
+          }
+          lastVendaIdRef.current = primeira.orderId;
+        }
+      }
+    } catch(_){}
+  }, []);
+
+  const checkPerdidas = useCallback(async () => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/webhooks/perdidas', { headers:{ 'Authorization':'Bearer '+ml.access_token }});
+      const d = await r.json().catch(()=>null);
+      if (d?.success) setPerdidas(d.perdidas);
+    } catch(_){}
+    finally { setBusy(false); }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return { status, vendas, perdidas, busy, refresh, checkPerdidas, novaVendaToast, setNovaVendaToast };
+}
+
+// Card de status dos webhooks
+function WebhooksCard({ wh, onOpenInstrucoes }){
+  const s = wh.status;
+  const configurado = (s?.stats?.total || 0) > 0;
+  const total = s?.stats?.total || 0;
+  const porTopic = s?.stats?.porTopic || {};
+  const ultimo = s?.stats?.ultimoRecebido ? new Date(s.stats.ultimoRecebido) : null;
+  const hAgo = (d) => {
+    if (!d) return null;
+    const diff = (Date.now() - d.getTime()) / 60000;
+    if (diff < 1) return 'agora';
+    if (diff < 60) return `há ${Math.round(diff)} min`;
+    if (diff < 1440) return `há ${Math.round(diff/60)} h`;
+    return `há ${Math.round(diff/1440)} d`;
+  };
+  return (
+    <div className="card p-5 mb-6" style={{borderColor: configurado ? 'rgba(34,197,94,.35)' : 'rgba(234,179,8,.45)'}}>
+      <div className="flex items-start gap-4 flex-wrap">
+        <div className="text-3xl">🔔</div>
+        <div className="flex-1 min-w-[260px]">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-bold">Notificações em tempo real (Webhooks ML)</h3>
+            {configurado
+              ? <span className="chip" style={{color:'var(--green)',borderColor:'rgba(34,197,94,.5)',fontSize:11}}>✅ Ativos</span>
+              : <span className="chip" style={{color:'var(--yellow)',borderColor:'rgba(234,179,8,.5)',fontSize:11}}>⚠️ Não configurados</span>}
+          </div>
+          <p className="sub text-xs mt-1">
+            {configurado
+              ? <>📊 <span className="mono" style={{color:'var(--green)'}}>{total}</span> notificações recebidas · último {hAgo(ultimo) || '—'}</>
+              : <>Você está perdendo vendas em tempo real. Configure em 2 minutos.</>}
+          </p>
+          {configurado && Object.keys(porTopic).length > 0 && (
+            <div className="flex gap-2 flex-wrap mt-2 text-[11px] mono">
+              {Object.entries(porTopic).map(([t,c]) => (
+                <span key={t} className="chip" style={{fontSize:10, padding:'1px 6px'}}>
+                  {t === 'questions' && '💬'} {t === 'orders_v2' && '🛒'} {t === 'payments' && '💳'}
+                  {t === 'items' && '📦'} {t === 'shipments' && '🚚'} {t === 'messages' && '✉️'}
+                  {t === 'claims' && '⚠️'} {t}: {c}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <button className="btn-ghost" onClick={wh.refresh}>🔄 Atualizar</button>
+          <button className="btn-ghost" onClick={wh.checkPerdidas} disabled={wh.busy}>
+            {wh.busy ? '🔄 ...' : '🔍 Perdidas'}
+          </button>
+          <button className="btn" style={{width:'auto', padding:'10px 16px'}} onClick={onOpenInstrucoes}>
+            📋 Configurar no ML
+          </button>
+        </div>
+      </div>
+      {wh.perdidas && (
+        <div className="card2 p-3 mt-3 text-xs">
+          <div className="sub mb-1">🔍 missed_feeds — notificações que o ML não entregou:</div>
+          <pre className="mono text-[10px]" style={{whiteSpace:'pre-wrap',maxHeight:120,overflow:'auto',margin:0}}>
+{JSON.stringify(wh.perdidas, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Card de vendas recentes (alimentado pelos webhooks orders_v2)
+function VendasRecentesCard({ wh }){
+  const v = wh.vendas;
+  if (!v) return null;
+  const lista = (v.vendas || []).slice(0, 5);
+  return (
+    <div className="card p-5 mb-6">
+      <div className="flex items-center justify-between flex-wrap mb-3 gap-2">
+        <h3 className="font-bold">🛒 Vendas Recentes (via webhook)</h3>
+        {v.hoje && (
+          <div className="text-sm">
+            <span className="sub">Hoje:</span>{' '}
+            <span className="mono font-bold" style={{color:'var(--green)'}}>{fmt(v.hoje.valor || 0)}</span>
+            <span className="sub"> · {v.hoje.count} venda(s)</span>
+          </div>
+        )}
+      </div>
+      {lista.length === 0 && (
+        <div className="sub text-sm py-3">
+          Nenhuma venda registrada ainda. Quando o ML enviar o webhook orders_v2, aparece aqui em tempo real.
+        </div>
+      )}
+      {lista.map(venda => {
+        const tempo = new Date(venda.data);
+        const diff = (Date.now() - tempo.getTime()) / 60000;
+        const ago = diff < 1 ? 'agora mesmo'
+                  : diff < 60 ? `há ${Math.round(diff)} min`
+                  : diff < 1440 ? `há ${Math.round(diff/60)} h`
+                  : `há ${Math.round(diff/1440)} d`;
+        return (
+          <div key={venda.orderId} className="card2 p-3 mb-2">
+            <div className="flex items-start gap-3 flex-wrap">
+              <div className="text-xl">💰</div>
+              <div className="flex-1 min-w-[200px]">
+                <div className="font-bold mono" style={{color:'var(--green)'}}>
+                  {fmt(venda.valor || 0)}
+                </div>
+                <div className="text-sm">{venda.items?.[0]?.titulo || `Pedido #${venda.orderId}`}</div>
+                <div className="sub text-[11px] mt-1">
+                  {ago} · Comprador: <span className="mono">{venda.comprador}</span>
+                  {venda.items?.length > 1 && <> · +{venda.items.length - 1} item(s)</>}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Toast de nova venda (aparece 6s no canto superior direito)
+function NovaVendaToast({ toast, onClose }){
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(onClose, 6000);
+    return () => clearTimeout(id);
+  }, [toast, onClose]);
+  if (!toast) return null;
+  return (
+    <div style={{
+      position:'fixed', top:80, right:24, zIndex:200,
+      background:'#0e0e0e', border:'1px solid rgba(34,197,94,.55)',
+      borderRadius:12, padding:'16px 20px', minWidth:320,
+      boxShadow:'0 12px 36px -8px rgba(34,197,94,.5)',
+      animation: 'slideIn .3s ease-out',
+    }}>
+      <div className="flex items-start gap-3">
+        <div className="text-3xl">💰</div>
+        <div className="flex-1">
+          <div className="font-bold mono text-lg" style={{color:'var(--green)'}}>
+            NOVA VENDA! {fmt(toast.valor || 0)}
+          </div>
+          <div className="text-sm mt-1">{toast.item}</div>
+          <div className="sub text-[11px] mt-1 mono">Pedido #{toast.orderId}</div>
+        </div>
+        <button onClick={onClose} className="btn-ghost" style={{padding:'2px 8px', fontSize:14}}>✕</button>
+      </div>
+    </div>
+  );
+}
+
+// Modal de instruções pra configurar webhook no DevCenter ML
+function WebhooksInstrucoesModal({ onClose }){
+  const [copied, setCopied] = useState(false);
+  const url = 'https://agentemarkt.com/webhooks';
+  const copyUrl = async () => {
+    try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(()=>setCopied(false), 2000); }
+    catch(_){}
+  };
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.72)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div onClick={e=>e.stopPropagation()} className="card" style={{maxWidth:560, width:'100%', padding:24}}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold text-lg">📋 Configurar Webhooks no ML</h3>
+          <button className="btn-ghost" onClick={onClose} style={{padding:'4px 10px'}}>✕</button>
+        </div>
+
+        <div className="sub text-xs mb-4">
+          ML precisa enviar notificações pra você receber pedidos/perguntas em tempo real. Configure uma vez e funciona pra sempre.
+        </div>
+
+        <ol className="space-y-3 text-sm" style={{listStyle:'decimal', paddingLeft:20}}>
+          <li>Abra <a href="https://developers.mercadolivre.com.br/devcenter" target="_blank" rel="noopener" className="link mono">developers.mercadolivre.com.br/devcenter</a></li>
+          <li>Clique no seu app (<span className="mono" style={{color:'var(--green)'}}>3688973136843575</span>)</li>
+          <li>
+            No campo <b>"Notifications Callback URL"</b>:
+            <div className="card2 p-2 mt-1 flex items-center gap-2">
+              <span className="mono text-[12px] flex-1">{url}</span>
+              <button className="btn-ghost" style={{padding:'4px 10px'}} onClick={copyUrl}>{copied ? '✅ copiado' : '📋 copiar'}</button>
+            </div>
+          </li>
+          <li>
+            Marque os topics:
+            <div className="mt-2 flex gap-2 flex-wrap">
+              {['items','questions','orders_v2','payments','shipments','messages','claims'].map(t => (
+                <span key={t} className="chip mono" style={{fontSize:11}}>☑ {t}</span>
+              ))}
+            </div>
+          </li>
+          <li>Clique em <b>Salvar</b></li>
+        </ol>
+
+        <div className="ok mt-4 text-xs">
+          ✅ Pronto! O ML vai enviar notificações em tempo real. Resposta em menos de 500ms (obrigatório, senão o ML desativa o topic).
+        </div>
+
+        <div className="flex gap-2 mt-4 justify-end">
+          <button className="btn-ghost" onClick={onClose} style={{padding:'8px 14px'}}>Fechar</button>
+          <button className="btn" onClick={onClose} style={{padding:'8px 14px'}}>✅ Já configurei</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // =============== SAC — PERGUNTAS AUTOMÁTICAS ===============
 const SAC_CFG_KEY = 'sac_config';
 function loadSACCfg(){
@@ -4122,6 +4384,8 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
   const [sacOpen, setSacOpen] = useState(false);
   const estoque = useEstoque();
   const [estoqueOpen, setEstoqueOpen] = useState(false);
+  const wh = useWebhooks();
+  const [whOpen, setWhOpen] = useState(false);
 
   const focusData = [
     {foco:'SEO', CTR:0, Conversão:0},
@@ -4224,6 +4488,11 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
         <EstoqueCard estoque={estoque} onExpand={() => setEstoqueOpen(true)}/>
       )}
       {estoqueOpen && <EstoquePanel estoque={estoque} onClose={() => setEstoqueOpen(false)}/>}
+
+      {hasReal && <WebhooksCard wh={wh} onOpenInstrucoes={() => setWhOpen(true)}/>}
+      {hasReal && <VendasRecentesCard wh={wh}/>}
+      {whOpen && <WebhooksInstrucoesModal onClose={() => setWhOpen(false)}/>}
+      <NovaVendaToast toast={wh.novaVendaToast} onClose={() => wh.setNovaVendaToast(null)}/>
 
       {hasReal && ml.data.orders.recent?.length > 0 && (
         <div className="card p-5 mb-6">

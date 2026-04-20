@@ -411,6 +411,155 @@ setInterval(rodarMonitorEstoque, 30 * 60 * 1000);
 setTimeout(rodarMonitorEstoque, 60_000);
 
 // ============================================================
+// WEBHOOKS ML — processamento assíncrono (chamado por /webhooks)
+// Stats em global.webhookStats · vendas em global.vendasRecentes
+// ============================================================
+global.webhookStats   = global.webhookStats   || { total:0, porTopic:{}, historico:[], ultimoRecebido:null };
+global.vendasRecentes = global.vendasRecentes || [];
+
+async function processarWebhookML(notification, headers) {
+  if (!notification || typeof notification !== 'object') return;
+  const { resource, topic, user_id, attempts, sent, received } = notification;
+  if (!topic || !resource) return;
+
+  // Log IP (útil se o usuário quiser whitelistar)
+  const ip = headers?.['x-forwarded-for']?.split(',')[0]?.trim() || headers?.['x-real-ip'] || 'direto';
+  console.log(`🔔 Webhook [${topic}]: ${resource} · ip=${ip} · attempts=${attempts||1}`);
+
+  // Stats
+  global.webhookStats.total++;
+  global.webhookStats.porTopic[topic] = (global.webhookStats.porTopic[topic] || 0) + 1;
+  global.webhookStats.ultimoRecebido = new Date().toISOString();
+  const entry = { topic, resource, user_id, recebido: new Date().toISOString(), processado: false };
+  global.webhookStats.historico.unshift(entry);
+  if (global.webhookStats.historico.length > 100) global.webhookStats.historico = global.webhookStats.historico.slice(0, 100);
+
+  const tokens = loadTokens();
+  const mlToken = tokens.ml_access_token;
+  if (!mlToken) {
+    console.log('🔔 sem token ML — evento registrado mas não processado');
+    return;
+  }
+
+  try {
+    switch (topic) {
+      // ----- Nova pergunta: auto-responde em tempo real via SAC -----
+      case 'questions': {
+        const qResp = await fetch(`https://api.mercadolibre.com${resource}`, {
+          headers:{ 'Authorization':'Bearer '+mlToken }});
+        const question = await qResp.json();
+        if (question.status === 'UNANSWERED' && question.text) {
+          const base = `http://127.0.0.1:${PORT}`;
+          const autoR = await fetch(`${base}/api/ml/sac/auto-responder`, {
+            method:'POST',
+            headers:{ 'Authorization':'Bearer '+mlToken, 'Content-Type':'application/json' },
+            body: JSON.stringify({ questionId: question.id, pergunta: question.text, itemId: question.item_id }),
+          });
+          const autoD = await autoR.json();
+          if (autoD.success) {
+            const sendR = await fetch(`${base}/api/ml/sac/responder`, {
+              method:'POST',
+              headers:{ 'Authorization':'Bearer '+mlToken, 'Content-Type':'application/json' },
+              body: JSON.stringify({ questionId: question.id, texto: autoD.respostaGerada }),
+            });
+            const sendD = await sendR.json();
+            console.log(`🔔💬 RT: "${(question.text||'').slice(0,50)}..." → ${autoD.categoriaDetectada} → ${sendD.success ? '✅' : '❌'}`);
+            sacStats.tentativas++;
+            if (sendD.success) {
+              sacStats.respondidas++;
+              sacStats.historico.unshift({
+                ts: new Date().toISOString(), questionId: question.id,
+                pergunta: (question.text||'').slice(0,80),
+                categoria: autoD.categoriaDetectada, enviada: true, viaWebhook: true,
+              });
+              sacStats.historico = sacStats.historico.slice(0, 50);
+            } else { sacStats.falhas++; }
+            sacStats.ultima = new Date().toISOString();
+          }
+        }
+        break;
+      }
+
+      // ----- Pedido: detecta venda paga e registra -----
+      case 'orders_v2': {
+        const oR = await fetch(`https://api.mercadolibre.com${resource}`, {
+          headers:{ 'Authorization':'Bearer '+mlToken }});
+        const order = await oR.json();
+        if (order.status === 'paid') {
+          console.log(`🔔🛒💰 VENDA CONFIRMADA! #${order.id} — R$ ${Number(order.total_amount||0).toFixed(2)}`);
+          global.vendasRecentes.unshift({
+            orderId:  order.id,
+            valor:    order.total_amount,
+            data:     new Date().toISOString(),
+            items:    (order.order_items || []).map(i => ({
+              titulo:     i.item?.title,
+              quantidade: i.quantity,
+              preco:      i.unit_price,
+            })),
+            comprador: order.buyer?.nickname || 'N/A',
+          });
+          if (global.vendasRecentes.length > 50) global.vendasRecentes = global.vendasRecentes.slice(0, 50);
+        } else {
+          console.log(`🔔🛒 Pedido #${order.id} status=${order.status}`);
+        }
+        break;
+      }
+
+      // ----- Pagamento -----
+      case 'payments': {
+        const pR = await fetch(`https://api.mercadolibre.com${resource}`, {
+          headers:{ 'Authorization':'Bearer '+mlToken }});
+        const payment = await pR.json();
+        console.log(`🔔💳 Pag ${payment.id}: ${payment.status} · R$${payment.transaction_amount}`);
+        break;
+      }
+
+      // ----- Item alterado (status/estoque/preço) -----
+      case 'items': {
+        const iR = await fetch(`https://api.mercadolibre.com${resource}`, {
+          headers:{ 'Authorization':'Bearer '+mlToken }});
+        const item = await iR.json();
+        console.log(`🔔📦 ${item.id}: status=${item.status}, estoque=${item.available_quantity}, preço=R$${item.price}`);
+        if (item.status === 'under_review') {
+          console.log(`🔔🚨 ALERTA: ${item.id} sob revisão do ML!`);
+        }
+        break;
+      }
+
+      // ----- Envio -----
+      case 'shipments': {
+        const sR = await fetch(`https://api.mercadolibre.com${resource}`, {
+          headers:{ 'Authorization':'Bearer '+mlToken, 'x-format-new':'true' }});
+        const shipment = await sR.json();
+        console.log(`🔔🚚 Envio ${shipment.id}: ${shipment.status}/${shipment.substatus || '-'}`);
+        break;
+      }
+
+      // ----- Mensagem pós-venda -----
+      case 'messages': {
+        console.log(`🔔✉️ msg: ${resource}`);
+        break;
+      }
+
+      // ----- Reclamação -----
+      case 'claims': {
+        console.log(`🔔⚠️ RECLAMAÇÃO: ${resource}`);
+        break;
+      }
+
+      default:
+        console.log(`🔔 topic desconhecido [${topic}]: ${resource}`);
+    }
+    entry.processado = true;
+    entry.topic_detail = topic;
+  } catch (err) {
+    console.error(`🔔 erro processando [${topic}]:`, err.message);
+    entry.processado = false;
+    entry.erro = err.message;
+  }
+}
+
+// ============================================================
 // PRECIFICAÇÃO — helpers (calcular, simular). Replica dos top sellers.
 // Fórmula: Preço = (Custo + Embalagem + Frete + TaxaFixa) / (1 - comissão - margem - imposto)
 // ============================================================
@@ -923,6 +1072,19 @@ async function ml(pathname, opts={}) {
 const server = http.createServer(async (req, res) => {
   const u = url.parse(req.url, true);
   try {
+    // ============= WEBHOOK ML — PRIORIDADE MÁXIMA =============
+    // Responde 200 em < 500ms e processa em background.
+    // URL pública: https://agentemarkt.com/webhooks
+    if (u.pathname === '/webhooks' && req.method === 'POST') {
+      const notification = await readBody(req).catch(() => ({}));
+      // Responde ANTES de processar — requisito ML (< 500ms ou topic é desativado)
+      send(res, 200, '');
+      setImmediate(() => processarWebhookML(notification, req.headers).catch(e => {
+        console.error('🔔 erro async webhook:', e.message);
+      }));
+      return;
+    }
+
     // Status de conexão (pro front saber se está conectado)
     if (u.pathname === '/api/status') {
       env = loadEnv();
@@ -2874,6 +3036,52 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
     // Stats pro dashboard
     if (u.pathname === '/api/estoque/stats' && req.method === 'GET') {
       return send(res, 200, { success:true, ...estoqueStats });
+    }
+
+    // ============= WEBHOOKS ML — stats, vendas, missed_feeds =============
+    if (u.pathname === '/api/webhooks/status' && req.method === 'GET') {
+      return send(res, 200, {
+        success: true,
+        callbackUrl: 'https://agentemarkt.com/webhooks',
+        stats: global.webhookStats || { total:0, porTopic:{}, historico:[], ultimoRecebido:null },
+        vendasRecentes: (global.vendasRecentes || []).slice(0, 20),
+        topicsAtivos: ['items','questions','orders_v2','payments','shipments','messages','claims'],
+        instrucoes: {
+          passo1: 'Ir em https://developers.mercadolivre.com.br/devcenter',
+          passo2: 'Editar o app (Client ID: 3688973136843575)',
+          passo3: 'No campo "Notifications Callback URL" colocar: https://agentemarkt.com/webhooks',
+          passo4: 'Marcar os topics: items, questions, orders_v2, payments, shipments',
+          passo5: 'Salvar',
+        },
+      });
+    }
+
+    // Notificações perdidas (se o server ficou fora do ar)
+    if (u.pathname === '/api/webhooks/perdidas' && req.method === 'GET') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const appId = process.env.ML_CLIENT_ID || (loadEnv().ML_CLIENT_ID) || '3688973136843575';
+        const r = await fetch(`https://api.mercadolibre.com/missed_feeds?app_id=${appId}`, {
+          headers:{ 'Authorization':'Bearer '+token }});
+        const d = await r.json().catch(()=>({}));
+        return send(res, 200, { success:true, perdidas:d });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Vendas alimentadas pelo topic orders_v2
+    if (u.pathname === '/api/webhooks/vendas' && req.method === 'GET') {
+      const vendas = global.vendasRecentes || [];
+      // Vendas de hoje
+      const hoje = new Date(); hoje.setHours(0,0,0,0);
+      const doDia = vendas.filter(v => new Date(v.data) >= hoje);
+      const totalHoje = doDia.reduce((s, v) => s + Number(v.valor || 0), 0);
+      return send(res, 200, {
+        success: true,
+        vendas,
+        total: vendas.length,
+        hoje: { count: doDia.length, valor: totalHoje },
+      });
     }
 
     if (u.pathname === '/api/precificacao/calcular-lote' && req.method === 'POST') {
