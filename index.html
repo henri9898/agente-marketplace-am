@@ -3770,6 +3770,297 @@ function SACPanel({ sac, onClose }){
   );
 }
 
+// =============== ESTOQUE — SYNC BLING ↔ ML ===============
+const ESTOQUE_CFG_KEY = 'estoque_config';
+function loadEstoqueCfg(){ try { return JSON.parse(localStorage.getItem(ESTOQUE_CFG_KEY) || '{}'); } catch(_){ return {}; }}
+function saveEstoqueCfg(c){ try { localStorage.setItem(ESTOQUE_CFG_KEY, JSON.stringify(c)); } catch(_){} }
+
+function useEstoque(){
+  const [itens, setItens]     = useState(null);
+  const [resumo, setResumo]   = useState(null);
+  const [stats, setStats]     = useState(null);
+  const [busy, setBusy]       = useState(false);
+  const [msg, setMsg]         = useState(null);
+  const [cfg, setCfgState]    = useState(() => ({
+    limiteBaixo:        3,
+    syncAuto30min:      true,
+    pausarSemEstoque:   true,
+    reativarAoVoltar:   true,
+    ...loadEstoqueCfg(),
+  }));
+  const setCfg = (patch) => { const n = { ...cfg, ...patch }; setCfgState(n); saveEstoqueCfg(n); };
+
+  const refresh = useCallback(async () => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) { setItens(null); setResumo(null); return; }
+    try {
+      const [r, sR] = await Promise.all([
+        fetch(`/api/estoque/ml/todos?limiteBaixo=${cfg.limiteBaixo}`, { headers:{ 'Authorization':'Bearer '+ml.access_token }}),
+        fetch('/api/estoque/stats'),
+      ]);
+      const j  = await r.json().catch(()=>({}));
+      const sJ = await sR.json().catch(()=>({}));
+      if (j.success) { setItens(j.itens || []); setResumo(j.resumo || null); }
+      if (sJ.success) setStats(sJ);
+    } catch(_){}
+  }, [cfg.limiteBaixo]);
+
+  const setQuantidade = useCallback(async (itemId, quantidade) => {
+    const ml = loadMLTokens();
+    const r = await fetch(`/api/estoque/ml/${itemId}`, {
+      method:'PUT',
+      headers:{ 'Authorization':'Bearer '+ml.access_token, 'Content-Type':'application/json' },
+      body: JSON.stringify({ quantidade }),
+    });
+    const d = await r.json().catch(()=>({}));
+    await refresh();
+    return d;
+  }, [refresh]);
+
+  const pausar = useCallback(async (itemId) => {
+    const ml = loadMLTokens();
+    const r = await fetch(`/api/estoque/ml/${itemId}/pausar`, {
+      method:'PUT', headers:{ 'Authorization':'Bearer '+ml.access_token }});
+    const d = await r.json().catch(()=>({}));
+    await refresh(); return d;
+  }, [refresh]);
+
+  const reativar = useCallback(async (itemId) => {
+    const ml = loadMLTokens();
+    const r = await fetch(`/api/estoque/ml/${itemId}/reativar`, {
+      method:'PUT', headers:{ 'Authorization':'Bearer '+ml.access_token }});
+    const d = await r.json().catch(()=>({}));
+    await refresh(); return d;
+  }, [refresh]);
+
+  // Sync Bling → ML: pega produtos do Bling e cruza com anúncios ML por SKU
+  const sincronizar = useCallback(async () => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) return;
+    setBusy(true); setMsg(null);
+    try {
+      const blingResp = await blingFetchProdutos({ page:1, limit:100 });
+      if (!blingResp.success) {
+        setMsg('❌ Bling: ' + (blingResp.error || 'sem conexão')); setBusy(false); return;
+      }
+      const produtosBling = blingResp.produtos || [];
+
+      // Refresh pra garantir itens ML atualizados
+      const mlR = await fetch(`/api/estoque/ml/todos?limiteBaixo=${cfg.limiteBaixo}`, { headers:{ 'Authorization':'Bearer '+ml.access_token }});
+      const mlJ = await mlR.json().catch(()=>({}));
+      const itensML = mlJ.itens || [];
+
+      // Monta mapeamentos por SKU — a chave é `seller_sku` no ML; como fallback, casa por título
+      const mapeamentos = [];
+      for (const pb of produtosBling) {
+        const sku = pb.codigo;
+        if (!sku) continue;
+        // match heurístico: título do ML contém o SKU
+        const it = itensML.find(m => m.titulo?.includes(sku) || m.titulo?.toLowerCase().includes((pb.nome||'').toLowerCase().slice(0,20)));
+        if (!it) continue;
+        mapeamentos.push({ blingId: pb.id, mlItemId: it.id, sku, estoqueBling: pb.estoqueSaldo ?? 0 });
+      }
+
+      if (mapeamentos.length === 0) {
+        setMsg('⚠️ Nenhum mapeamento Bling↔ML encontrado (SKU precisa estar no título do anúncio)');
+        setBusy(false); return;
+      }
+
+      const r = await fetch('/api/estoque/sync', {
+        method:'POST',
+        headers:{ 'Authorization':'Bearer '+ml.access_token, 'Content-Type':'application/json' },
+        body: JSON.stringify({ mapeamentos }),
+      });
+      const d = await r.json().catch(()=>({}));
+      if (d.success) setMsg(d.resumo);
+      else setMsg('❌ ' + (d.error || 'falha'));
+      await refresh();
+      return d;
+    } catch(e) { setMsg('❌ ' + e.message); }
+    finally { setBusy(false); }
+  }, [cfg.limiteBaixo, refresh]);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 120_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return { itens, resumo, stats, busy, msg, cfg, setCfg, refresh,
+           setQuantidade, pausar, reativar, sincronizar };
+}
+
+// Card compacto no dashboard
+function EstoqueCard({ estoque, onExpand }){
+  const r = estoque.resumo;
+  const semEst  = r?.semEstoque || 0;
+  const baixo   = r?.estoqueBaixo || 0;
+  const temProb = semEst > 0 || baixo > 0;
+  return (
+    <div className="card p-5 mb-6" style={{borderColor: temProb ? 'rgba(239,68,68,.45)' : 'rgba(34,197,94,.35)'}}>
+      <div className="flex items-start gap-4 flex-wrap">
+        <div className="text-3xl">📦</div>
+        <div className="flex-1 min-w-[260px]">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-bold">Estoque — Sync Bling ↔ ML</h3>
+            {semEst > 0 && <span className="chip" style={{color:'#ef4444', borderColor:'rgba(239,68,68,.5)', fontSize:11}}>🚨 {semEst} sem estoque</span>}
+            {baixo > 0 && <span className="chip" style={{color:'var(--yellow)', borderColor:'rgba(234,179,8,.5)', fontSize:11}}>⚠️ {baixo} baixo</span>}
+            {!temProb && <span className="chip" style={{color:'var(--green)', borderColor:'rgba(34,197,94,.5)', fontSize:11}}>✅ saudável</span>}
+          </div>
+          <p className="sub text-xs mt-1">
+            {r ? r.alerta : '—'} {r && <> · <span className="mono">{r.ativos}</span> ativos · <span className="mono">{r.pausados}</span> pausados</>}
+          </p>
+          {estoque.msg && <p className="sub text-xs mt-2 mono">{estoque.msg}</p>}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <button className="btn-ghost" onClick={estoque.refresh} disabled={estoque.busy}>🔄 Atualizar</button>
+          <button className="btn-ghost" onClick={onExpand}>👁️ Detalhes</button>
+          <button className="btn" style={{width:'auto', padding:'10px 16px'}}
+            onClick={estoque.sincronizar} disabled={estoque.busy}>
+            {estoque.busy ? '🔄 sincronizando...' : '🔄 Sincronizar Bling→ML'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Painel completo — tabela + ações + config
+function EstoquePanel({ estoque, onClose }){
+  const [editQty, setEditQty] = useState({}); // {itemId: value}
+  const itens = estoque.itens || [];
+
+  const aplicarQty = async (itemId) => {
+    const v = editQty[itemId];
+    const n = parseInt(v, 10);
+    if (Number.isNaN(n) || n < 0) { alert('Quantidade inválida'); return; }
+    const d = await estoque.setQuantidade(itemId, n);
+    if (!d.success) alert('❌ ' + (d.error || 'erro'));
+  };
+
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.72)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div onClick={e=>e.stopPropagation()} className="card" style={{maxWidth:960,width:'100%',maxHeight:'92vh',overflow:'auto',padding:24}}>
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h3 className="font-bold text-lg">📦 Gestão de Estoque — {itens.length} anúncios</h3>
+          <div className="flex gap-2">
+            <button className="btn-ghost" onClick={estoque.refresh} disabled={estoque.busy}>🔄 Atualizar</button>
+            <button className="btn" style={{padding:'6px 14px'}} onClick={estoque.sincronizar} disabled={estoque.busy}>🔄 Sync Bling→ML</button>
+            <button className="btn-ghost" onClick={onClose} style={{padding:'4px 10px'}}>✕</button>
+          </div>
+        </div>
+
+        {estoque.msg && <div className="card2 p-2 mb-3 text-xs mono">{estoque.msg}</div>}
+
+        <table className="w-full text-sm mb-4">
+          <thead>
+            <tr>
+              <th style={{width:'42%'}}>Produto</th>
+              <th style={{width:100}}>Estoque</th>
+              <th style={{width:120}}>Status</th>
+              <th style={{width:120}}>Preço</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {itens.length === 0 && (
+              <tr><td colSpan={5} className="sub text-center py-6">Sem anúncios ainda — publique produtos para aparecer aqui</td></tr>
+            )}
+            {itens.map(it => {
+              const corStatus = it.estoque === 0 ? '#ef4444'
+                : it.estoque <= estoque.cfg.limiteBaixo ? '#eab308'
+                : 'var(--green)';
+              return (
+                <tr key={it.id}>
+                  <td>
+                    <div className="text-[13px]">{it.titulo}</div>
+                    <div className="mono text-[10px] sub">{it.id}</div>
+                  </td>
+                  <td>
+                    <div className="flex gap-1 items-center">
+                      <input type="number" min="0" className="input mono text-[12px]" style={{width:64, padding:'4px 6px'}}
+                        defaultValue={it.estoque}
+                        onChange={e => setEditQty(prev => ({ ...prev, [it.id]: e.target.value }))}/>
+                      <button className="btn-ghost" style={{padding:'4px 8px', fontSize:11}} onClick={() => aplicarQty(it.id)}>✓</button>
+                    </div>
+                    {it.alerta && <div className="text-[10px] mt-1" style={{color:corStatus}}>{it.alerta}</div>}
+                  </td>
+                  <td>
+                    {it.status === 'active' && <span className="badge b-green">🟢 ativo</span>}
+                    {it.status === 'paused' && <span className="badge b-yellow">⏸️ pausado</span>}
+                    {it.status === 'closed' && <span className="badge" style={{color:'#ef4444',borderColor:'rgba(239,68,68,.4)'}}>🔴 fechado</span>}
+                    {it.pausadoPorEstoque && <div className="text-[10px] sub mt-1">por estoque</div>}
+                  </td>
+                  <td className="mono">{fmt(it.preco || 0)}</td>
+                  <td>
+                    <div className="flex gap-1 flex-wrap">
+                      {it.status === 'active' &&
+                        <button className="btn-ghost" style={{padding:'4px 8px', fontSize:11}} onClick={() => estoque.pausar(it.id)}>⏸️ pausar</button>}
+                      {(it.status === 'paused' || it.pausadoPorEstoque) &&
+                        <button className="btn-ghost" style={{padding:'4px 8px', fontSize:11, color:'var(--green)'}} onClick={() => estoque.reativar(it.id)}>▶️ reativar</button>}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        {estoque.resumo && (
+          <div className="card2 p-3 mb-3 text-xs">
+            <span className="mono" style={{color:'var(--green)'}}>{estoque.resumo.ativos}</span> ativos ·{' '}
+            <span className="mono" style={{color:'var(--yellow)'}}>{estoque.resumo.pausados}</span> pausados ·{' '}
+            <span className="mono" style={{color:'var(--yellow)'}}>{estoque.resumo.estoqueBaixo}</span> estoque baixo ·{' '}
+            <span className="mono" style={{color:'#ef4444'}}>{estoque.resumo.semEstoque}</span> sem estoque
+          </div>
+        )}
+
+        {/* Config */}
+        <div className="card2 p-3">
+          <div className="sub text-[11px] uppercase tracking-wide mb-2">Configurações</div>
+          <div className="flex items-center gap-2 mb-2 text-sm">
+            <span>⚠️ Alerta de estoque baixo quando ≤</span>
+            <input type="number" min="0" className="input mono text-[12px]" style={{width:64, padding:'4px 6px'}}
+              value={estoque.cfg.limiteBaixo}
+              onChange={e => estoque.setCfg({ limiteBaixo: parseInt(e.target.value,10) || 0 })}/>
+            <span>unidades</span>
+          </div>
+          <label className="flex items-center gap-2 text-sm cursor-pointer mb-1">
+            <input type="checkbox" checked={estoque.cfg.syncAuto30min}
+              onChange={e => estoque.setCfg({ syncAuto30min: e.target.checked })}/>
+            <span>⏰ Sincronizar automaticamente a cada 30 min (server-side)</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer mb-1">
+            <input type="checkbox" checked={estoque.cfg.pausarSemEstoque}
+              onChange={e => estoque.setCfg({ pausarSemEstoque: e.target.checked })}/>
+            <span>⏸️ Pausar anúncio quando estoque = 0 (ML faz automaticamente)</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={estoque.cfg.reativarAoVoltar}
+              onChange={e => estoque.setCfg({ reativarAoVoltar: e.target.checked })}/>
+            <span>▶️ Reativar quando estoque volta (ML faz automaticamente)</span>
+          </label>
+        </div>
+
+        {estoque.stats?.historico?.length > 0 && (
+          <>
+            <div className="sub text-[11px] uppercase tracking-wide mt-4 mb-2">Últimas atualizações</div>
+            {estoque.stats.historico.slice(0, 8).map((h,i) => (
+              <div key={i} className="text-xs flex gap-3 py-1 border-b border-[var(--line)] flex-wrap mono">
+                <span className="sub">{new Date(h.ts).toLocaleString('pt-BR')}</span>
+                <span>{h.itemId}</span>
+                {h.sku && <span className="sub">{h.sku}</span>}
+                <span>→ {h.quantidade}</span>
+                <span className="sub">· {h.acao}</span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Hook: status da compatibilidade automática
 function useCompatStatus(){
   const [stats, setStats]   = useState(null);
@@ -3829,6 +4120,8 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
   const compat  = useCompatStatus();
   const sac     = useSAC();
   const [sacOpen, setSacOpen] = useState(false);
+  const estoque = useEstoque();
+  const [estoqueOpen, setEstoqueOpen] = useState(false);
 
   const focusData = [
     {foco:'SEO', CTR:0, Conversão:0},
@@ -3926,6 +4219,11 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
         <SACCard sac={sac} onExpand={() => setSacOpen(true)}/>
       )}
       {sacOpen && <SACPanel sac={sac} onClose={() => setSacOpen(false)}/>}
+
+      {hasReal && (
+        <EstoqueCard estoque={estoque} onExpand={() => setEstoqueOpen(true)}/>
+      )}
+      {estoqueOpen && <EstoquePanel estoque={estoque} onClose={() => setEstoqueOpen(false)}/>}
 
       {hasReal && ml.data.orders.recent?.length > 0 && (
         <div className="card p-5 mb-6">

@@ -378,6 +378,39 @@ setInterval(rodarMonitorSAC, 10 * 60 * 1000);
 setTimeout(rodarMonitorSAC, 45_000);
 
 // ============================================================
+// ESTOQUE — stats + monitor 30min (só alerta, não força sync sem mapa Bling↔ML)
+// ============================================================
+const estoqueStats = {
+  atualizacoes:   0,
+  ultimoSync:     null,
+  ultimaVerif:    null,
+  semEstoque:     0,
+  estoqueBaixo:   0,
+  historico:      [], // últimas 50 { ts, itemId, acao, quantidade, sku? }
+};
+
+async function rodarMonitorEstoque() {
+  const tokens = loadTokens();
+  if (!tokens.ml_access_token) return;
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/estoque/ml/todos`, {
+      headers:{ 'Authorization':'Bearer '+tokens.ml_access_token }});
+    const d = await r.json().catch(()=>({}));
+    estoqueStats.ultimaVerif = new Date().toISOString();
+    if (d.success) {
+      estoqueStats.semEstoque   = d.resumo?.semEstoque || 0;
+      estoqueStats.estoqueBaixo = d.resumo?.estoqueBaixo || 0;
+      if (estoqueStats.semEstoque > 0 || estoqueStats.estoqueBaixo > 0) {
+        console.log(`📦 [estoque-monitor] ${estoqueStats.semEstoque} sem estoque · ${estoqueStats.estoqueBaixo} estoque baixo`);
+      }
+    }
+  } catch(err) { /* silencioso */ }
+}
+setInterval(rodarMonitorEstoque, 30 * 60 * 1000);
+// Primeira verificação 60s após boot
+setTimeout(rodarMonitorEstoque, 60_000);
+
+// ============================================================
 // PRECIFICAÇÃO — helpers (calcular, simular). Replica dos top sellers.
 // Fórmula: Preço = (Custo + Embalagem + Frete + TaxaFixa) / (1 - comissão - margem - imposto)
 // ============================================================
@@ -2654,6 +2687,193 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
     // Stats pro dashboard
     if (u.pathname === '/api/ml/sac/stats' && req.method === 'GET') {
       return send(res, 200, { success:true, ...sacStats });
+    }
+
+    // ============= SYNC ESTOQUE BLING ↔ ML =============
+    // ML pausa automaticamente quando available_quantity=0 e reativa quando >0
+
+    // Proxy: estoque de um produto no Bling
+    if (u.pathname.match(/^\/api\/estoque\/bling\/\d+$/) && req.method === 'GET') {
+      const token = getMlToken(); // usa mesmo helper pra passar auth adiante
+      try {
+        const id = u.pathname.split('/')[4];
+        const r = await fetch(`http://127.0.0.1:${PORT}/api/bling/produtos/${id}/estoques`, {
+          headers:{ 'Authorization':'Bearer '+(req.headers.authorization?.replace(/^Bearer\s+/i,'').trim() || '') },
+        });
+        const d = await r.json().catch(()=>({}));
+        return send(res, 200, { success:true, estoque:d });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Atualizar estoque do anúncio ML
+    if (u.pathname.match(/^\/api\/estoque\/ml\/MLB\d+$/) && req.method === 'PUT') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const itemId = u.pathname.split('/').pop();
+        const { quantidade } = await readBody(req);
+        if (typeof quantidade !== 'number' || quantidade < 0) return send(res, 400, { success:false, error:'quantidade inválida' });
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          method:'PUT',
+          headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+          body: JSON.stringify({ available_quantity: quantidade }),
+        });
+        const d = await r.json().catch(()=>({}));
+        if (r.ok) {
+          const acao = quantidade === 0 ? 'PAUSADO (sem estoque)' : `atualizado para ${quantidade}`;
+          console.log(`📦 Estoque ML: ${itemId} → ${acao}`);
+          estoqueStats.atualizacoes++;
+          estoqueStats.historico.unshift({ ts:new Date().toISOString(), itemId, acao, quantidade });
+          estoqueStats.historico = estoqueStats.historico.slice(0, 50);
+          return send(res, 200, { success:true, message:`Estoque ${acao}`, data:d });
+        }
+        return send(res, 200, { success:false, error: d.message || 'Erro ao atualizar', details:d });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Pausar anúncio manualmente
+    if (u.pathname.match(/^\/api\/estoque\/ml\/MLB\d+\/pausar$/) && req.method === 'PUT') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const itemId = u.pathname.split('/')[4];
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          method:'PUT',
+          headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+          body: JSON.stringify({ status:'paused' }),
+        });
+        const d = await r.json().catch(()=>({}));
+        if (r.ok) console.log(`⏸️ Anúncio ${itemId} PAUSADO manualmente`);
+        return send(res, 200, r.ok ? { success:true, message:'Anúncio pausado' } : { success:false, error:d.message });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Reativar anúncio manualmente
+    if (u.pathname.match(/^\/api\/estoque\/ml\/MLB\d+\/reativar$/) && req.method === 'PUT') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const itemId = u.pathname.split('/')[4];
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          method:'PUT',
+          headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+          body: JSON.stringify({ status:'active' }),
+        });
+        const d = await r.json().catch(()=>({}));
+        if (r.ok) console.log(`▶️ Anúncio ${itemId} REATIVADO`);
+        return send(res, 200, r.ok ? { success:true, message:'Anúncio reativado' } : { success:false, error:d.message });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Listar todos os anúncios ML com estoque atual + resumo
+    if (u.pathname === '/api/estoque/ml/todos' && req.method === 'GET') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const limiteBaixo = parseInt(u.query.limiteBaixo, 10) || 3;
+        const meR = await fetch('https://api.mercadolibre.com/users/me', {
+          headers:{ 'Authorization':'Bearer '+token }});
+        const me = await meR.json();
+        const itR = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?limit=50`, {
+          headers:{ 'Authorization':'Bearer '+token }});
+        const itD = await itR.json().catch(()=>({}));
+        const itemIds = itD.results || [];
+        if (itemIds.length === 0) return send(res, 200, { success:true, itens:[], total:0 });
+        const batch = itemIds.slice(0, 20).join(',');
+        const dR = await fetch(`https://api.mercadolibre.com/items?ids=${batch}&attributes=id,title,available_quantity,status,sub_status,price`, {
+          headers:{ 'Authorization':'Bearer '+token }});
+        const det = await dR.json().catch(()=>[]);
+        const itens = (Array.isArray(det) ? det : []).map(d => {
+          const body = d.body || {};
+          const subStatus = body.sub_status || [];
+          const estoque = body.available_quantity || 0;
+          return {
+            id:      body.id,
+            titulo:  body.title,
+            estoque,
+            preco:   body.price || 0,
+            status:  body.status,
+            subStatus,
+            pausadoPorEstoque: subStatus.includes('out_of_stock'),
+            alerta: estoque <= limiteBaixo && estoque > 0 && body.status === 'active' ? '⚠️ Estoque baixo!' :
+                    estoque === 0 ? '🚨 Sem estoque' : null,
+          };
+        });
+        const semEstoque   = itens.filter(i => i.estoque === 0).length;
+        const estoqueBaixo = itens.filter(i => i.estoque > 0 && i.estoque <= limiteBaixo).length;
+        const ativos       = itens.filter(i => i.status === 'active').length;
+        const pausados     = itens.filter(i => i.status === 'paused').length;
+        return send(res, 200, {
+          success: true, itens, total: itens.length,
+          resumo: {
+            ativos, pausados, semEstoque, estoqueBaixo,
+            alerta: semEstoque > 0 ? `🚨 ${semEstoque} anúncios sem estoque!`
+                 : estoqueBaixo > 0 ? `⚠️ ${estoqueBaixo} anúncios com estoque baixo`
+                 : '✅ Estoque saudável em todos os anúncios',
+          },
+        });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // SYNC Bling → ML (lote)
+    if (u.pathname === '/api/estoque/sync' && req.method === 'POST') {
+      const mlToken = getMlToken();
+      if (!mlToken) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { mapeamentos } = await readBody(req);
+        if (!Array.isArray(mapeamentos) || mapeamentos.length === 0) {
+          return send(res, 400, { success:false, error:'mapeamentos (array) obrigatório' });
+        }
+        const resultados = [];
+        for (const map of mapeamentos) {
+          try {
+            const mlR = await fetch(`https://api.mercadolibre.com/items/${map.mlItemId}?attributes=id,available_quantity,status`, {
+              headers:{ 'Authorization':'Bearer '+mlToken }});
+            const mlIt = await mlR.json();
+            const estoqueML    = mlIt.available_quantity || 0;
+            const estoqueBling = Number(map.estoqueBling) || 0;
+            if (estoqueBling !== estoqueML) {
+              const upR = await fetch(`https://api.mercadolibre.com/items/${map.mlItemId}`, {
+                method:'PUT',
+                headers:{ 'Authorization':'Bearer '+mlToken, 'Content-Type':'application/json' },
+                body: JSON.stringify({ available_quantity: estoqueBling }),
+              });
+              const acao = estoqueBling === 0
+                ? '⏸️ PAUSADO (sem estoque)'
+                : (estoqueML === 0 && estoqueBling > 0)
+                  ? '▶️ REATIVADO'
+                  : `📦 ${estoqueML} → ${estoqueBling}`;
+              console.log(`📦 Sync: ${map.sku || map.mlItemId} ${acao}`);
+              resultados.push({ sku:map.sku, mlItemId:map.mlItemId, estoqueAnterior:estoqueML, estoqueNovo:estoqueBling, acao, sucesso:upR.ok });
+              if (upR.ok) {
+                estoqueStats.atualizacoes++;
+                estoqueStats.historico.unshift({ ts:new Date().toISOString(), itemId:map.mlItemId, acao, quantidade: estoqueBling, sku:map.sku });
+                estoqueStats.historico = estoqueStats.historico.slice(0, 50);
+              }
+            } else {
+              resultados.push({ sku:map.sku, mlItemId:map.mlItemId, estoque:estoqueML, acao:'✅ Sincronizado', sucesso:true });
+            }
+            await new Promise(r => setTimeout(r, 500));
+          } catch(err) {
+            resultados.push({ sku:map.sku, mlItemId:map.mlItemId, sucesso:false, error:err.message });
+          }
+        }
+        const atualizados   = resultados.filter(r => r.estoqueNovo !== undefined).length;
+        const sincronizados = resultados.filter(r => r.acao === '✅ Sincronizado').length;
+        estoqueStats.ultimoSync = new Date().toISOString();
+        return send(res, 200, {
+          success: true, total: resultados.length, atualizados, sincronizados,
+          detalhes: resultados,
+          resumo: atualizados > 0
+            ? `📦 ${atualizados} estoque(s) atualizado(s), ${sincronizados} já sincronizado(s)`
+            : `✅ Todos os ${sincronizados} estoques já estão sincronizados`,
+        });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Stats pro dashboard
+    if (u.pathname === '/api/estoque/stats' && req.method === 'GET') {
+      return send(res, 200, { success:true, ...estoqueStats });
     }
 
     if (u.pathname === '/api/precificacao/calcular-lote' && req.method === 'POST') {
