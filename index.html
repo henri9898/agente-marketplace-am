@@ -3405,13 +3405,69 @@ function KPI({label, value, sub, glow}){
   );
 }
 
-// Banner de token expirado — usado em Overview/Listings/Health
+// ErrorBoundary genérico — isola falha de um card pra não quebrar a página
+class CardErrorBoundary extends React.Component {
+  constructor(props){ super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err){ return { err }; }
+  componentDidCatch(err, info){ console.warn('[CardErrorBoundary]', this.props.label || '?', err, info); }
+  render(){
+    if (this.state.err) {
+      return (
+        <div className="card p-5 mb-6" style={{borderColor:'rgba(234,179,8,.35)'}}>
+          <div className="flex items-center gap-3">
+            <div className="text-2xl">⚠️</div>
+            <div className="flex-1">
+              <div className="font-bold">{this.props.label || 'Card'}</div>
+              <div className="sub text-xs mt-1">— dados indisponíveis no momento</div>
+            </div>
+            <button className="btn-ghost" onClick={()=>this.setState({ err:null })}>🔄 Tentar</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// Banner de status do token ML — consulta /api/tokens/status (fonte da verdade do server)
+// Mostra banner SÓ quando expired === true.
+// Se near_expiry, mostra aviso amarelo leve (não bloqueia).
+// Se tudo ok, renderiza null.
 function MLTokenExpiredBanner(){
-  return (
-    <div className="err mb-4 flex items-center gap-3 flex-wrap">
-      <span>⏰ Token do Mercado Livre expirou — reconecte na aba <span className="mono">🔌 Integrações</span> para voltar a ver dados reais.</span>
-    </div>
-  );
+  const [st, setSt] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const fetchStatus = async () => {
+      try {
+        const r = await fetch('/api/tokens/status');
+        const d = await r.json();
+        if (alive && d?.ml) setSt(d.ml);
+      } catch(_){ if (alive) setSt(null); }
+    };
+    fetchStatus();
+    const id = setInterval(fetchStatus, 60_000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+  if (!st) return null;
+  // Sem token = não mostra banner aqui (o usuário vê o bloco de "Conecte ML")
+  if (!st.connected) return null;
+  if (st.expired) {
+    return (
+      <div className="err mb-4 flex items-center gap-3 flex-wrap">
+        <span>🔴 Token do Mercado Livre expirou — reconecte na aba <span className="mono">🔌 Integrações</span> para voltar a ver dados reais.</span>
+      </div>
+    );
+  }
+  if (st.near_expiry && !st.auto_refresh) {
+    // Só alerta se NÃO tem auto-refresh (refresh_token). Com auto-refresh, silencioso.
+    return (
+      <div className="mb-4 p-3 rounded-lg flex items-center gap-3 flex-wrap text-xs"
+        style={{background:'rgba(234,179,8,.08)', border:'1px solid rgba(234,179,8,.35)', color:'var(--yellow)'}}>
+        <span>🟡 Token expirando em breve — sem refresh_token cadastrado. Reconecte na aba <span className="mono">🔌 Integrações</span>.</span>
+      </div>
+    );
+  }
+  return null;
 }
 
 // Card: status da compatibilidade automática (IA resolve sozinha)
@@ -3845,6 +3901,130 @@ function useSAC(){
 
   return { pendentes, stats, historico, busy, msg, cfg, setCfg,
            refresh, gerarPreview, enviar, excluir, responderTodas };
+}
+
+// ======= CARDS COMPACTOS (grid 3 colunas na Visão Geral) =======
+// Cada um protegido pra não quebrar a página se API falhar
+function CompatCompactCard({ compat }){
+  const pend = compat.pend?.total;
+  const st = pend == null ? 'loading' : (pend > 0 ? 'warn' : 'ok');
+  const cor = st === 'warn' ? '#eab308' : st === 'ok' ? '#22c55e' : '#888';
+  return (
+    <div className="card p-5" style={{borderColor: cor + '55'}}>
+      <div className="flex items-start gap-3">
+        <div className="text-2xl">🚗</div>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-sm">Compatibilidade</div>
+          <div className="text-xs mt-1" style={{color:cor}}>
+            {st === 'loading' && '— verificando...'}
+            {st === 'ok' && '✅ Todos compatíveis'}
+            {st === 'warn' && `⚠️ ${pend} pendente(s)`}
+          </div>
+          <div className="sub text-[11px] mt-1">
+            {compat.stats?.sucessos != null && <>IA resolveu <span className="mono" style={{color:'var(--green)'}}>{compat.stats.sucessos}</span></>}
+          </div>
+        </div>
+      </div>
+      {st === 'warn' && (
+        <button className="btn-ghost mt-3 w-full" style={{padding:'6px 10px', fontSize:12}} onClick={compat.forcar} disabled={compat.busy}>
+          {compat.busy ? '🔄 resolvendo...' : '🤖 Resolver'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SACCompactCard({ sac, onExpand }){
+  const pend = sac.pendentes?.total;
+  const st = pend == null ? 'loading' : (pend > 0 ? 'warn' : 'ok');
+  const cor = st === 'warn' ? '#eab308' : st === 'ok' ? '#22c55e' : '#888';
+  return (
+    <div className="card p-5" style={{borderColor: cor + '55'}}>
+      <div className="flex items-start gap-3">
+        <div className="text-2xl">💬</div>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-sm">SAC — Perguntas</div>
+          <div className="text-xs mt-1" style={{color:cor}}>
+            {st === 'loading' && '— verificando...'}
+            {st === 'ok' && '✅ Nenhuma pergunta'}
+            {st === 'warn' && `⚠️ ${pend} aguardando`}
+          </div>
+          <div className="sub text-[11px] mt-1">
+            {sac.stats?.respondidas != null && <>IA respondeu <span className="mono" style={{color:'var(--green)'}}>{sac.stats.respondidas}</span></>}
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-2 mt-3">
+        {st === 'warn' && (
+          <button className="btn" style={{padding:'6px 10px', fontSize:12, flex:1}} onClick={() => sac.responderTodas(true)} disabled={sac.busy}>
+            🤖 Responder
+          </button>
+        )}
+        <button className="btn-ghost" style={{padding:'6px 10px', fontSize:12, flex:1}} onClick={onExpand}>👁️ Ver</button>
+      </div>
+    </div>
+  );
+}
+
+function EstoqueCompactCard({ estoque, onExpand }){
+  const r = estoque.resumo;
+  const loading = !r;
+  const sem  = r?.semEstoque   || 0;
+  const bx   = r?.estoqueBaixo || 0;
+  const temProb = sem > 0 || bx > 0;
+  const cor = loading ? '#888' : (sem > 0 ? '#ef4444' : bx > 0 ? '#eab308' : '#22c55e');
+  return (
+    <div className="card p-5" style={{borderColor: cor + '55'}}>
+      <div className="flex items-start gap-3">
+        <div className="text-2xl">📦</div>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-sm">Estoque Bling↔ML</div>
+          <div className="text-xs mt-1" style={{color:cor}}>
+            {loading && '— verificando...'}
+            {!loading && !temProb && '✅ Saudável'}
+            {!loading && sem > 0 && `🚨 ${sem} sem estoque`}
+            {!loading && sem === 0 && bx > 0 && `⚠️ ${bx} estoque baixo`}
+          </div>
+          <div className="sub text-[11px] mt-1">
+            {r && <>{r.ativos} ativos · {r.pausados} pausados</>}
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-2 mt-3">
+        <button className="btn" style={{padding:'6px 10px', fontSize:12, flex:1}} onClick={estoque.sincronizar} disabled={estoque.busy}>
+          {estoque.busy ? '🔄 ...' : '🔄 Sync'}
+        </button>
+        <button className="btn-ghost" style={{padding:'6px 10px', fontSize:12, flex:1}} onClick={onExpand}>👁️ Ver</button>
+      </div>
+    </div>
+  );
+}
+
+function WebhooksCompactCard({ wh, onOpenInstrucoes }){
+  const total = wh.status?.stats?.total || 0;
+  const configurado = total > 0;
+  const cor = configurado ? '#22c55e' : '#eab308';
+  return (
+    <div className="card p-5" style={{borderColor: cor + '55'}}>
+      <div className="flex items-start gap-3">
+        <div className="text-2xl">🔔</div>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-sm">Webhooks ML</div>
+          <div className="text-xs mt-1" style={{color:cor}}>
+            {configurado ? `✅ ${total} notificações` : '⚠️ Não configurado'}
+          </div>
+          <div className="sub text-[11px] mt-1">
+            {configurado
+              ? 'Tempo real ativo'
+              : 'Você está perdendo vendas!'}
+          </div>
+        </div>
+      </div>
+      <button className="btn-ghost mt-3 w-full" style={{padding:'6px 10px', fontSize:12}} onClick={onOpenInstrucoes}>
+        📋 Instruções
+      </button>
+    </div>
+  );
 }
 
 // Card compacto de SAC pra Visão Geral
@@ -4433,7 +4613,7 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
         </div>
       </div>
 
-      {ml.expired && <MLTokenExpiredBanner/>}
+      <MLTokenExpiredBanner/>
       {ml.loading && !ml.data && <div className="ok mb-4">🔄 Carregando dados reais do Mercado Livre…</div>}
       {ml.err && !ml.expired && <div className="err mb-4 text-xs">Falha ao carregar ML: {ml.err} · exibindo dados mock</div>}
 
@@ -4475,25 +4655,6 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
           </div>
         </div>
       )}
-      {hasReal && (
-        <CompatCard compat={compat}/>
-      )}
-
-      {hasReal && (
-        <SACCard sac={sac} onExpand={() => setSacOpen(true)}/>
-      )}
-      {sacOpen && <SACPanel sac={sac} onClose={() => setSacOpen(false)}/>}
-
-      {hasReal && (
-        <EstoqueCard estoque={estoque} onExpand={() => setEstoqueOpen(true)}/>
-      )}
-      {estoqueOpen && <EstoquePanel estoque={estoque} onClose={() => setEstoqueOpen(false)}/>}
-
-      {hasReal && <WebhooksCard wh={wh} onOpenInstrucoes={() => setWhOpen(true)}/>}
-      {hasReal && <VendasRecentesCard wh={wh}/>}
-      {whOpen && <WebhooksInstrucoesModal onClose={() => setWhOpen(false)}/>}
-      <NovaVendaToast toast={wh.novaVendaToast} onClose={() => wh.setNovaVendaToast(null)}/>
-
       {hasReal && ml.data.orders.recent?.length > 0 && (
         <div className="card p-5 mb-6">
           <div className="flex items-center justify-between mb-3">
@@ -4588,6 +4749,40 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
           </ResponsiveContainer>
         </div>
       </div>
+
+      {/* ====== CARDS DE AUTOMAÇÃO (resistentes a erro) ====== */}
+      <div className="mt-6">
+        <h2 className="text-lg font-bold mb-3">🤖 Automações em tempo real</h2>
+
+        {/* Linha 1 — 3 cards compactos lado a lado */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <CardErrorBoundary label="🚗 Compatibilidade"><CompatCompactCard compat={compat}/></CardErrorBoundary>
+          <CardErrorBoundary label="💬 SAC">
+            <SACCompactCard sac={sac} onExpand={() => setSacOpen(true)}/>
+          </CardErrorBoundary>
+          <CardErrorBoundary label="📦 Estoque">
+            <EstoqueCompactCard estoque={estoque} onExpand={() => setEstoqueOpen(true)}/>
+          </CardErrorBoundary>
+        </div>
+
+        {/* Linha 2 — Webhooks (1/3) + Vendas recentes (2/3) */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <CardErrorBoundary label="🔔 Webhooks">
+            <WebhooksCompactCard wh={wh} onOpenInstrucoes={() => setWhOpen(true)}/>
+          </CardErrorBoundary>
+          <div className="md:col-span-2">
+            <CardErrorBoundary label="🛒 Vendas em tempo real">
+              <VendasRecentesCard wh={wh}/>
+            </CardErrorBoundary>
+          </div>
+        </div>
+      </div>
+
+      {/* Modais globais — ficam no fim pra não afetar layout */}
+      {sacOpen && <CardErrorBoundary label="Painel SAC"><SACPanel sac={sac} onClose={() => setSacOpen(false)}/></CardErrorBoundary>}
+      {estoqueOpen && <CardErrorBoundary label="Painel Estoque"><EstoquePanel estoque={estoque} onClose={() => setEstoqueOpen(false)}/></CardErrorBoundary>}
+      {whOpen && <WebhooksInstrucoesModal onClose={() => setWhOpen(false)}/>}
+      <NovaVendaToast toast={wh.novaVendaToast} onClose={() => wh.setNovaVendaToast(null)}/>
     </div>
   );
 }
@@ -4653,7 +4848,7 @@ function ListingsPage(){
         )}
       </div>
 
-      {ml.expired && <MLTokenExpiredBanner/>}
+      <MLTokenExpiredBanner/>
       {ml.loading && !ml.data && <div className="ok mb-4">🔄 Carregando anúncios do Mercado Livre…</div>}
       {ml.err && !ml.expired && <div className="err mb-4 text-xs">Falha ao carregar anúncios ML: {ml.err} · exibindo mock</div>}
 
@@ -5267,7 +5462,7 @@ function HealthPage(){
         )}
       </div>
 
-      {ml.expired && <MLTokenExpiredBanner/>}
+      <MLTokenExpiredBanner/>
       {ml.loading && !ml.data && <div className="ok mb-4">🔄 Carregando health dos anúncios…</div>}
       {ml.err && !ml.expired && <div className="err mb-4 text-xs">Falha ao carregar health ML: {ml.err} · exibindo mock</div>}
 
