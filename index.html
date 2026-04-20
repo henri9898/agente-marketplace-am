@@ -1250,10 +1250,27 @@ async function publishBlingToML(produtoId) {
   const ml    = loadMLTokens();
   if (!bling?.access_token) return { success:false, error:'Bling não conectado' };
   if (!ml?.access_token)    return { success:false, error:'Mercado Livre não conectado' };
+  // Config de precificação salva na aba 💰 Precificação (localStorage)
+  let pricingConfig = null;
+  try {
+    const raw = localStorage.getItem('precificacao_config');
+    if (raw) {
+      const c = JSON.parse(raw);
+      pricingConfig = {
+        margemDesejada:    c.margem ?? 20,
+        tipoAnuncio:       c.tipoAnuncio ?? 'premium',
+        imposto:           c.imposto ?? 0,
+        custoEmbalagem:    c.custoEmbalagem ?? 2,
+        freteGratis:       c.freteGratis ?? true,
+        usarPrecoSugerido: c.usarPrecoSugerido ?? false, // default: usa preço do Bling
+        bloquearPrejuizo:  c.bloquearPrejuizo ?? true,
+      };
+    }
+  } catch(_){}
   const r = await fetch('/api/publicar', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ produtoId, blingToken: bling.access_token, mlToken: ml.access_token }),
+    body: JSON.stringify({ produtoId, blingToken: bling.access_token, mlToken: ml.access_token, pricingConfig }),
   });
   return await r.json().catch(() => ({ success:false, error:'JSON inválido' }));
 }
@@ -2085,6 +2102,13 @@ function useAgentStore({ notif } = {}) {
         const r = await publishBlingToML(p.id);
         if (r.success) {
           ok++;
+          if (r.precificacao) {
+            const pr = r.precificacao;
+            log('info', `💰 Preço R$${Number(pr.precoUsado).toFixed(2)} · custo R$${Number(p.precoCusto||p.preco||0).toFixed(2)} · margem ${pr.margem} · ${pr.status.emoji} ${pr.status.nivel}`);
+            if (pr.status.nivel === 'critico' || pr.status.nivel === 'prejuizo') {
+              log('warn', `🔴 ${pr.status.alerta}`);
+            }
+          }
           log('ok', `✅ Publicado → ${r.ml_item_id} · ${r.permalink || ''}`);
           setProducts(prev => prev.map(pr => pr.sku === p._synthetic.sku ? { ...pr, status:'publicado', mlId: r.ml_item_id } : pr));
           setMetrics(m => ({ ...m, publishedToday: m.publishedToday + 1, totalProcessed: m.totalProcessed + 1 }));
@@ -2113,7 +2137,15 @@ function useAgentStore({ notif } = {}) {
           })(r.ml_item_id, p.nome);
         } else {
           fail++;
-          log('error', `❌ Falhou: ${r.error || 'erro'}`);
+          // Bloqueio por prejuízo vem como error com "PREJUÍZO" na mensagem
+          if (r.error && r.error.includes('PREJUÍZO')) {
+            log('error', `🚨 ${r.error}`);
+            if (r.precificacao?.sugerido) {
+              log('warn', `💡 Use preço ≥ R$${r.precificacao.sugerido.precoMinimo} ou ajuste margem em 💰 Precificação`);
+            }
+          } else {
+            log('error', `❌ Falhou: ${r.error || 'erro'}`);
+          }
           setMetrics(m => ({ ...m, errors: m.errors + 1, totalProcessed: m.totalProcessed + 1 }));
         }
       } catch(e) {
@@ -3863,7 +3895,187 @@ function ListingsPage(){
   );
 }
 
+// Config persistente para precificação (localStorage)
+const PRICING_CFG_KEY = 'precificacao_config';
+function loadPricingCfg(){
+  try {
+    const raw = localStorage.getItem(PRICING_CFG_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch(_) { return null; }
+}
+function savePricingCfg(cfg){
+  try { localStorage.setItem(PRICING_CFG_KEY, JSON.stringify(cfg)); } catch(_){}
+}
+
+// Hook: calculadora top-seller (debounced)
+function useTopSellerPricing(){
+  const saved = loadPricingCfg() || {};
+  const [custo, setCusto]                 = useState(saved.custo        ?? 150);
+  const [margem, setMargem]               = useState(saved.margem       ?? 20);
+  const [tipoAnuncio, setTipoAnuncio]     = useState(saved.tipoAnuncio  ?? 'premium');
+  const [pesoKg, setPesoKg]               = useState(saved.pesoKg       ?? 1);
+  const [imposto, setImposto]             = useState(saved.imposto      ?? 6);
+  const [custoEmbalagem, setCustoEmbalagem] = useState(saved.custoEmbalagem ?? 2);
+  const [freteGratis, setFreteGratis]     = useState(saved.freteGratis  ?? true);
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    savePricingCfg({ custo, margem, tipoAnuncio, pesoKg, imposto, custoEmbalagem, freteGratis });
+    if (!custo || custo <= 0) { setRes(null); return; }
+    const ctl = new AbortController();
+    setLoading(true);
+    const id = setTimeout(async () => {
+      try {
+        const r = await fetch('/api/precificacao/calcular', {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json' },
+          signal: ctl.signal,
+          body: JSON.stringify({ custo, margemDesejada: margem, tipoAnuncio, pesoKg, imposto, custoEmbalagem, freteGratis }),
+        });
+        const d = await r.json();
+        setRes(d);
+      } catch(_) {} finally { setLoading(false); }
+    }, 250);
+    return () => { clearTimeout(id); ctl.abort(); };
+  }, [custo, margem, tipoAnuncio, pesoKg, imposto, custoEmbalagem, freteGratis]);
+
+  return { custo, setCusto, margem, setMargem, tipoAnuncio, setTipoAnuncio,
+           pesoKg, setPesoKg, imposto, setImposto, custoEmbalagem, setCustoEmbalagem,
+           freteGratis, setFreteGratis, res, loading };
+}
+
+// Card de status com cor adaptada
+function PricingStatusCard({ res }){
+  if (!res) return null;
+  if (!res.success) {
+    return <div className="err mt-3 text-sm">❌ {res.error}{res.dica ? <div className="sub text-xs mt-1">{res.dica}</div> : null}</div>;
+  }
+  const b = res.breakdown;
+  const cor = {
+    prejuizo:  '#ef4444',
+    critico:   '#ef4444',
+    apertado:  '#eab308',
+    saudavel:  '#22c55e',
+    excelente: '#a855f7',
+  }[res.status.nivel] || '#22c55e';
+  return (
+    <div className="card p-5 mt-4" style={{borderColor:cor+'55'}}>
+      <div className="flex items-center gap-3 flex-wrap mb-3">
+        <div className="text-xl">{res.status.emoji}</div>
+        <div className="flex-1 min-w-[200px]">
+          <div className="sub text-[11px] uppercase tracking-wide">Preço sugerido</div>
+          <div className="mono font-extrabold text-2xl" style={{color:cor}}>R$ {res.precoSugerido.toFixed(2).replace('.',',')}</div>
+        </div>
+        <div className="text-right">
+          <div className="sub text-[11px] uppercase tracking-wide">Margem real</div>
+          <div className="mono font-bold text-lg" style={{color:cor}}>{b.margemReal}</div>
+        </div>
+      </div>
+      <div className="sub text-xs mb-3">
+        📉 Preço mínimo (margem 0%): <span className="mono" style={{color:'#eab308'}}>R$ {res.precoMinimo.toFixed(2).replace('.',',')}</span>
+      </div>
+
+      <div className="card2 p-3 text-xs mono">
+        <div className="flex justify-between py-0.5"><span className="sub">Custo produto</span><span>R$ {b.custoProduto.toFixed(2).replace('.',',')}</span></div>
+        <div className="flex justify-between py-0.5"><span className="sub">Embalagem</span><span>R$ {Number(b.custoEmbalagem).toFixed(2).replace('.',',')}</span></div>
+        <div className="flex justify-between py-0.5"><span className="sub">Frete (sua parte)</span><span>R$ {b.custoFrete.toFixed(2).replace('.',',')} <span className="sub">(de R$ {b.freteTotal.toFixed(2).replace('.',',')})</span></span></div>
+        <div className="flex justify-between py-0.5"><span className="sub">Comissão ML {b.comissaoML.percentual}</span><span>R$ {b.comissaoML.valor.toFixed(2).replace('.',',')}</span></div>
+        <div className="flex justify-between py-0.5"><span className="sub">Taxa fixa</span><span>R$ {Number(b.taxaFixa).toFixed(2).replace('.',',')}</span></div>
+        <div className="flex justify-between py-0.5"><span className="sub">Imposto {b.imposto.percentual}</span><span>R$ {b.imposto.valor.toFixed(2).replace('.',',')}</span></div>
+        <div className="border-t border-[var(--line)] mt-1 pt-1 flex justify-between font-bold" style={{color:cor}}>
+          <span>💵 Lucro líquido</span>
+          <span>R$ {b.lucroLiquido.toFixed(2).replace('.',',')}</span>
+        </div>
+      </div>
+
+      <div className="mt-3 text-xs" style={{color:cor}}>💡 {res.status.alerta}</div>
+      {res.dicas?.map((d,i) => <div key={i} className="sub text-xs mt-1">{d}</div>)}
+
+      <div className="mt-3 pt-3 border-t border-[var(--line)] grid grid-cols-2 gap-3 text-xs">
+        <div>
+          <div className="sub">🔄 Clássico ({res.comparativo.classico.comissao})</div>
+          <div className="mono font-bold">R$ {res.comparativo.classico.preco.toFixed(2).replace('.',',')}</div>
+        </div>
+        <div>
+          <div className="sub">🔄 Premium ({res.comparativo.premium.comissao})</div>
+          <div className="mono font-bold" style={{color:'var(--green)'}}>R$ {res.comparativo.premium.preco.toFixed(2).replace('.',',')}</div>
+        </div>
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-[var(--line)]">
+        <div className="sub text-xs mb-1">📦 Sugestão KIT (2 unidades — dilui taxa fixa)</div>
+        <div className="mono text-sm">R$ {res.precoKit.preco.toFixed(2).replace('.',',')} · lucro R$ {res.precoKit.lucro.toFixed(2).replace('.',',')} · margem {res.precoKit.margem}</div>
+      </div>
+    </div>
+  );
+}
+
+// Simulador de venda: "Quanto sobra se eu vender por R$X?"
+function SalesSimulator(){
+  const [precoVenda, setPrecoVenda] = useState(199.90);
+  const [custo, setCusto]           = useState(85);
+  const [tipoAnuncio, setTipo]      = useState('premium');
+  const [imposto, setImp]           = useState(6);
+  const [pesoKg, setPeso]           = useState(1);
+  const [res, setRes] = useState(null);
+  const simular = async () => {
+    const r = await fetch('/api/precificacao/simular', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ precoVenda, custo, tipoAnuncio, imposto, pesoKg, freteGratis:true, custoEmbalagem:2 }),
+    });
+    setRes(await r.json());
+  };
+  const corStatus = {
+    prejuizo:'#ef4444', vermelho:'#ef4444', amarelo:'#eab308', verde:'#22c55e', diamante:'#a855f7'
+  }[res?.status] || '#22c55e';
+
+  return (
+    <div className="card p-5 mb-4">
+      <h3 className="font-bold mb-2">🔍 Simulador de Venda</h3>
+      <p className="sub text-xs mb-3">Quanto sobra no bolso se eu vender um SKU por R$X?</p>
+      <div className="grid grid-cols-4 gap-3">
+        <div><label className="label">Preço de venda</label><input type="number" step="0.01" className="input" value={precoVenda} onChange={e=>setPrecoVenda(parseFloat(e.target.value)||0)}/></div>
+        <div><label className="label">Custo</label><input type="number" step="0.01" className="input" value={custo} onChange={e=>setCusto(parseFloat(e.target.value)||0)}/></div>
+        <div><label className="label">Tipo</label>
+          <select className="input" value={tipoAnuncio} onChange={e=>setTipo(e.target.value)}>
+            <option value="premium">Premium (17%)</option>
+            <option value="classico">Clássico (13%)</option>
+          </select>
+        </div>
+        <div><label className="label">Peso (kg)</label><input type="number" step="0.1" className="input" value={pesoKg} onChange={e=>setPeso(parseFloat(e.target.value)||0)}/></div>
+      </div>
+      <div className="grid grid-cols-4 gap-3 mt-3">
+        <div><label className="label">Imposto (%)</label><input type="number" className="input" value={imposto} onChange={e=>setImp(parseFloat(e.target.value)||0)}/></div>
+        <div className="col-span-3 flex items-end">
+          <button className="btn" style={{width:'auto', padding:'10px 20px'}} onClick={simular}>🔍 Simular</button>
+        </div>
+      </div>
+      {res?.success && (
+        <div className="card2 p-3 mt-4 text-xs mono">
+          <div className="flex justify-between py-0.5"><span className="sub">Receita</span><span>R$ {res.precoVenda.toFixed(2).replace('.',',')}</span></div>
+          <div className="flex justify-between py-0.5"><span className="sub">− Comissão {res.descontos.comissaoML.percentual}</span><span>R$ {res.descontos.comissaoML.valor.toFixed(2).replace('.',',')}</span></div>
+          <div className="flex justify-between py-0.5"><span className="sub">− Taxa fixa</span><span>R$ {Number(res.descontos.taxaFixa).toFixed(2).replace('.',',')}</span></div>
+          <div className="flex justify-between py-0.5"><span className="sub">− Embalagem</span><span>R$ {Number(res.descontos.embalagem).toFixed(2).replace('.',',')}</span></div>
+          <div className="flex justify-between py-0.5"><span className="sub">− Frete</span><span>R$ {res.descontos.frete.toFixed(2).replace('.',',')}</span></div>
+          <div className="flex justify-between py-0.5"><span className="sub">− Imposto {res.descontos.imposto.percentual}</span><span>R$ {res.descontos.imposto.valor.toFixed(2).replace('.',',')}</span></div>
+          <div className="flex justify-between py-0.5"><span className="sub">− Custo</span><span>R$ {res.custo.toFixed(2).replace('.',',')}</span></div>
+          <div className="border-t border-[var(--line)] mt-1 pt-1 flex justify-between font-bold" style={{color:corStatus}}>
+            <span>{res.emoji} Lucro</span>
+            <span>R$ {res.lucroLiquido.toFixed(2).replace('.',',')} · {res.margemReal}</span>
+          </div>
+          <div className="mt-2 text-xs" style={{color:corStatus}}>{res.veredicto}</div>
+        </div>
+      )}
+      {res?.success === false && <div className="err mt-3 text-xs">❌ {res.error}</div>}
+    </div>
+  );
+}
+
 function PricingPage(){
+  const topSeller = useTopSellerPricing();
   const [cost,setCost] = useState(80);
   const [fee,setFee] = useState(0.13);
   const [margin,setMargin] = useState(15);
@@ -3917,9 +4129,78 @@ function PricingPage(){
 
   return (
     <div>
-      <h1 className="text-2xl font-extrabold mb-1">Precificação</h1>
-      <p className="sub text-sm mb-6">Comparativo com concorrência, calculadora e inteligência FIPE</p>
+      <h1 className="text-2xl font-extrabold mb-1">💰 Precificação Inteligente — Nível Top Seller</h1>
+      <p className="sub text-sm mb-6">Calcula lucro líquido por SKU com todos os custos (comissão, taxa fixa, frete, imposto, embalagem) + comparativo FIPE</p>
 
+      {/* ===== TOP SELLER — Calculadora + Simulador ===== */}
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <div className="card p-5">
+          <h3 className="font-bold mb-1">📊 Calculadora Top Seller</h3>
+          <p className="sub text-xs mb-4">Ajustes ao vivo · configurações salvas automaticamente</p>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="label">Custo do produto (R$)</label>
+              <input type="number" step="0.01" className="input" value={topSeller.custo} onChange={e=>topSeller.setCusto(parseFloat(e.target.value)||0)}/>
+            </div>
+            <div><label className="label">Peso (kg)</label>
+              <input type="number" step="0.1" className="input" value={topSeller.pesoKg} onChange={e=>topSeller.setPesoKg(parseFloat(e.target.value)||0)}/>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <label className="label">Margem desejada ({topSeller.margem}%)</label>
+            <input type="range" min="5" max="50" value={topSeller.margem} onChange={e=>topSeller.setMargem(parseInt(e.target.value))} className="w-full"/>
+            <div className="flex justify-between text-[10px] sub mt-1 mono">
+              <span>5%</span><span style={{color:'#eab308'}}>15%</span><span style={{color:'var(--green)'}}>25%</span><span>50%</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 mt-3">
+            <div><label className="label">Imposto (%)</label>
+              <input type="number" step="0.5" className="input" value={topSeller.imposto} onChange={e=>topSeller.setImposto(parseFloat(e.target.value)||0)}/>
+            </div>
+            <div><label className="label">Embalagem (R$)</label>
+              <input type="number" step="0.01" className="input" value={topSeller.custoEmbalagem} onChange={e=>topSeller.setCustoEmbalagem(parseFloat(e.target.value)||0)}/>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <label className="label">Tipo de anúncio</label>
+            <div className="flex gap-2">
+              <button className={topSeller.tipoAnuncio==='premium'?'btn':'btn-ghost'} style={{flex:1, padding:'8px 12px'}} onClick={()=>topSeller.setTipoAnuncio('premium')}>💎 Premium (17%)</button>
+              <button className={topSeller.tipoAnuncio==='classico'?'btn':'btn-ghost'} style={{flex:1, padding:'8px 12px'}} onClick={()=>topSeller.setTipoAnuncio('classico')}>📦 Clássico (13%)</button>
+            </div>
+          </div>
+
+          <label className="flex items-center gap-2 mt-3 text-sm cursor-pointer">
+            <input type="checkbox" checked={topSeller.freteGratis} onChange={e=>topSeller.setFreteGratis(e.target.checked)}/>
+            <span>🚚 Frete grátis (embutido no preço · ML prioriza)</span>
+          </label>
+
+          {topSeller.loading && <div className="sub text-xs mt-3">⏳ Calculando…</div>}
+        </div>
+
+        <div>
+          <PricingStatusCard res={topSeller.res}/>
+        </div>
+      </div>
+
+      <SalesSimulator/>
+
+      <div className="card p-5 mb-6">
+        <h3 className="font-bold mb-2">📋 Tabela de Referência (ML 2026 · autopeças)</h3>
+        <table className="w-full text-sm">
+          <thead><tr><th>Tipo</th><th>Comissão</th><th>Taxa fixa</th><th>Visibilidade</th><th>Parcela</th></tr></thead>
+          <tbody>
+            <tr><td className="mono">Clássico</td><td className="mono">13%</td><td className="mono sub">R$ 6,75 se &lt; R$79</td><td><span className="badge b-yellow">Moderada</span></td><td className="mono">6x</td></tr>
+            <tr><td className="mono" style={{color:'var(--green)'}}>Premium ⭐</td><td className="mono">17%</td><td className="mono sub">R$ 6,75 se &lt; R$79</td><td><span className="badge b-green">Máxima (3×)</span></td><td className="mono">12x</td></tr>
+            <tr><td className="mono sub">Grátis</td><td className="mono">0%</td><td className="mono sub">—</td><td><span className="badge" style={{borderColor:'#555',color:'#888'}}>Mínima</span></td><td className="mono">—</td></tr>
+          </tbody>
+        </table>
+        <div className="sub text-xs mt-3">💡 Top sellers usam SEMPRE Premium + Frete Grátis. Comissão maior mas visibilidade 3× compensa.</div>
+      </div>
+
+      {/* ===== SEÇÕES ORIGINAIS (concorrência, calculadora simples, FIPE) ===== */}
       <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="card p-0 col-span-2">
           <div className="p-4 border-b border-[var(--line)] flex justify-between items-center">

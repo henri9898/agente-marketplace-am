@@ -266,6 +266,183 @@ setInterval(rodarMonitorCompat, 6 * 60 * 60 * 1000);
 setTimeout(rodarMonitorCompat, 30_000);
 
 // ============================================================
+// PRECIFICAÇÃO — helpers (calcular, simular). Replica dos top sellers.
+// Fórmula: Preço = (Custo + Embalagem + Frete + TaxaFixa) / (1 - comissão - margem - imposto)
+// ============================================================
+const ML_COMISSOES_2026 = { classico: 0.13, premium: 0.17 };
+const ML_TAXA_FIXA_ABAIXO_79 = 6.75;
+const ML_SUBSIDIO_FRETE = 0.5; // ML subsidia 50% se MercadoLíder + preço > R$79
+const ML_TABELA_FRETE_2026 = [
+  { ate: 0.3,  valor: 15.90 },
+  { ate: 0.5,  valor: 18.90 },
+  { ate: 1,    valor: 22.90 },
+  { ate: 2,    valor: 28.90 },
+  { ate: 5,    valor: 35.90 },
+  { ate: 10,   valor: 45.90 },
+  { ate: 30,   valor: 65.90 },
+  { ate: 9999, valor: 99.90 },
+];
+const _r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+const _r1 = n => Math.round((Number(n) || 0) * 10) / 10;
+function _freteVendedor(pesoKg, freteGratis) {
+  const f = ML_TABELA_FRETE_2026.find(x => pesoKg <= x.ate)?.valor || 99.90;
+  return { freteTotal: f, custoVendedor: freteGratis ? f * (1 - ML_SUBSIDIO_FRETE) : 0 };
+}
+
+function calcularPrecoTopSeller(input) {
+  const {
+    custo,
+    margemDesejada = 20,
+    tipoAnuncio    = 'premium',
+    pesoKg         = 1,
+    imposto        = 0,
+    custoEmbalagem = 2,
+    freteGratis    = true,
+  } = input || {};
+
+  if (!custo || custo <= 0) return { success:false, error:'Custo inválido' };
+
+  const comissaoML     = ML_COMISSOES_2026[tipoAnuncio] ?? ML_COMISSOES_2026.premium;
+  const margemDecimal  = margemDesejada / 100;
+  const impostoDecimal = imposto / 100;
+
+  const { freteTotal, custoVendedor: custFreteVendedor } = _freteVendedor(pesoKg, freteGratis);
+  const custoBase = Number(custo) + Number(custoEmbalagem) + custFreteVendedor;
+
+  const divisor = 1 - comissaoML - margemDecimal - impostoDecimal;
+  if (divisor <= 0) {
+    return {
+      success:false,
+      error:'Margem + comissão + imposto excedem 100%. Reduza a margem.',
+      dica:'Top sellers trabalham com margem entre 15-25% em autopeças',
+    };
+  }
+
+  let precoVenda = custoBase / divisor;
+  let taxaFixa = 0;
+  if (precoVenda < 79) {
+    taxaFixa = ML_TAXA_FIXA_ABAIXO_79;
+    precoVenda = (custoBase + taxaFixa) / divisor;
+  }
+  // Arredondamento psicológico (,90)
+  precoVenda = Math.ceil(precoVenda) - 0.10;
+  if (precoVenda < custoBase + 1) precoVenda = Math.ceil(custoBase / divisor) + 0.90;
+
+  const comissaoValor = precoVenda * comissaoML;
+  const impostoValor  = precoVenda * impostoDecimal;
+  const lucroLiquido  = precoVenda - custo - custoEmbalagem - comissaoValor - taxaFixa - impostoValor - custFreteVendedor;
+  const margemReal    = (lucroLiquido / precoVenda) * 100;
+
+  let nivel, emoji, alerta;
+  if (lucroLiquido < 0)       { nivel='prejuizo';  emoji='🚨'; alerta='PREJUÍZO! Não publique neste preço. Aumente o preço ou reduza custos.'; }
+  else if (margemReal < 5)    { nivel='critico';   emoji='🔴'; alerta='Margem crítica (<5%). Top sellers evitam operar abaixo de 15%.'; }
+  else if (margemReal < 15)   { nivel='apertado';  emoji='🟡'; alerta='Margem apertada. Considere criar kit pra diluir custos fixos.'; }
+  else if (margemReal < 25)   { nivel='saudavel';  emoji='🟢'; alerta='Margem saudável! Dentro do padrão dos top sellers.'; }
+  else                        { nivel='excelente'; emoji='💎'; alerta='Margem excelente! Produto muito lucrativo.'; }
+
+  const dicas = [];
+  if (precoVenda < 79)             dicas.push('💡 Preço < R$79 = taxa fixa R$6,75. Considere criar KIT pra passar de R$79.');
+  if (tipoAnuncio === 'classico')  dicas.push('💡 Top sellers usam PREMIUM (17% comissão mas 3x mais visibilidade + parcela 12x).');
+  if (!freteGratis)                dicas.push('💡 ML prioriza anúncios com frete grátis. Embuta o frete no preço.');
+  if (margemReal > 10 && margemReal < 15) dicas.push('💡 Margem OK mas apertada. Se concorrente baixar preço, sua margem vira pó.');
+
+  // Preço mínimo (margem 0% — ponto de equilíbrio)
+  const precoMinimo = _r2((custoBase + taxaFixa) / (1 - comissaoML - impostoDecimal));
+
+  // Preço sugerido pra kit (2 unidades — dilui taxa fixa e frete)
+  const kitCustoBase = (custo * 2) + custoEmbalagem + custFreteVendedor;
+  let precoKit = kitCustoBase / divisor;
+  if (precoKit < 79) precoKit = (kitCustoBase + ML_TAXA_FIXA_ABAIXO_79) / divisor;
+  precoKit = Math.ceil(precoKit) - 0.10;
+  const kitTaxa = precoKit < 79 ? ML_TAXA_FIXA_ABAIXO_79 : 0;
+  const lucroKit = precoKit - (custo * 2) - custoEmbalagem - (precoKit * comissaoML) - kitTaxa - (precoKit * impostoDecimal) - custFreteVendedor;
+  const margemKit = (lucroKit / precoKit) * 100;
+
+  return {
+    success: true,
+    precoSugerido: _r2(precoVenda),
+    precoMinimo,
+    precoKit: { preco: _r2(precoKit), lucro: _r2(lucroKit), margem: _r1(margemKit) + '%' },
+    breakdown: {
+      custoProduto:  _r2(custo),
+      custoEmbalagem,
+      custoFrete:    _r2(custFreteVendedor),
+      freteTotal:    freteTotal,
+      subsidioML:    _r2(freteTotal * ML_SUBSIDIO_FRETE),
+      comissaoML:    { percentual: (comissaoML*100)+'%', valor: _r2(comissaoValor) },
+      taxaFixa,
+      imposto:       { percentual: imposto+'%', valor: _r2(impostoValor) },
+      custoTotal:    _r2(custo + custoEmbalagem + comissaoValor + taxaFixa + impostoValor + custFreteVendedor),
+      lucroLiquido:  _r2(lucroLiquido),
+      margemReal:    _r1(margemReal) + '%',
+    },
+    status: { nivel, emoji, alerta },
+    dicas,
+    tipoAnuncio,
+    comparativo: {
+      classico: {
+        preco: _r2(Math.ceil((custoBase / Math.max(0.01, 1 - 0.13 - margemDecimal - impostoDecimal))) - 0.10),
+        comissao: '13%',
+      },
+      premium: {
+        preco: _r2(Math.ceil((custoBase / Math.max(0.01, 1 - 0.17 - margemDecimal - impostoDecimal))) - 0.10),
+        comissao: '17%',
+      },
+    },
+  };
+}
+
+function simularLucroVenda(input) {
+  const {
+    precoVenda, custo,
+    tipoAnuncio    = 'premium',
+    pesoKg         = 1,
+    freteGratis    = true,
+    imposto        = 0,
+    custoEmbalagem = 2,
+  } = input || {};
+
+  if (!precoVenda || precoVenda <= 0) return { success:false, error:'Preço de venda inválido' };
+  if (!custo || custo < 0)            return { success:false, error:'Custo inválido' };
+
+  const comissaoML    = ML_COMISSOES_2026[tipoAnuncio] ?? ML_COMISSOES_2026.premium;
+  const comissaoValor = precoVenda * comissaoML;
+  const taxaFixa      = precoVenda < 79 ? ML_TAXA_FIXA_ABAIXO_79 : 0;
+  const impostoValor  = precoVenda * (imposto / 100);
+  const { custoVendedor: custoFrete } = _freteVendedor(pesoKg, freteGratis);
+
+  const lucroLiquido = precoVenda - custo - custoEmbalagem - comissaoValor - taxaFixa - impostoValor - custoFrete;
+  const margemReal   = (lucroLiquido / precoVenda) * 100;
+
+  let status='verde', emoji='🟢';
+  if      (lucroLiquido < 0)     { status='prejuizo'; emoji='🚨'; }
+  else if (margemReal   < 5)     { status='vermelho'; emoji='🔴'; }
+  else if (margemReal   < 15)    { status='amarelo';  emoji='🟡'; }
+  else if (margemReal  >= 25)    { status='diamante'; emoji='💎'; }
+
+  return {
+    success: true,
+    precoVenda: _r2(precoVenda),
+    custo: _r2(custo),
+    descontos: {
+      comissaoML: { percentual: (comissaoML*100)+'%', valor: _r2(comissaoValor) },
+      taxaFixa,
+      imposto:    { percentual: imposto+'%', valor: _r2(impostoValor) },
+      embalagem:  custoEmbalagem,
+      frete:      _r2(custoFrete),
+    },
+    lucroLiquido: _r2(lucroLiquido),
+    margemReal:   _r1(margemReal) + '%',
+    status, emoji,
+    veredicto: lucroLiquido < 0 ? '🚨 PREJUÍZO! NÃO VENDA neste preço!' :
+               margemReal < 5  ? '🔴 Margem muito baixa — aumente o preço' :
+               margemReal < 15 ? '🟡 Margem apertada — cuidado com concorrência' :
+               margemReal < 25 ? '🟢 Margem saudável — padrão top seller' :
+                                 '💎 Margem excelente — produto muito lucrativo',
+  };
+}
+
+// ============================================================
 // GERADOR SEO — helpers (títulos, descrições, anti-duplicidade)
 // Regras ML: máx 60 chars, PMME (Produto+Marca+Modelo+Especificação),
 // palavra-chave no início, sem preço/promoção/caps/especiais,
@@ -1427,6 +1604,53 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         }
         if (titulo.length > 60) titulo = titulo.slice(0, 57) + '...';
 
+        // 4.1) Precificação top-seller — bloqueia prejuízo, alerta margem crítica
+        let precoFinal = Number(produto.preco) || 0;
+        let precificacaoInfo = null;
+        const custoBase = Number(produto.precoCusto) || Number(produto.preco) || 0;
+        const pricingCfg = body.pricingConfig || {};
+        const bloquearPrejuizo = pricingCfg.bloquearPrejuizo !== false; // default true
+        if (custoBase > 0) {
+          try {
+            const calc = calcularPrecoTopSeller({
+              custo: custoBase,
+              margemDesejada: pricingCfg.margemDesejada ?? 20,
+              tipoAnuncio:    pricingCfg.tipoAnuncio    ?? 'premium',
+              pesoKg:         Number(produto.pesoBruto || produto.pesoLiq || pricingCfg.pesoKg) || 1,
+              imposto:        pricingCfg.imposto        ?? 0,
+              custoEmbalagem: pricingCfg.custoEmbalagem ?? 2,
+              freteGratis:    pricingCfg.freteGratis    !== false,
+            });
+            if (calc.success) {
+              precificacaoInfo = calc;
+              // Se usuário pediu preço sugerido, usa; senão mantém do Bling
+              if (pricingCfg.usarPrecoSugerido) precoFinal = calc.precoSugerido;
+              console.log(`💰 Preço: R$${precoFinal.toFixed(2)} (custo R$${custoBase.toFixed(2)}, margem ${calc.breakdown.margemReal}, ${calc.status.emoji} ${calc.status.nivel})`);
+              // Simula com o preço final pra ver se passa
+              const sim = simularLucroVenda({
+                precoVenda: precoFinal, custo: custoBase,
+                tipoAnuncio:    pricingCfg.tipoAnuncio    ?? 'premium',
+                pesoKg:         Number(produto.pesoBruto || produto.pesoLiq || pricingCfg.pesoKg) || 1,
+                imposto:        pricingCfg.imposto        ?? 0,
+                custoEmbalagem: pricingCfg.custoEmbalagem ?? 2,
+                freteGratis:    pricingCfg.freteGratis    !== false,
+              });
+              if (sim.success && sim.lucroLiquido < 0 && bloquearPrejuizo) {
+                return send(res, 200, {
+                  success: false,
+                  error: `🚨 PREJUÍZO bloqueado: preço R$${precoFinal.toFixed(2)} gera lucro ${sim.lucroLiquido}. Use preço ≥ R$${calc.precoMinimo}`,
+                  precificacao: { atual: sim, sugerido: calc },
+                });
+              }
+              if (sim.success && sim.status === 'vermelho') {
+                console.warn(`🔴 MARGEM CRÍTICA (${sim.margemReal}) — publicando mesmo assim · ${produto.nome}`);
+              }
+            }
+          } catch(err) {
+            console.error('💰 precificação erro:', err.message);
+          }
+        }
+
         // 5) Body do anúncio
         const imagens = (produto.midia?.imagens?.internas || [])
           .map(img => ({ source: img.link }))
@@ -1438,7 +1662,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         const anuncio = {
           title:       titulo,
           category_id: categoryId,
-          price:       Number(produto.preco) || 0,
+          price:       precoFinal,
           currency_id: 'BRL',
           available_quantity: Math.max(1, Number(estoque) || 1),
           buying_mode:  'buy_it_now',
@@ -1487,6 +1711,14 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
             status:     mj.status,
             category_id: categoryId,
             compatibilidade: 'auto-resolvendo em background',
+            precificacao: precificacaoInfo ? {
+              precoUsado:    precoFinal,
+              precoSugerido: precificacaoInfo.precoSugerido,
+              precoMinimo:   precificacaoInfo.precoMinimo,
+              margem:        precificacaoInfo.breakdown.margemReal,
+              lucroLiquido:  precificacaoInfo.breakdown.lucroLiquido,
+              status:        precificacaoInfo.status,
+            } : null,
           });
         }
         return send(res, 200, {
@@ -2077,6 +2309,58 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
             titulo: recTitulo,
             descricao: descricoes[0],
             motivo,
+          },
+        });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ============= PRECIFICAÇÃO INTELIGENTE — NÍVEL TOP SELLER =============
+    // Calcula lucro líquido por SKU incluindo comissão, taxa fixa, frete, imposto, embalagem
+
+    if (u.pathname === '/api/precificacao/calcular' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const r = calcularPrecoTopSeller(body);
+        return send(res, 200, r);
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    if (u.pathname === '/api/precificacao/simular' && req.method === 'POST') {
+      try {
+        const body = await readBody(req);
+        const r = simularLucroVenda(body);
+        return send(res, 200, r);
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    if (u.pathname === '/api/precificacao/calcular-lote' && req.method === 'POST') {
+      try {
+        const { produtos, margemDesejada=20, tipoAnuncio='premium', imposto=0 } = await readBody(req);
+        const resultados = [];
+        for (const p of (produtos||[])) {
+          const r = calcularPrecoTopSeller({
+            custo: p.custo || p.preco,
+            margemDesejada, tipoAnuncio,
+            pesoKg: p.pesoKg || p.peso || 1,
+            imposto,
+            custoEmbalagem: p.custoEmbalagem || 2,
+            freteGratis: true,
+          });
+          resultados.push({ nome:p.nome, sku:p.sku||p.codigo, ...r });
+        }
+        const saudaveis = resultados.filter(r => r.status?.nivel === 'saudavel' || r.status?.nivel === 'excelente').length;
+        const apertados = resultados.filter(r => r.status?.nivel === 'apertado').length;
+        const criticos  = resultados.filter(r => r.status?.nivel === 'critico' || r.status?.nivel === 'prejuizo').length;
+        return send(res, 200, {
+          success: true,
+          produtos: resultados,
+          resumo: {
+            total: resultados.length, saudaveis, apertados, criticos,
+            alertaGeral: criticos > 0
+              ? `🚨 ${criticos} produtos com margem crítica! Revise antes de publicar.`
+              : apertados > 0
+                ? `🟡 ${apertados} produtos com margem apertada. Considere criar kits.`
+                : `🟢 Todos os ${saudaveis} produtos com margem saudável!`,
           },
         });
       } catch(err) { return send(res, 200, { success:false, error: err.message }); }
