@@ -3361,6 +3361,20 @@ function ProfileDropdown({ user, onLogout, onGoTo, onOpenNotifPanel }) {
 
             <div className="dropdown-divider"/>
 
+            {/* SEÇÃO — SETORES (acesso rápido, útil sobretudo no mobile onde a bottom nav só tem 5) */}
+            <div className="dropdown-section">
+              <div className="dropdown-label">Setores</div>
+              <MenuItem icon="📊" label="Visão Geral"    onClick={() => go(() => onGoTo && onGoTo('overview'))}/>
+              <MenuItem icon="🛍️" label="Comercial"       onClick={() => go(() => onGoTo && onGoTo('comercial'))}/>
+              <MenuItem icon="💰" label="Financeiro"      onClick={() => go(() => onGoTo && onGoTo('financeiro'))}/>
+              <MenuItem icon="📦" label="Logística"       onClick={() => go(() => onGoTo && onGoTo('logistica'))}/>
+              <MenuItem icon="💬" label="Atendimento"     onClick={() => go(() => onGoTo && onGoTo('atendimento'))}/>
+              <MenuItem icon="📈" label="Marketing"       onClick={() => go(() => onGoTo && onGoTo('marketing'))}/>
+              <MenuItem icon="🤖" label="Agente IA"       onClick={() => go(() => onGoTo && onGoTo('agent'))}/>
+            </div>
+
+            <div className="dropdown-divider"/>
+
             {/* SEÇÃO 2 — CONTA */}
             <div className="dropdown-section">
               <div className="dropdown-label">Conta</div>
@@ -3563,17 +3577,25 @@ function SACHeaderBadge(){
 }
 
 function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNotifPanel}){
+  // Estrutura reorganizada por SETORES (nível empresa).
+  // Cada setor agrupa funcionalidades relacionadas e tem sub-abas internas.
   const tabs = [
-    ['overview','🏠 Visão Geral'],
-    ['products','📦 Produtos'],
-    ['agent',   '🤖 Agente'],
-    ['listings','📢 Anúncios'],
-    ['pricing', '💰 Precificação'],
-    ['ranking', '🏆 Ranking'],
-    ['health',  '🏥 Saúde'],
-    ['integrations','🔌 Integrações'],
-    ['config',  '⚙️ Config'],
+    ['overview',     '📊 Visão Geral'],
+    ['comercial',    '🛍️ Comercial'],
+    ['financeiro',   '💰 Financeiro'],
+    ['logistica',    '📦 Logística'],
+    ['atendimento',  '💬 Atendimento'],
+    ['marketing',    '📈 Marketing'],
+    ['agent',        '🤖 Agente'],
+    ['config',       '⚙️ Config'],
   ];
+  // Mapeia qual setor está "ativo" visualmente mesmo com rotas legadas
+  const activeSector = {
+    products:'comercial', listings:'comercial',
+    pricing:'financeiro',
+    ranking:'marketing', health:'marketing',
+    integrations:'config',
+  }[tab] || tab;
   return (
     <header className="border-b border-[var(--line)] sticky top-0 bg-[var(--bg)]/95 backdrop-blur z-40">
       <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center gap-6">
@@ -3586,7 +3608,7 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
         </div>
         <nav className="desktop-header-tabs flex gap-1 ml-6">
           {tabs.map(([k,lbl])=>(
-            <div key={k} className={`tab ${tab===k?'active':''}`} onClick={()=>setTab(k)}>{lbl}</div>
+            <div key={k} className={`tab ${activeSector===k?'active':''}`} onClick={()=>setTab(k)}>{lbl}</div>
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-3">
@@ -3608,21 +3630,31 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
 // ======= MOBILE BOTTOM NAV (estilo Instagram/Airbnb) =======
 // 5 abas principais; as demais (Anúncios, Ranking, Saúde, Integrações) continuam no ProfileDropdown
 function MobileBottomNav({ tab, setTab }){
+  // 5 setores mais usados. Financeiro/Atendimento/Marketing acessíveis via ProfileDropdown.
   const items = [
-    { key:'overview', icon:'🏠', label:'Início' },
-    { key:'products', icon:'📦', label:'Produtos' },
-    { key:'agent',    icon:'🤖', label:'Agente' },
-    { key:'pricing',  icon:'💰', label:'Preço' },
-    { key:'config',   icon:'⚙️', label:'Config' },
+    { key:'overview',   icon:'📊', label:'Geral' },
+    { key:'comercial',  icon:'🛍️', label:'Comercial' },
+    { key:'logistica',  icon:'📦', label:'Logística' },
+    { key:'agent',      icon:'🤖', label:'Agente' },
+    { key:'config',     icon:'⚙️', label:'Config' },
   ];
+  // Agrupa rotas legadas para destacar aba correta
+  const activeSector = {
+    products:'comercial', listings:'comercial',
+    pricing:'financeiro',
+    ranking:'marketing', health:'marketing',
+    integrations:'config',
+    atendimento:'atendimento',
+    financeiro:'financeiro', marketing:'marketing',
+  }[tab] || tab;
   return (
     <nav className="mobile-bottom-nav" role="navigation" aria-label="Navegação principal">
       {items.map(it => (
         <button
           key={it.key}
-          className={tab === it.key ? 'active' : ''}
+          className={activeSector === it.key ? 'active' : ''}
           onClick={() => setTab(it.key)}
-          aria-current={tab === it.key ? 'page' : undefined}
+          aria-current={activeSector === it.key ? 'page' : undefined}
           aria-label={it.label}
         >
           <span className="nav-icon">{it.icon}</span>
@@ -4318,7 +4350,8 @@ function SACCard({ sac, onExpand }){
 }
 
 // Painel completo — modal com lista de pendentes + previews + config
-function SACPanel({ sac, onClose }){
+// Com prop inline=true, vira painel inline (sem overlay fixed)
+function SACPanel({ sac, onClose, inline }){
   const [previews, setPreviews] = useState({}); // { questionId: { resposta, categoria } }
   const [edits, setEdits]       = useState({}); // { questionId: string }
 
@@ -4352,9 +4385,10 @@ function SACPanel({ sac, onClose }){
   };
 
   const perguntas = sac.pendentes?.perguntas || [];
-  return (
-    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.72)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
-      <div onClick={e=>e.stopPropagation()} className="card" style={{maxWidth:860,width:'100%',maxHeight:'92vh',overflow:'auto',padding:24}}>
+  const innerContent = (
+      <div onClick={e=>e.stopPropagation()} className="card" style={inline
+          ? { width:'100%', padding:24 }
+          : { maxWidth:860,width:'100%',maxHeight:'92vh',overflow:'auto',padding:24 }}>
         <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 className="font-bold text-lg">💬 Central de Perguntas SAC</h3>
           <div className="flex gap-2">
@@ -4363,7 +4397,7 @@ function SACPanel({ sac, onClose }){
               onClick={() => sac.responderTodas(true)} disabled={sac.busy || !perguntas.length}>
               🤖 Auto-Responder Todas
             </button>
-            <button className="btn-ghost" onClick={onClose} style={{padding:'4px 10px'}}>✕</button>
+            {!inline && <button className="btn-ghost" onClick={onClose} style={{padding:'4px 10px'}}>✕</button>}
           </div>
         </div>
 
@@ -4446,6 +4480,11 @@ function SACPanel({ sac, onClose }){
           </>
         )}
       </div>
+  );
+  if (inline) return innerContent;
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.72)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      {innerContent}
     </div>
   );
 }
@@ -4606,7 +4645,7 @@ function EstoqueCard({ estoque, onExpand }){
 }
 
 // Painel completo — tabela + ações + config
-function EstoquePanel({ estoque, onClose }){
+function EstoquePanel({ estoque, onClose, inline }){
   const [editQty, setEditQty] = useState({}); // {itemId: value}
   const itens = estoque.itens || [];
 
@@ -4618,15 +4657,16 @@ function EstoquePanel({ estoque, onClose }){
     if (!d.success) alert('❌ ' + (d.error || 'erro'));
   };
 
-  return (
-    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.72)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
-      <div onClick={e=>e.stopPropagation()} className="card" style={{maxWidth:960,width:'100%',maxHeight:'92vh',overflow:'auto',padding:24}}>
+  const innerContent = (
+      <div onClick={e=>e.stopPropagation()} className="card" style={inline
+          ? { width:'100%', padding:24 }
+          : { maxWidth:960,width:'100%',maxHeight:'92vh',overflow:'auto',padding:24 }}>
         <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <h3 className="font-bold text-lg">📦 Gestão de Estoque — {itens.length} anúncios</h3>
           <div className="flex gap-2">
             <button className="btn-ghost" onClick={estoque.refresh} disabled={estoque.busy}>🔄 Atualizar</button>
             <button className="btn" style={{padding:'6px 14px'}} onClick={estoque.sincronizar} disabled={estoque.busy}>🔄 Sync Bling→ML</button>
-            <button className="btn-ghost" onClick={onClose} style={{padding:'4px 10px'}}>✕</button>
+            {!inline && <button className="btn-ghost" onClick={onClose} style={{padding:'4px 10px'}}>✕</button>}
           </div>
         </div>
 
@@ -4737,6 +4777,11 @@ function EstoquePanel({ estoque, onClose }){
           </>
         )}
       </div>
+  );
+  if (inline) return innerContent;
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.72)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      {innerContent}
     </div>
   );
 }
@@ -8218,7 +8263,372 @@ function RankingPage({agent, notif, onGoToAgent}){
   );
 }
 
-function ConfigPage({user, notif}){
+// ===== SubTabs — componente reutilizável para sub-abas dentro de cada setor =====
+function SubTabs({ tabs, activeTab, onTabChange }){
+  return (
+    <div style={{
+      display:'flex', gap:4, borderBottom:'1px solid var(--line)',
+      marginBottom:20, overflowX:'auto', WebkitOverflowScrolling:'touch',
+    }}>
+      {tabs.map(t => {
+        const active = t.id === activeTab;
+        return (
+          <button
+            key={t.id}
+            onClick={() => onTabChange(t.id)}
+            style={{
+              background:'none', border:'none', cursor:'pointer',
+              padding:'10px 14px', fontSize:13, fontWeight:600,
+              color: active ? 'var(--green)' : 'var(--mut)',
+              borderBottom: active ? '2px solid var(--green)' : '2px solid transparent',
+              marginBottom: -1,
+              whiteSpace:'nowrap',
+              transition:'.15s',
+            }}>
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ===== Helper: persiste sub-aba ativa por setor (com override opcional) =====
+function useSubTab(sectorKey, defaultTab, override){
+  const storeKey = `sector_${sectorKey}_subtab`;
+  const [sub, setSubState] = useState(() => {
+    if (override) return override;
+    try { return localStorage.getItem(storeKey) || defaultTab; }
+    catch(_){ return defaultTab; }
+  });
+  // Sempre que o override mudar (ex: usuário clicou em rota antiga "products"), sincroniza
+  useEffect(() => {
+    if (override && override !== sub) {
+      setSubState(override);
+      try { localStorage.setItem(storeKey, override); } catch(_){}
+    }
+  }, [override]); // eslint-disable-line
+  const setSub = (v) => { setSubState(v); try { localStorage.setItem(storeKey, v); } catch(_){} };
+  return [sub, setSub];
+}
+
+// ===== Placeholder de funcionalidade futura =====
+function ComingSoonCard({ icon, title, description, features }){
+  return (
+    <div className="card p-8 text-center" style={{borderColor:'rgba(0,167,255,.25)'}}>
+      <div className="text-5xl mb-3">{icon}</div>
+      <h2 className="text-xl font-bold" style={{color:'var(--green)'}}>{title}</h2>
+      <p className="sub text-sm mt-2 max-w-md mx-auto">{description}</p>
+      {features && features.length > 0 && (
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          {features.map((f, i) => (
+            <span key={i} className="chip" style={{fontSize:11}}>{f}</span>
+          ))}
+        </div>
+      )}
+      <div className="sub text-xs mt-4">🚧 Em desenvolvimento</div>
+    </div>
+  );
+}
+
+// ===== SETOR: 🛍️ COMERCIAL (Catálogo, Anúncios, SEO, Compatibilidade) =====
+function ComercialSectorPage({ agent, onGoToAgent, initialSub }){
+  const [sub, setSub] = useSubTab('comercial', 'catalogo', initialSub);
+  const compat = useCompatStatus();
+  const tabs = [
+    { id:'catalogo', label:'📦 Catálogo' },
+    { id:'anuncios', label:'📢 Anúncios' },
+    { id:'seo',      label:'📝 SEO' },
+    { id:'compat',   label:'🚗 Compatibilidade' },
+  ];
+  return (
+    <div>
+      <h1 className="text-2xl font-extrabold mb-1">🛍️ Comercial</h1>
+      <p className="sub text-sm mb-4">Catálogo, anúncios, SEO e compatibilidade de autopeças</p>
+      <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
+      <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
+        {sub === 'catalogo' && <ProductsPage agent={agent} onGoToAgent={onGoToAgent}/>}
+        {sub === 'anuncios' && <ListingsPage/>}
+        {sub === 'seo' && <SEOSubPage/>}
+        {sub === 'compat' && <CompatSubPage compat={compat}/>}
+      </CardErrorBoundary>
+    </div>
+  );
+}
+
+// SEO sub-page: gerador standalone pra qualquer produto digitado
+function SEOSubPage(){
+  const [form, setForm] = useState({ nome:'Pastilha Freio Dianteira', marca:'Fras-le', partNumber:'PD-1234', especificacoes:'' });
+  const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const gerar = async () => {
+    setLoading(true);
+    try {
+      const ml = loadMLTokens();
+      const r = await fetch('/api/seo/gerar-completo', {
+        method:'POST',
+        headers:{ 'Authorization':'Bearer '+(ml?.access_token||''), 'Content-Type':'application/json' },
+        body: JSON.stringify(form),
+      });
+      setRes(await r.json());
+    } catch(e) { setRes({ success:false, error:e.message }); }
+    finally { setLoading(false); }
+  };
+  return (
+    <div>
+      <div className="card p-5 mb-4">
+        <h3 className="font-bold mb-3">📝 Gerador SEO (Título + Descrição + Anti-Duplicidade)</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div><label className="label">Nome do produto</label>
+            <input className="input" value={form.nome} onChange={e=>setForm({...form, nome:e.target.value})}/></div>
+          <div><label className="label">Marca</label>
+            <input className="input" value={form.marca} onChange={e=>setForm({...form, marca:e.target.value})}/></div>
+          <div><label className="label">Part Number</label>
+            <input className="input" value={form.partNumber} onChange={e=>setForm({...form, partNumber:e.target.value})}/></div>
+          <div><label className="label">Especificações (opcional)</label>
+            <input className="input" value={form.especificacoes} onChange={e=>setForm({...form, especificacoes:e.target.value})}/></div>
+        </div>
+        <button className="btn mt-4" style={{padding:'10px 22px'}} onClick={gerar} disabled={loading}>
+          {loading ? '🔄 gerando...' : '🤖 Gerar SEO'}
+        </button>
+      </div>
+      {res?.success && (
+        <>
+          <div className="card p-5 mb-4">
+            <div className="sub text-[11px] uppercase tracking-wide mb-2">── Títulos gerados ──</div>
+            {res.titulos.map(t => {
+              const rec = res.recomendacao?.titulo?.variacao === t.variacao;
+              return (
+                <div key={t.variacao} className="card2 p-3 mb-2" style={{borderColor: rec ? 'rgba(34,197,94,.45)' : undefined}}>
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <span className="chip" style={{fontSize:11}}>Variação {t.variacao}</span>
+                    <span className="sub text-xs">{t.foco}</span>
+                    <span className="sub text-xs mono">· {t.chars} chars</span>
+                    {rec && <span className="chip" style={{color:'var(--green)',borderColor:'rgba(34,197,94,.5)',fontSize:11}}>✅ Recomendado</span>}
+                  </div>
+                  <div className="mono text-sm">{t.titulo}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="card p-5 mb-4">
+            <div className="sub text-[11px] uppercase tracking-wide mb-2">── Anti-duplicidade ──</div>
+            <div className={res.duplicidade?.duplicado ? 'err' : 'ok'} style={{fontSize:12}}>
+              {res.duplicidade?.aviso || 'verificação não executada'}
+            </div>
+          </div>
+          <div className="card p-5">
+            <div className="sub text-[11px] uppercase tracking-wide mb-2">── Descrição recomendada ──</div>
+            <pre className="text-xs mono" style={{whiteSpace:'pre-wrap', maxHeight:300, overflow:'auto', margin:0}}>
+{res.recomendacao?.descricao?.descricao}
+            </pre>
+          </div>
+        </>
+      )}
+      {res?.success === false && <div className="err">❌ {res.error}</div>}
+    </div>
+  );
+}
+
+// Compat sub-page: status + forçar resolução + histórico
+function CompatSubPage({ compat }){
+  const pendCount = compat.pend?.total ?? null;
+  const s = compat.stats;
+  return (
+    <div>
+      <div className="card p-5 mb-4">
+        <h3 className="font-bold mb-1">🚗 Compatibilidade automática de autopeças</h3>
+        <p className="sub text-sm mb-4">IA resolve sozinha em ~95% dos casos usando sugestões do ML, análise de título e universal.</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+          <div className="card2 p-4">
+            <div className="sub text-xs">Pendentes agora</div>
+            <div className="text-2xl mono mt-1" style={{color: pendCount > 0 ? 'var(--yellow)' : 'var(--green)'}}>
+              {pendCount == null ? '—' : pendCount}
+            </div>
+          </div>
+          <div className="card2 p-4">
+            <div className="sub text-xs">Resolvidas pela IA</div>
+            <div className="text-2xl mono mt-1" style={{color:'var(--green)'}}>{s?.sucessos || 0}</div>
+          </div>
+          <div className="card2 p-4">
+            <div className="sub text-xs">Taxa de sucesso</div>
+            <div className="text-2xl mono mt-1">{s?.tentativas ? Math.round((s.sucessos/s.tentativas)*100)+'%' : '—'}</div>
+          </div>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <button className="btn-ghost" onClick={compat.refresh} disabled={compat.busy}>🔄 Atualizar</button>
+          <button className="btn" style={{padding:'10px 22px'}} onClick={compat.forcar} disabled={compat.busy}>
+            {compat.busy ? '🔄 resolvendo...' : '🤖 Forçar resolução agora'}
+          </button>
+        </div>
+        {compat.msg && <div className="sub text-xs mt-3 mono">{compat.msg}</div>}
+      </div>
+      {s?.historico?.length > 0 && (
+        <div className="card p-5">
+          <div className="sub text-[11px] uppercase tracking-wide mb-2">Últimas resoluções automáticas</div>
+          {s.historico.slice(0, 20).map((h,i) => (
+            <div key={i} className="text-xs flex gap-3 py-2 border-b border-[var(--line)] flex-wrap mono">
+              <span className="sub">{new Date(h.ts).toLocaleString('pt-BR')}</span>
+              <span>{h.itemId}</span>
+              <span className="chip" style={{fontSize:10, padding:'1px 6px'}}>{h.metodo}</span>
+              {h.resumo && <span className="sub">{h.resumo}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== SETOR: 💰 FINANCEIRO =====
+function FinanceiroSectorPage(){
+  const [sub, setSub] = useSubTab('financeiro', 'calculadora');
+  const tabs = [
+    { id:'calculadora', label:'🧮 Calculadora' },
+    { id:'simulador',   label:'🔍 Simulador' },
+    { id:'relatorios',  label:'📊 Relatórios' },
+  ];
+  return (
+    <div>
+      <h1 className="text-2xl font-extrabold mb-1">💰 Financeiro</h1>
+      <p className="sub text-sm mb-4">Precificação inteligente, simulador de venda e relatórios</p>
+      <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
+      <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
+        {sub === 'calculadora' && <PricingPage/>}
+        {sub === 'simulador' && <div><SalesSimulator/></div>}
+        {sub === 'relatorios' && <ComingSoonCard
+          icon="📊" title="Relatórios financeiros"
+          description="DRE simplificado, lucro líquido por período, conciliação de repasses do Mercado Livre."
+          features={['DRE simplificado', 'Lucro por SKU', 'Repasses ML', 'Impostos estimados']}/>}
+      </CardErrorBoundary>
+    </div>
+  );
+}
+
+// ===== SETOR: 📦 LOGÍSTICA =====
+function LogisticaSectorPage(){
+  const [sub, setSub] = useSubTab('logistica', 'estoque');
+  const estoque = useEstoque();
+  const tabs = [
+    { id:'estoque',    label:'📦 Estoque' },
+    { id:'pedidos',    label:'🛒 Pedidos' },
+    { id:'envios',     label:'🚚 Envios' },
+    { id:'etiquetas',  label:'🏷️ Etiquetas' },
+  ];
+  return (
+    <div>
+      <h1 className="text-2xl font-extrabold mb-1">📦 Logística</h1>
+      <p className="sub text-sm mb-4">Estoque, pedidos, envios e etiquetas</p>
+      <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
+      <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
+        {sub === 'estoque' && <EstoquePanel estoque={estoque} inline/>}
+        {sub === 'pedidos' && <ComingSoonCard
+          icon="🛒" title="Gestão de Pedidos"
+          description="Lista completa de pedidos com timeline: Vendido → Pago → Enviado → Entregue."
+          features={['Timeline por pedido', 'Filtros por status', 'Detalhes do comprador', 'Nota fiscal']}/>}
+        {sub === 'envios' && <ComingSoonCard
+          icon="🚚" title="Gestão de Envios"
+          description="Envios pendentes, prazo de despacho, rastreamento em tempo real."
+          features={['Envios pendentes', 'Prazo de despacho', 'Rastreamento', 'Alertas de atraso']}/>}
+        {sub === 'etiquetas' && <ComingSoonCard
+          icon="🏷️" title="Emissão de Etiquetas"
+          description="Gerar etiquetas de envio em PDF, impressão em lote, Mercado Envios integrado."
+          features={['PDF em lote', 'Mercado Envios', 'Correios', 'Jadlog']}/>}
+      </CardErrorBoundary>
+    </div>
+  );
+}
+
+// ===== SETOR: 💬 ATENDIMENTO =====
+function AtendimentoSectorPage(){
+  const [sub, setSub] = useSubTab('atendimento', 'perguntas');
+  const sac = useSAC();
+  const tabs = [
+    { id:'perguntas',  label:'❓ Perguntas' },
+    { id:'mensagens',  label:'💬 Mensagens' },
+    { id:'avaliacoes', label:'⭐ Avaliações' },
+  ];
+  return (
+    <div>
+      <h1 className="text-2xl font-extrabold mb-1">💬 Atendimento</h1>
+      <p className="sub text-sm mb-4">Perguntas, mensagens pós-venda e avaliações</p>
+      <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
+      <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
+        {sub === 'perguntas' && <SACPanel sac={sac} inline/>}
+        {sub === 'mensagens' && <ComingSoonCard
+          icon="💬" title="Mensagens pós-venda"
+          description="Mensagens automáticas após compra, envio e entrega. Templates configuráveis."
+          features={['Pós-compra', 'Pós-envio', 'Pós-entrega', 'Templates']}/>}
+        {sub === 'avaliacoes' && <ComingSoonCard
+          icon="⭐" title="Gestão de Avaliações"
+          description="Avaliações recebidas, respostas automáticas com IA, alertas de negativas."
+          features={['Resposta auto', 'Alertas 1-3★', 'Pedidos de revisão', 'Score do vendedor']}/>}
+      </CardErrorBoundary>
+    </div>
+  );
+}
+
+// ===== SETOR: 📈 MARKETING =====
+function MarketingSectorPage({ agent, notif, onGoToAgent, initialSub }){
+  const [sub, setSub] = useSubTab('marketing', 'ranking', initialSub);
+  const tabs = [
+    { id:'ranking',      label:'🏆 Ranking' },
+    { id:'performance',  label:'📊 Performance' },
+    { id:'concorrencia', label:'🎯 Concorrência' },
+  ];
+  return (
+    <div>
+      <h1 className="text-2xl font-extrabold mb-1">📈 Marketing</h1>
+      <p className="sub text-sm mb-4">Ranking de produtos, performance dos anúncios e inteligência de concorrência</p>
+      <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
+      <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
+        {sub === 'ranking' && <RankingPage agent={agent} notif={notif} onGoToAgent={onGoToAgent}/>}
+        {sub === 'performance' && <HealthPage/>}
+        {sub === 'concorrencia' && <ComingSoonCard
+          icon="🎯" title="Inteligência de Concorrência"
+          description="Monitoramento de preços dos concorrentes, keywords em alta e hot items do nicho."
+          features={['Preços rivais', 'Keywords', 'Hot items', 'Tendências']}/>}
+      </CardErrorBoundary>
+    </div>
+  );
+}
+
+// ===== SETOR: ⚙️ CONFIGURAÇÕES =====
+function ConfigSectorPage({ user, notif, agent, initialSub }){
+  const [sub, setSub] = useSubTab('config', 'integracoes', initialSub);
+  const wh = useWebhooks();
+  const [whInstruOpen, setWhInstruOpen] = useState(false);
+  const tabs = [
+    { id:'integracoes', label:'🔌 Integrações' },
+    { id:'webhooks',    label:'🔔 Webhooks' },
+    { id:'conta',       label:'👤 Conta' },
+    { id:'seguranca',   label:'🛡️ Segurança' },
+  ];
+  return (
+    <div>
+      <h1 className="text-2xl font-extrabold mb-1">⚙️ Configurações</h1>
+      <p className="sub text-sm mb-4">Integrações, webhooks, conta e segurança</p>
+      <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
+      <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
+        {sub === 'integracoes' && <IntegracoesPage agent={agent} notif={notif}/>}
+        {sub === 'webhooks' && (
+          <div>
+            <WebhooksCard wh={wh} onOpenInstrucoes={() => setWhInstruOpen(true)}/>
+            <VendasRecentesCard wh={wh}/>
+            {whInstruOpen && <WebhooksInstrucoesModal onClose={() => setWhInstruOpen(false)}/>}
+          </div>
+        )}
+        {sub === 'conta' && <ContaConfigPage user={user} notif={notif}/>}
+        {sub === 'seguranca' && <ComingSoonCard
+          icon="🛡️" title="Segurança"
+          description="Logs de acesso, sessões ativas, 2FA, tokens de API."
+          features={['Logs acesso', 'Sessões ativas', '2FA', 'Tokens API']}/>}
+      </CardErrorBoundary>
+    </div>
+  );
+}
+
+function ContaConfigPage({user, notif}){
   const params = [
     ['Limite diário de publicação','15 anúncios/dia'],
     ['Crescimento semanal','30% por semana'],
@@ -8397,15 +8807,49 @@ function Dashboard({user, onLogout}){
       />
       <main className="max-w-[1400px] mx-auto px-6 py-8">
         {showPermBanner && <PermissionBanner onEnable={handleEnablePush} onDismiss={handleDismissBanner}/>}
-        {tab==='overview' && <OverviewPage onGoToProducts={() => setTab('products')} onGoToIntegrations={() => setTab('integrations')}/>}
-        {tab==='products' && <ProductsPage agent={agent} onGoToAgent={() => setTab('agent')}/>}
-        {tab==='agent'    && <AgentePage   agent={agent}/>}
-        {tab==='listings' && <ListingsPage/>}
-        {tab==='pricing'  && <PricingPage/>}
-        {tab==='ranking'  && <RankingPage agent={agent} notif={notif} onGoToAgent={() => setTab('agent')}/>}
-        {tab==='health'   && <HealthPage/>}
-        {tab==='integrations' && <IntegracoesPage agent={agent} notif={notif}/>}
-        {tab==='config'   && <ConfigPage user={user} notif={notif}/>}
+
+        {/* Setor 📊 Visão Geral */}
+        {tab==='overview' && (
+          <OverviewPage onGoToProducts={() => setTab('comercial')} onGoToIntegrations={() => setTab('config')}/>
+        )}
+
+        {/* Setor 🛍️ Comercial — legado: products → Catálogo, listings → Anúncios */}
+        {(tab==='comercial' || tab==='products' || tab==='listings') && (
+          <ComercialSectorPage
+            agent={agent}
+            onGoToAgent={() => setTab('agent')}
+            initialSub={tab==='products' ? 'catalogo' : tab==='listings' ? 'anuncios' : undefined}
+          />
+        )}
+
+        {/* Setor 💰 Financeiro — legado: pricing */}
+        {(tab==='financeiro' || tab==='pricing') && <FinanceiroSectorPage/>}
+
+        {/* Setor 📦 Logística */}
+        {tab==='logistica' && <LogisticaSectorPage/>}
+
+        {/* Setor 💬 Atendimento */}
+        {tab==='atendimento' && <AtendimentoSectorPage/>}
+
+        {/* Setor 📈 Marketing — legado: ranking, health */}
+        {(tab==='marketing' || tab==='ranking' || tab==='health') && (
+          <MarketingSectorPage
+            agent={agent} notif={notif}
+            onGoToAgent={() => setTab('agent')}
+            initialSub={tab==='ranking' ? 'ranking' : tab==='health' ? 'performance' : undefined}
+          />
+        )}
+
+        {/* Setor 🤖 Agente */}
+        {tab==='agent' && <AgentePage agent={agent}/>}
+
+        {/* Setor ⚙️ Configurações — legado: integrations */}
+        {(tab==='config' || tab==='integrations') && (
+          <ConfigSectorPage
+            user={user} notif={notif} agent={agent}
+            initialSub={tab==='integrations' ? 'integracoes' : undefined}
+          />
+        )}
       </main>
       <footer className="border-t border-[var(--line)] mt-16">
         <div className="max-w-[1400px] mx-auto px-6 py-6 flex justify-between text-xs sub">
