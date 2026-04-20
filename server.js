@@ -266,6 +266,118 @@ setInterval(rodarMonitorCompat, 6 * 60 * 60 * 1000);
 setTimeout(rodarMonitorCompat, 30_000);
 
 // ============================================================
+// SAC AUTOMÁTICO — stats, regras, monitor 10min
+// ============================================================
+const sacStats = {
+  tentativas:   0,
+  respondidas:  0,
+  falhas:       0,
+  ultima:       null,
+  ultimaVerif:  null,
+  historico:    [], // últimas 50 { ts, questionId, pergunta, categoria, enviada }
+};
+
+// Regras de resposta pra autopeças — 10 categorias + fallback
+const SAC_REGRAS = [
+  { categoria: 'compatibilidade',
+    keywords: ['serve','compatível','compativel','encaixa','funciona','cabe','adapta','meu carro','meu veículo','meu veiculo'],
+    base: (ctx) => ctx.compatTexto
+      ? `Olá! Este produto é compatível com os seguintes veículos: ${ctx.compatTexto}. Por favor, verifique a tabela completa de compatibilidade no anúncio para confirmar se atende ao seu veículo. Qualquer dúvida, estamos à disposição!`
+      : `Olá! Por favor, verifique a tabela de compatibilidade no anúncio — lá estão listados todos os veículos compatíveis com esta peça. Se o seu veículo estiver na lista, pode comprar com segurança! Qualquer dúvida, estamos à disposição.`,
+  },
+  { categoria: 'estoque',
+    keywords: ['tem','disponível','disponivel','estoque','pronta entrega','tem disponível'],
+    base: () => `Olá! Sim, produto disponível em estoque e pronta entrega! Após a confirmação do pagamento, enviamos em até 24h úteis. Pode comprar com segurança!`,
+  },
+  { categoria: 'frete',
+    keywords: ['frete','envio','entrega','prazo','quanto tempo','dias','chega','demora'],
+    base: () => `Olá! O prazo de envio é calculado automaticamente pelo Mercado Envios e aparece no anúncio conforme o seu CEP. Enviamos em até 24h úteis após a confirmação do pagamento. Compre e acompanhe o rastreamento pela plataforma!`,
+  },
+  { categoria: 'garantia',
+    keywords: ['garantia','garante','defeito','troca','devolver','devolução'],
+    base: () => `Olá! Este produto possui garantia do fabricante. Caso apresente qualquer defeito, você pode solicitar a devolução ou troca diretamente pela plataforma do Mercado Livre com total segurança. Pode comprar tranquilo!`,
+  },
+  { categoria: 'nota_fiscal',
+    keywords: ['nota fiscal','nf','nfe','nota','cnpj','cpf'],
+    base: () => `Olá! Sim, emitimos nota fiscal em todas as vendas. A NF é enviada automaticamente para o e-mail cadastrado na plataforma. Pode comprar com segurança!`,
+  },
+  { categoria: 'desconto',
+    keywords: ['desconto','menor preço','preço','negocia','negociar','mais barato','valor'],
+    base: () => `Olá! O preço anunciado já é o melhor que conseguimos oferecer com a qualidade garantida. Aproveite que o produto está com estoque disponível e compre agora! Qualquer dúvida estamos à disposição.`,
+  },
+  { categoria: 'parcelamento',
+    keywords: ['parcela','parcelo','parcelamento','cartão','cartao','crédito','credito','vezes','12x'],
+    base: () => `Olá! Sim, aceitamos parcelamento em até 12x sem juros pelo Mercado Pago! Basta selecionar a opção de pagamento na hora da compra. Pode comprar com segurança!`,
+  },
+  { categoria: 'original',
+    keywords: ['original','paralelo','genuíno','genuino','qualidade','marca'],
+    base: () => `Olá! Este é um produto de alta qualidade, conforme especificado no anúncio. Todos os detalhes de marca e especificações estão na ficha técnica. Garantia do fabricante inclusa. Pode comprar com confiança!`,
+  },
+  { categoria: 'kit',
+    keywords: ['kit','vem','acompanha','inclui','conteúdo','peças','unidade','quantidade','par','jogo'],
+    base: () => `Olá! O conteúdo do kit está descrito na ficha técnica e na descrição do anúncio. Confira os detalhes e, se restar alguma dúvida, estamos à disposição!`,
+  },
+  { categoria: 'saudacao',
+    keywords: ['bom dia','boa tarde','boa noite','olá','oi','ola'],
+    base: () => `Olá! Seja bem-vindo à nossa loja! Como posso te ajudar? Se tiver dúvidas sobre compatibilidade, estoque ou envio, estamos à disposição. Pode comprar com segurança!`,
+  },
+];
+
+function categorizarPerguntaSAC(pergunta, compatTexto) {
+  const low = String(pergunta || '').toLowerCase();
+  for (const regra of SAC_REGRAS) {
+    if (regra.keywords.some(kw => low.includes(kw))) {
+      return { categoriaDetectada: regra.categoria, respostaGerada: limparRespostaSAC(regra.base({ compatTexto })) };
+    }
+  }
+  return {
+    categoriaDetectada: 'fallback',
+    respostaGerada: limparRespostaSAC(`Olá! Obrigado pelo seu interesse. Todas as informações sobre o produto, incluindo compatibilidade, especificações e envio, estão disponíveis na descrição e ficha técnica do anúncio. Caso precise de algo específico, estamos à disposição!`),
+  };
+}
+
+// Limpa resposta: remove links externos, telefones, emails, WhatsApp (proibido pelo ML) + trunca 2000
+function limparRespostaSAC(texto) {
+  let t = String(texto || '')
+    .replace(/https?:\/\/\S+/gi, '')                                   // URLs
+    .replace(/(?:whats?app|wpp|zap)\S*/gi, '')                          // WhatsApp
+    .replace(/\b\d{2,5}[\s.-]?\d{3,5}[\s.-]?\d{4}\b/g, '')              // telefones
+    .replace(/[\w._%+-]+@[\w.-]+\.[A-Za-z]{2,}/g, '')                   // emails
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (t.length > 2000) t = t.slice(0, 1997) + '...';
+  return t;
+}
+
+async function rodarMonitorSAC() {
+  const tokens = loadTokens();
+  if (!tokens.ml_access_token) return;
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/ml/sac/pendentes`, {
+      headers:{ 'Authorization':'Bearer '+tokens.ml_access_token }});
+    const d = await r.json().catch(()=>({}));
+    sacStats.ultimaVerif = new Date().toISOString();
+    if (d.success && d.total > 0) {
+      console.log(`💬 [sac-monitor] ${d.total} perguntas pendentes — respondendo...`);
+      const autoR = await fetch(`http://127.0.0.1:${PORT}/api/ml/sac/auto-responder-todos`, {
+        method:'POST',
+        headers:{ 'Authorization':'Bearer '+tokens.ml_access_token, 'Content-Type':'application/json' },
+        body: JSON.stringify({ modoAutomatico:true }),
+      });
+      const autoD = await autoR.json().catch(()=>({}));
+      if (autoD.respondidas > 0) {
+        console.log(`💬 [sac-monitor] ${autoD.respondidas}/${autoD.total} respondidas automaticamente ✅`);
+      }
+    }
+  } catch(err) {
+    // silencioso (ML pode estar momentaneamente fora)
+  }
+}
+setInterval(rodarMonitorSAC, 10 * 60 * 1000);
+// Primeira verificação 45s após boot
+setTimeout(rodarMonitorSAC, 45_000);
+
+// ============================================================
 // PRECIFICAÇÃO — helpers (calcular, simular). Replica dos top sellers.
 // Fórmula: Preço = (Custo + Embalagem + Frete + TaxaFixa) / (1 - comissão - margem - imposto)
 // ============================================================
@@ -2331,6 +2443,217 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         const r = simularLucroVenda(body);
         return send(res, 200, r);
       } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ============= SAC AUTOMÁTICO — PERGUNTAS ML =============
+    // TMR baixo = ML prioriza anúncios. Top sellers respondem em < 2 min.
+
+    // Listar perguntas NÃO respondidas
+    if (u.pathname === '/api/ml/sac/pendentes' && req.method === 'GET') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+          headers:{ 'Authorization':'Bearer '+token },
+        });
+        const me = await meResp.json();
+        const qResp = await fetch(
+          `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&status=UNANSWERED&api_version=4&sort_fields=date_created&sort_types=DESC`,
+          { headers:{ 'Authorization':'Bearer '+token }}
+        );
+        const qData = await qResp.json().catch(()=>({}));
+        return send(res, 200, {
+          success: true,
+          total: qData.total || 0,
+          perguntas: (qData.questions || []).map(q => ({
+            id:          q.id,
+            texto:       q.text,
+            itemId:      q.item_id,
+            data:        q.date_created,
+            compradorId: q.from?.id,
+            status:      q.status,
+          })),
+        });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Listar TODAS (respondidas e não)
+    if (u.pathname === '/api/ml/sac/todas' && req.method === 'GET') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+          headers:{ 'Authorization':'Bearer '+token },
+        });
+        const me = await meResp.json();
+        const qResp = await fetch(
+          `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&api_version=4&sort_fields=date_created&sort_types=DESC&limit=50`,
+          { headers:{ 'Authorization':'Bearer '+token }}
+        );
+        const qData = await qResp.json().catch(()=>({}));
+        return send(res, 200, {
+          success: true,
+          total: qData.total || 0,
+          perguntas: (qData.questions || []).map(q => ({
+            id:       q.id,
+            texto:    q.text,
+            resposta: q.answer?.text || null,
+            itemId:   q.item_id,
+            data:     q.date_created,
+            status:   q.status,
+          })),
+        });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Responder uma pergunta (manual)
+    if (u.pathname === '/api/ml/sac/responder' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { questionId, texto } = await readBody(req);
+        if (!questionId || !texto) return send(res, 400, { success:false, error:'questionId e texto obrigatórios' });
+        const textoSafe = limparRespostaSAC(texto);
+        const r = await fetch('https://api.mercadolibre.com/answers', {
+          method:'POST',
+          headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+          body: JSON.stringify({ question_id: questionId, text: textoSafe }),
+        });
+        const d = await r.json().catch(()=>({}));
+        return send(res, 200, r.ok
+          ? { success:true, message:'Resposta enviada!', data:d }
+          : { success:false, error: d.message || 'Erro ao responder', details:d }
+        );
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Gerar resposta automática pra UMA pergunta (preview)
+    if (u.pathname === '/api/ml/sac/auto-responder' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { questionId, pergunta, itemId } = await readBody(req);
+        if (!pergunta) return send(res, 400, { success:false, error:'pergunta obrigatória' });
+        let itemTitle = '', itemPrice = 0, compatTexto = '';
+        if (itemId) {
+          try {
+            const ir = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+              headers:{ 'Authorization':'Bearer '+token }});
+            const it = await ir.json();
+            itemTitle = it.title || ''; itemPrice = it.price || 0;
+          } catch(_) {}
+          try {
+            const cr = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+              headers:{ 'Authorization':'Bearer '+token }});
+            const cd = await cr.json();
+            if (cd.products?.length > 0) {
+              compatTexto = cd.products.slice(0, 10)
+                .map(p => p.catalog_product_name || p.id).join(', ');
+            }
+          } catch(_) {}
+        }
+        const { respostaGerada, categoriaDetectada } = categorizarPerguntaSAC(pergunta, compatTexto);
+        return send(res, 200, {
+          success: true,
+          questionId, pergunta, categoriaDetectada,
+          respostaGerada, itemTitle, preview: true,
+        });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Responder TODAS pendentes (auto)
+    if (u.pathname === '/api/ml/sac/auto-responder-todos' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { modoAutomatico = false, horarioComercial = false } = await readBody(req);
+        // Horário comercial: 8h-18h local Brasil
+        if (horarioComercial) {
+          const h = new Date().getHours();
+          if (h < 8 || h >= 18) {
+            return send(res, 200, { success:true, total:0, mensagem:'Fora do horário comercial (8h-18h) — aguardando' });
+          }
+        }
+        const base = `http://127.0.0.1:${PORT}`;
+        const pendR = await fetch(`${base}/api/ml/sac/pendentes`, {
+          headers:{ 'Authorization':'Bearer '+token }});
+        const pendD = await pendR.json().catch(()=>({}));
+        if (!pendD.success || pendD.total === 0) {
+          return send(res, 200, { success:true, total:0, mensagem:'Nenhuma pergunta pendente ✅' });
+        }
+        const resultados = [];
+        for (const p of pendD.perguntas) {
+          const autoR = await fetch(`${base}/api/ml/sac/auto-responder`, {
+            method:'POST',
+            headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+            body: JSON.stringify({ questionId:p.id, pergunta:p.texto, itemId:p.itemId }),
+          });
+          const autoD = await autoR.json();
+
+          if (modoAutomatico && autoD.success) {
+            const sendR = await fetch(`${base}/api/ml/sac/responder`, {
+              method:'POST',
+              headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+              body: JSON.stringify({ questionId:p.id, texto: autoD.respostaGerada }),
+            });
+            const sendD = await sendR.json();
+            resultados.push({
+              questionId: p.id, pergunta: p.texto,
+              categoria:  autoD.categoriaDetectada,
+              resposta:   autoD.respostaGerada,
+              enviada:    sendD.success,
+              erro:       sendD.error || null,
+            });
+            console.log(`💬 SAC: "${(p.texto||'').slice(0,50)}..." → ${autoD.categoriaDetectada} → ${sendD.success?'✅ Respondida':'❌ Erro'}`);
+            // Stats
+            sacStats.tentativas++;
+            if (sendD.success) {
+              sacStats.respondidas++;
+              sacStats.historico.unshift({
+                ts: new Date().toISOString(), questionId: p.id,
+                pergunta: (p.texto||'').slice(0,80),
+                categoria: autoD.categoriaDetectada, enviada: true,
+              });
+              sacStats.historico = sacStats.historico.slice(0, 50);
+            } else {
+              sacStats.falhas++;
+            }
+          } else {
+            resultados.push({
+              questionId: p.id, pergunta: p.texto,
+              categoria:  autoD.categoriaDetectada,
+              respostaSugerida: autoD.respostaGerada,
+              preview: true,
+            });
+          }
+          await new Promise(r => setTimeout(r, 500));
+        }
+        sacStats.ultima = new Date().toISOString();
+        return send(res, 200, {
+          success: true,
+          total:        resultados.length,
+          respondidas:  resultados.filter(r => r.enviada).length,
+          previews:     resultados.filter(r => r.preview).length,
+          detalhes:     resultados,
+        });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Excluir pergunta (spam/concorrente)
+    if (u.pathname.startsWith('/api/ml/sac/excluir/') && req.method === 'DELETE') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const qid = u.pathname.replace('/api/ml/sac/excluir/', '');
+        const r = await fetch(`https://api.mercadolibre.com/questions/${qid}`, {
+          method:'DELETE', headers:{ 'Authorization':'Bearer '+token }});
+        return send(res, 200, r.ok ? { success:true } : { success:false, error:'Erro ao excluir' });
+      } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Stats pro dashboard
+    if (u.pathname === '/api/ml/sac/stats' && req.method === 'GET') {
+      return send(res, 200, { success:true, ...sacStats });
     }
 
     if (u.pathname === '/api/precificacao/calcular-lote' && req.method === 'POST') {

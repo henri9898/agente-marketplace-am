@@ -3328,6 +3328,29 @@ function MLStatusIndicator({onClickConnect}){
   );
 }
 
+// Badge compacto de perguntas SAC pendentes no header — clicável
+function SACHeaderBadge(){
+  const [total, setTotal] = useState(null);
+  const refresh = useCallback(async () => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) { setTotal(null); return; }
+    try {
+      const r = await fetch('/api/ml/sac/pendentes', { headers:{ 'Authorization':'Bearer '+ml.access_token }});
+      const d = await r.json().catch(()=>({}));
+      if (d.success) setTotal(d.total || 0);
+    } catch(_){}
+  }, []);
+  useEffect(() => { refresh(); const id = setInterval(refresh, 60_000); return () => clearInterval(id); }, [refresh]);
+  if (total == null || total === 0) return null;
+  return (
+    <span className="chip"
+      style={{color:'var(--yellow)', borderColor:'rgba(234,179,8,.5)', fontSize:11, cursor:'pointer'}}
+      title="Perguntas SAC pendentes — clique para ir à Visão Geral">
+      💬 {total}
+    </span>
+  );
+}
+
 function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNotifPanel}){
   const tabs = [
     ['overview','🏠 Visão Geral'],
@@ -3356,6 +3379,7 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-3">
+          <span onClick={() => setTab('overview')}><SACHeaderBadge/></span>
           <MLStatusIndicator onClickConnect={() => setTab('integrations')}/>
           <NotificationBell count={unreadCount} onClick={onBellClick}/>
           <ProfileDropdown
@@ -3453,6 +3477,299 @@ function CompatCard({ compat }){
   );
 }
 
+// =============== SAC — PERGUNTAS AUTOMÁTICAS ===============
+const SAC_CFG_KEY = 'sac_config';
+function loadSACCfg(){
+  try { return JSON.parse(localStorage.getItem(SAC_CFG_KEY) || '{}'); } catch(_){ return {}; }
+}
+function saveSACCfg(c){ try { localStorage.setItem(SAC_CFG_KEY, JSON.stringify(c)); } catch(_){} }
+
+function useSAC(){
+  const [pendentes, setPendentes] = useState(null);
+  const [stats, setStats]         = useState(null);
+  const [historico, setHistorico] = useState([]); // respondidas recentes
+  const [busy, setBusy]           = useState(false);
+  const [msg, setMsg]             = useState(null);
+  const [cfg, setCfgState]        = useState(() => ({
+    modoAutomatico:   false,
+    horarioComercial: false,
+    monitor10min:     true,
+    ...loadSACCfg(),
+  }));
+
+  const setCfg = (patch) => {
+    const n = { ...cfg, ...patch };
+    setCfgState(n); saveSACCfg(n);
+  };
+
+  const refresh = useCallback(async () => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) { setPendentes(null); setStats(null); return; }
+    try {
+      const [pR, sR] = await Promise.all([
+        fetch('/api/ml/sac/pendentes', { headers:{ 'Authorization':'Bearer '+ml.access_token }}),
+        fetch('/api/ml/sac/stats'),
+      ]);
+      const pJ = await pR.json().catch(()=>null);
+      const sJ = await sR.json().catch(()=>null);
+      if (pJ?.success) setPendentes(pJ);
+      if (sJ?.success) {
+        setStats(sJ);
+        setHistorico(sJ.historico || []);
+      }
+    } catch(_){}
+  }, []);
+
+  const gerarPreview = useCallback(async (pergunta) => {
+    const ml = loadMLTokens();
+    const r = await fetch('/api/ml/sac/auto-responder', {
+      method:'POST',
+      headers:{ 'Authorization':'Bearer '+ml.access_token, 'Content-Type':'application/json' },
+      body: JSON.stringify({ questionId: pergunta.id, pergunta: pergunta.texto, itemId: pergunta.itemId }),
+    });
+    return await r.json().catch(()=>({ success:false }));
+  }, []);
+
+  const enviar = useCallback(async (questionId, texto) => {
+    const ml = loadMLTokens();
+    const r = await fetch('/api/ml/sac/responder', {
+      method:'POST',
+      headers:{ 'Authorization':'Bearer '+ml.access_token, 'Content-Type':'application/json' },
+      body: JSON.stringify({ questionId, texto }),
+    });
+    const d = await r.json().catch(()=>({ success:false }));
+    await refresh();
+    return d;
+  }, [refresh]);
+
+  const excluir = useCallback(async (questionId) => {
+    const ml = loadMLTokens();
+    const r = await fetch(`/api/ml/sac/excluir/${questionId}`, {
+      method:'DELETE', headers:{ 'Authorization':'Bearer '+ml.access_token }});
+    const d = await r.json().catch(()=>({ success:false }));
+    await refresh();
+    return d;
+  }, [refresh]);
+
+  const responderTodas = useCallback(async (modoAutomatico = false) => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await fetch('/api/ml/sac/auto-responder-todos', {
+        method:'POST',
+        headers:{ 'Authorization':'Bearer '+ml.access_token, 'Content-Type':'application/json' },
+        body: JSON.stringify({ modoAutomatico, horarioComercial: cfg.horarioComercial }),
+      });
+      const d = await r.json().catch(()=>({ success:false }));
+      if (d.success) {
+        setMsg(modoAutomatico
+          ? `💬 ${d.respondidas||0}/${d.total||0} perguntas respondidas automaticamente`
+          : `👁️ ${d.total||0} previews gerados — revise cada um antes de enviar`);
+      } else {
+        setMsg('❌ ' + (d.error || d.mensagem || 'falha'));
+      }
+      await refresh();
+      return d;
+    } catch(e) { setMsg('❌ '+e.message); return null; }
+    finally { setBusy(false); }
+  }, [cfg.horarioComercial, refresh]);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 60_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return { pendentes, stats, historico, busy, msg, cfg, setCfg,
+           refresh, gerarPreview, enviar, excluir, responderTodas };
+}
+
+// Card compacto de SAC pra Visão Geral
+function SACCard({ sac, onExpand }){
+  const total = sac.pendentes?.total ?? null;
+  const temPend = total != null && total > 0;
+  const respondidas = sac.stats?.respondidas || 0;
+  return (
+    <div className="card p-5 mb-6" style={{borderColor: temPend ? 'rgba(234,179,8,.45)' : 'rgba(34,197,94,.35)'}}>
+      <div className="flex items-start gap-4 flex-wrap">
+        <div className="text-3xl">💬</div>
+        <div className="flex-1 min-w-[260px]">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-bold">SAC — Perguntas do Mercado Livre</h3>
+            <span className="chip" style={{color: temPend?'var(--yellow)':'var(--green)', borderColor: temPend?'rgba(234,179,8,.5)':'rgba(34,197,94,.5)', fontSize:11}}>
+              {temPend ? `⚠️ ${total} pendente(s)` : '✅ Sem pendências'}
+            </span>
+            <span className="chip" style={{fontSize:11}}>🤖 IA responde</span>
+          </div>
+          <p className="sub text-xs mt-1">
+            {temPend
+              ? <>Clique <b>Responder Todas (IA)</b> pra limpar a fila em segundos. TMR baixo = ML prioriza seus anúncios.</>
+              : <>IA respondeu <span className="mono" style={{color:'var(--green)'}}>{respondidas}</span> automaticamente. Monitor roda a cada 10 min.</>}
+          </p>
+          {sac.msg && <p className="sub text-xs mt-2 mono">{sac.msg}</p>}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <button className="btn-ghost" onClick={sac.refresh} disabled={sac.busy}>🔄 Atualizar</button>
+          <button className="btn-ghost" onClick={onExpand}>👁️ Revisar</button>
+          <button className="btn" style={{width:'auto', padding:'10px 16px'}}
+            onClick={() => sac.responderTodas(true)} disabled={sac.busy || !temPend}>
+            {sac.busy ? '🔄 respondendo...' : '🤖 Responder Todas (IA)'}
+          </button>
+        </div>
+      </div>
+      {sac.historico?.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-[var(--line)]">
+          <div className="sub text-xs mb-2 font-semibold">Últimas respondidas</div>
+          <div className="space-y-1">
+            {sac.historico.slice(0,4).map((h,i) => (
+              <div key={i} className="text-xs flex gap-3 flex-wrap items-center">
+                <span className="sub mono">{new Date(h.ts).toLocaleTimeString('pt-BR')}</span>
+                <span className="chip" style={{fontSize:10, padding:'1px 6px'}}>{h.categoria}</span>
+                <span className="sub truncate" style={{maxWidth:400}}>"{h.pergunta}"</span>
+                {h.enviada && <span style={{color:'var(--green)'}}>✅</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Painel completo — modal com lista de pendentes + previews + config
+function SACPanel({ sac, onClose }){
+  const [previews, setPreviews] = useState({}); // { questionId: { resposta, categoria } }
+  const [edits, setEdits]       = useState({}); // { questionId: string }
+
+  const carregarPreview = async (p) => {
+    if (previews[p.id]) return;
+    const d = await sac.gerarPreview(p);
+    if (d.success) {
+      setPreviews(prev => ({ ...prev, [p.id]: { resposta: d.respostaGerada, categoria: d.categoriaDetectada }}));
+    }
+  };
+
+  useEffect(() => {
+    (sac.pendentes?.perguntas || []).forEach(p => carregarPreview(p));
+  }, [sac.pendentes]);
+
+  const enviarUma = async (p) => {
+    const texto = edits[p.id] ?? previews[p.id]?.resposta;
+    if (!texto) return;
+    const d = await sac.enviar(p.id, texto);
+    if (d.success) {
+      setPreviews(prev => { const n = { ...prev }; delete n[p.id]; return n; });
+    } else {
+      alert('❌ ' + (d.error || 'Erro ao enviar'));
+    }
+  };
+
+  const excluirUma = async (p) => {
+    if (!confirm('Excluir esta pergunta? (use só para spam/concorrente)')) return;
+    await sac.excluir(p.id);
+    setPreviews(prev => { const n = { ...prev }; delete n[p.id]; return n; });
+  };
+
+  const perguntas = sac.pendentes?.perguntas || [];
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.72)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div onClick={e=>e.stopPropagation()} className="card" style={{maxWidth:860,width:'100%',maxHeight:'92vh',overflow:'auto',padding:24}}>
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h3 className="font-bold text-lg">💬 Central de Perguntas SAC</h3>
+          <div className="flex gap-2">
+            <button className="btn-ghost" onClick={sac.refresh} disabled={sac.busy}>🔄 Atualizar</button>
+            <button className="btn" style={{padding:'6px 14px'}}
+              onClick={() => sac.responderTodas(true)} disabled={sac.busy || !perguntas.length}>
+              🤖 Auto-Responder Todas
+            </button>
+            <button className="btn-ghost" onClick={onClose} style={{padding:'4px 10px'}}>✕</button>
+          </div>
+        </div>
+
+        {/* Config */}
+        <div className="card2 p-3 mb-3">
+          <div className="sub text-[11px] uppercase tracking-wide mb-2">Configuração</div>
+          <label className="flex items-center gap-2 text-sm cursor-pointer mb-1">
+            <input type="checkbox" checked={sac.cfg.modoAutomatico} onChange={e=>sac.setCfg({ modoAutomatico: e.target.checked })}/>
+            <span>🤖 Responder automaticamente (sem revisar)</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer mb-1">
+            <input type="checkbox" checked={sac.cfg.monitor10min} onChange={e=>sac.setCfg({ monitor10min: e.target.checked })}/>
+            <span>⏰ Monitor a cada 10 minutos (server-side)</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={sac.cfg.horarioComercial} onChange={e=>sac.setCfg({ horarioComercial: e.target.checked })}/>
+            <span>🕘 Responder apenas em horário comercial (8h-18h)</span>
+          </label>
+        </div>
+
+        {/* Pendentes */}
+        <div className="sub text-xs uppercase tracking-wide mb-2">Pendentes ({perguntas.length})</div>
+        {perguntas.length === 0 && (
+          <div className="ok p-4 mb-3 text-sm">✅ Nenhuma pergunta pendente! TMR baixo = ML prioriza seus anúncios.</div>
+        )}
+        {perguntas.map(p => {
+          const pv = previews[p.id];
+          const editado = edits[p.id] ?? pv?.resposta ?? '';
+          return (
+            <div key={p.id} className="card2 p-3 mb-3">
+              <div className="flex gap-2 flex-wrap items-start mb-2">
+                <span className="text-lg">❓</span>
+                <div className="flex-1 min-w-[280px]">
+                  <div className="text-sm font-semibold">"{p.texto}"</div>
+                  <div className="sub text-[11px] mt-1">
+                    📦 <span className="mono">{p.itemId}</span>
+                    {p.data && <> · há {Math.round((Date.now()-new Date(p.data).getTime())/60000)} min</>}
+                  </div>
+                </div>
+                {pv?.categoria && <span className="chip" style={{fontSize:10}}>{pv.categoria}</span>}
+              </div>
+
+              {!pv && <div className="sub text-xs">⏳ Gerando sugestão…</div>}
+              {pv && (
+                <>
+                  <div className="sub text-[11px] mb-1">🤖 Sugestão da IA ({editado.length} chars):</div>
+                  <textarea
+                    className="input mono text-[12px]"
+                    rows={4}
+                    value={editado}
+                    onChange={e => setEdits(prev => ({ ...prev, [p.id]: e.target.value }))}
+                  />
+                  <div className="flex gap-2 mt-2 flex-wrap">
+                    <button className="btn" style={{padding:'6px 14px'}} onClick={() => enviarUma(p)}>✅ Enviar</button>
+                    <button className="btn-ghost" style={{padding:'6px 10px'}}
+                      onClick={() => setEdits(prev => ({ ...prev, [p.id]: pv.resposta }))}>
+                      🔄 Restaurar sugestão
+                    </button>
+                    <button className="btn-ghost" style={{padding:'6px 10px', color:'#ef4444'}}
+                      onClick={() => excluirUma(p)}>🗑️ Excluir</button>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+
+        {/* Histórico */}
+        {sac.historico?.length > 0 && (
+          <>
+            <div className="sub text-xs uppercase tracking-wide mt-4 mb-2">Respondidas recentemente</div>
+            {sac.historico.slice(0, 10).map((h, i) => (
+              <div key={i} className="text-xs flex gap-3 py-1 border-b border-[var(--line)] flex-wrap">
+                <span className="sub mono">{new Date(h.ts).toLocaleString('pt-BR')}</span>
+                <span className="chip" style={{fontSize:10, padding:'1px 6px'}}>{h.categoria}</span>
+                <span className="sub truncate" style={{maxWidth:500}}>"{h.pergunta}"</span>
+                <span style={{color:'var(--green)'}}>✅ auto</span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Hook: status da compatibilidade automática
 function useCompatStatus(){
   const [stats, setStats]   = useState(null);
@@ -3510,6 +3827,8 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
   const ml = useMLDashboard();
   const hasReal = !!ml.data && ml.data.success;
   const compat  = useCompatStatus();
+  const sac     = useSAC();
+  const [sacOpen, setSacOpen] = useState(false);
 
   const focusData = [
     {foco:'SEO', CTR:0, Conversão:0},
@@ -3602,6 +3921,11 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
       {hasReal && (
         <CompatCard compat={compat}/>
       )}
+
+      {hasReal && (
+        <SACCard sac={sac} onExpand={() => setSacOpen(true)}/>
+      )}
+      {sacOpen && <SACPanel sac={sac} onClose={() => setSacOpen(false)}/>}
 
       {hasReal && ml.data.orders.recent?.length > 0 && (
         <div className="card p-5 mb-6">
