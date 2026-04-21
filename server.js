@@ -16,6 +16,89 @@ const ROOT = __dirname;
 const ENV_FILE = path.join(ROOT, '.env');
 const USERS_FILE = path.join(ROOT, 'users.json');
 
+// ============================================================
+// RATE LIMITER GLOBAL ML — evita HTTP 403/429 por excesso de requests
+// ML permite 1500 req/min por seller; usamos 800 (margem de segurança)
+// ============================================================
+const mlRateLimiter = {
+  requests: [],        // timestamps das últimas requisições
+  maxPerMinute: 800,
+  paused: false,
+  totalHoje: 0,
+  bloqueios: 0,
+  _dayStamp: new Date().toISOString().slice(0,10),
+
+  registrar() {
+    const agora = Date.now();
+    // reseta contador diário
+    const hoje = new Date().toISOString().slice(0,10);
+    if (hoje !== this._dayStamp) { this.totalHoje = 0; this._dayStamp = hoje; }
+    this.requests.push(agora);
+    this.totalHoje++;
+    this.requests = this.requests.filter(t => agora - t < 60000);
+    if (this.requests.length >= this.maxPerMinute) {
+      this.paused = true;
+      this.bloqueios++;
+      console.log(`⚠️ [rate-limiter] PAUSADO! ${this.requests.length}/${this.maxPerMinute} req/min — aguardando 60s`);
+      setTimeout(() => {
+        this.paused = false;
+        this.requests = [];
+        console.log('✅ [rate-limiter] Retomado — contador zerado');
+      }, 60000);
+    }
+  },
+
+  podeFazer() {
+    if (this.paused) return false;
+    const agora = Date.now();
+    this.requests = this.requests.filter(t => agora - t < 60000);
+    return this.requests.length < this.maxPerMinute;
+  },
+
+  status() {
+    const agora = Date.now();
+    this.requests = this.requests.filter(t => agora - t < 60000);
+    return {
+      reqUltimoMinuto: this.requests.length,
+      limite: this.maxPerMinute,
+      percentual: Math.round((this.requests.length / this.maxPerMinute) * 100),
+      pausado: this.paused,
+      totalHoje: this.totalHoje,
+      bloqueios: this.bloqueios,
+    };
+  },
+};
+
+// Wrapper seguro pra fetch do ML — mesma interface de fetch(), mas bloqueia se estourar limite
+// Chamadas pra localhost, Bling, FIPE etc NÃO passam pelo rate limiter (só tráfego ML)
+async function mlFetch(url, options = {}) {
+  const u = String(url);
+  if (u.includes('mercadolibre.com') || u.includes('mercadolivre.com')) {
+    if (!mlRateLimiter.podeFazer()) {
+      console.log(`🚫 [rate-limiter] Bloqueado: ${u.slice(0, 80)}...`);
+      // Resposta fake compatível com interface do fetch (ok/status/json)
+      return {
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests (rate-limiter interno)',
+        headers: { get: () => null },
+        json:  async () => ({ error: 'Rate limit interno — aguarde', message: 'rate_limit_local' }),
+        text:  async () => '{"error":"Rate limit interno — aguarde"}',
+      };
+    }
+    mlRateLimiter.registrar();
+  }
+  return fetch(url, options);
+}
+
+// Log periódico do rate limiter (a cada 5 min, só se houve atividade)
+setInterval(() => {
+  const st = mlRateLimiter.status();
+  if (st.reqUltimoMinuto > 0 || st.bloqueios > 0) {
+    console.log(`📊 [rate-limiter] ${st.reqUltimoMinuto}/${st.limite} req/min (${st.percentual}%) | hoje: ${st.totalHoje} | bloqueios: ${st.bloqueios}${st.pausado ? ' | PAUSADO' : ''}`);
+  }
+}, 5 * 60 * 1000);
+
 // ---------- usuários (persistência em disco, senha hasheada) ----------
 function loadUsersFile(){
   try { return JSON.parse(fs.readFileSync(USERS_FILE,'utf8')); } catch(e){ return []; }
@@ -130,7 +213,7 @@ async function refreshMLToken() {
   }
   try {
     console.log('[ml-refresh] 🔄 renovando token ML...');
-    const r = await fetch('https://api.mercadolibre.com/oauth/token', {
+    const r = await mlFetch('https://api.mercadolibre.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
       body: new URLSearchParams({
@@ -240,9 +323,21 @@ const compatStats = {
   historico:  [], // últimas 50 resoluções: { ts, itemId, metodo, resumo }
 };
 
+// Verifica se token ML está válido (tem + não expirou) — guarda compartilhado dos monitores
+function tokenMLValido() {
+  const t = loadTokens();
+  if (!t.ml_access_token) return false;
+  if (t.ml_token_expires_at) {
+    const exp = new Date(t.ml_token_expires_at).getTime();
+    if (Date.now() > exp) return false; // expirou — não faz requisição
+  }
+  return true;
+}
+
 async function rodarMonitorCompat() {
+  if (!tokenMLValido()) return; // sem token ou expirado — silencioso
+  if (!mlRateLimiter.podeFazer()) { console.log('⏸️ [compat-monitor] pulando — rate limit atingido'); return; }
   const tokens = loadTokens();
-  if (!tokens.ml_access_token) return;
   try {
     console.log('🚗 [compat-monitor] verificando pendências...');
     const r = await fetch(`http://127.0.0.1:${PORT}/api/ml/compat/auto-resolver-todos`, {
@@ -350,8 +445,9 @@ function limparRespostaSAC(texto) {
 }
 
 async function rodarMonitorSAC() {
+  if (!tokenMLValido()) return;
+  if (!mlRateLimiter.podeFazer()) { console.log('⏸️ [sac-monitor] pulando — rate limit atingido'); return; }
   const tokens = loadTokens();
-  if (!tokens.ml_access_token) return;
   try {
     const r = await fetch(`http://127.0.0.1:${PORT}/api/ml/sac/pendentes`, {
       headers:{ 'Authorization':'Bearer '+tokens.ml_access_token }});
@@ -390,8 +486,9 @@ const estoqueStats = {
 };
 
 async function rodarMonitorEstoque() {
+  if (!tokenMLValido()) return;
+  if (!mlRateLimiter.podeFazer()) { console.log('⏸️ [estoque-monitor] pulando — rate limit atingido'); return; }
   const tokens = loadTokens();
-  if (!tokens.ml_access_token) return;
   try {
     const r = await fetch(`http://127.0.0.1:${PORT}/api/estoque/ml/todos`, {
       headers:{ 'Authorization':'Bearer '+tokens.ml_access_token }});
@@ -445,7 +542,7 @@ async function processarWebhookML(notification, headers) {
     switch (topic) {
       // ----- Nova pergunta: auto-responde em tempo real via SAC -----
       case 'questions': {
-        const qResp = await fetch(`https://api.mercadolibre.com${resource}`, {
+        const qResp = await mlFetch(`https://api.mercadolibre.com${resource}`, {
           headers:{ 'Authorization':'Bearer '+mlToken }});
         const question = await qResp.json();
         if (question.status === 'UNANSWERED' && question.text) {
@@ -482,7 +579,7 @@ async function processarWebhookML(notification, headers) {
 
       // ----- Pedido: detecta venda paga e registra -----
       case 'orders_v2': {
-        const oR = await fetch(`https://api.mercadolibre.com${resource}`, {
+        const oR = await mlFetch(`https://api.mercadolibre.com${resource}`, {
           headers:{ 'Authorization':'Bearer '+mlToken }});
         const order = await oR.json();
         if (order.status === 'paid') {
@@ -507,7 +604,7 @@ async function processarWebhookML(notification, headers) {
 
       // ----- Pagamento -----
       case 'payments': {
-        const pR = await fetch(`https://api.mercadolibre.com${resource}`, {
+        const pR = await mlFetch(`https://api.mercadolibre.com${resource}`, {
           headers:{ 'Authorization':'Bearer '+mlToken }});
         const payment = await pR.json();
         console.log(`🔔💳 Pag ${payment.id}: ${payment.status} · R$${payment.transaction_amount}`);
@@ -516,7 +613,7 @@ async function processarWebhookML(notification, headers) {
 
       // ----- Item alterado (status/estoque/preço) -----
       case 'items': {
-        const iR = await fetch(`https://api.mercadolibre.com${resource}`, {
+        const iR = await mlFetch(`https://api.mercadolibre.com${resource}`, {
           headers:{ 'Authorization':'Bearer '+mlToken }});
         const item = await iR.json();
         console.log(`🔔📦 ${item.id}: status=${item.status}, estoque=${item.available_quantity}, preço=R$${item.price}`);
@@ -528,7 +625,7 @@ async function processarWebhookML(notification, headers) {
 
       // ----- Envio -----
       case 'shipments': {
-        const sR = await fetch(`https://api.mercadolibre.com${resource}`, {
+        const sR = await mlFetch(`https://api.mercadolibre.com${resource}`, {
           headers:{ 'Authorization':'Bearer '+mlToken, 'x-format-new':'true' }});
         const shipment = await sR.json();
         console.log(`🔔🚚 Envio ${shipment.id}: ${shipment.status}/${shipment.substatus || '-'}`);
@@ -925,11 +1022,11 @@ function _jaccard(a, b) {
 }
 
 async function verificarDuplicidadeSEO(titulo, token) {
-  const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+  const meResp = await mlFetch('https://api.mercadolibre.com/users/me', {
     headers:{ 'Authorization':'Bearer '+token },
   });
   const me = await meResp.json();
-  const itemsResp = await fetch(
+  const itemsResp = await mlFetch(
     `https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50`,
     { headers:{ 'Authorization':'Bearer '+token }}
   );
@@ -939,7 +1036,7 @@ async function verificarDuplicidadeSEO(titulo, token) {
     return { duplicado:false, similaridade:0, tituloSimilar:null, aviso:'✅ Primeiro anúncio — sem duplicidade' };
   }
   const batch = itemIds.slice(0, 20).join(',');
-  const detResp = await fetch(`https://api.mercadolibre.com/items?ids=${batch}&attributes=title`, {
+  const detResp = await mlFetch(`https://api.mercadolibre.com/items?ids=${batch}&attributes=title`, {
     headers:{ 'Authorization':'Bearer '+token },
   });
   const det = await detResp.json().catch(()=>[]);
@@ -1027,7 +1124,7 @@ function serveStatic(req, res) {
 async function refreshAccessToken() {
   env = loadEnv();
   if (!env.ML_REFRESH_TOKEN) throw new Error('refresh_token ausente — faça /login primeiro');
-  const r = await fetch('https://api.mercadolibre.com/oauth/token', {
+  const r = await mlFetch('https://api.mercadolibre.com/oauth/token', {
     method:'POST',
     headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
     body: new URLSearchParams({
@@ -1059,7 +1156,7 @@ async function getToken() {
 
 async function ml(pathname, opts={}) {
   const token = await getToken();
-  const r = await fetch('https://api.mercadolibre.com' + pathname, {
+  const r = await mlFetch('https://api.mercadolibre.com' + pathname, {
     ...opts,
     headers: { 'Authorization':'Bearer '+token, 'Accept':'application/json', ...(opts.headers||{}) },
   });
@@ -1150,7 +1247,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 500, 'ML_CLIENT_ID/ML_CLIENT_SECRET não configurados no .env do servidor', 'text/plain');
       }
       try {
-        const r = await fetch('https://api.mercadolibre.com/oauth/token', {
+        const r = await mlFetch('https://api.mercadolibre.com/oauth/token', {
           method:'POST',
           headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
           body: new URLSearchParams({
@@ -1265,24 +1362,24 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/public/search') {
       const q = encodeURIComponent(u.query.q || 'amortecedor');
       const limit = Math.min(parseInt(u.query.limit||'20',10), 50);
-      const r = await fetch(`https://api.mercadolibre.com/sites/MLB/search?q=${q}&limit=${limit}`);
+      const r = await mlFetch(`https://api.mercadolibre.com/sites/MLB/search?q=${q}&limit=${limit}`);
       return send(res, r.status, await r.json());
     }
     // Detalhes de um item público
     if (u.pathname.startsWith('/api/public/item/')) {
       const id = u.pathname.split('/').pop();
-      const r = await fetch(`https://api.mercadolibre.com/items/${id}`);
+      const r = await mlFetch(`https://api.mercadolibre.com/items/${id}`);
       return send(res, r.status, await r.json());
     }
     // Tendências de busca (top termos por categoria)
     if (u.pathname === '/api/public/trends') {
       const cat = u.query.category || 'MLB1747'; // Autopeças
-      const r = await fetch(`https://api.mercadolibre.com/trends/MLB/${cat}`);
+      const r = await mlFetch(`https://api.mercadolibre.com/trends/MLB/${cat}`);
       return send(res, r.status, await r.json());
     }
     // Categorias nível 1 do Brasil
     if (u.pathname === '/api/public/categories') {
-      const r = await fetch('https://api.mercadolibre.com/sites/MLB/categories');
+      const r = await mlFetch('https://api.mercadolibre.com/sites/MLB/categories');
       return send(res, r.status, await r.json());
     }
 
@@ -1324,7 +1421,7 @@ const server = http.createServer(async (req, res) => {
       const redirectUri  = process.env.ML_REDIRECT_URI  || env.ML_REDIRECT_URI  || 'https://agentemarkt.com/callback';
 
       try {
-        const r = await fetch('https://api.mercadolibre.com/oauth/token', {
+        const r = await mlFetch('https://api.mercadolibre.com/oauth/token', {
           method: 'POST',
           headers: { 'Content-Type':'application/x-www-form-urlencoded', 'Accept':'application/json' },
           body: new URLSearchParams({
@@ -1356,7 +1453,7 @@ const server = http.createServer(async (req, res) => {
         // Busca dados do usuário ML
         let nickname = null, email = null, reputation = null;
         try {
-          const ur = await fetch('https://api.mercadolibre.com/users/me', {
+          const ur = await mlFetch('https://api.mercadolibre.com/users/me', {
             headers: { 'Authorization': 'Bearer ' + data.access_token }
           });
           if (ur.ok) {
@@ -1393,7 +1490,7 @@ const server = http.createServer(async (req, res) => {
       const clientSecret = process.env.ML_CLIENT_SECRET || env.ML_CLIENT_SECRET || 'wFVvYKcAFoaLedYEfUmnKnUN9vYQMcXW';
 
       try {
-        const r = await fetch('https://api.mercadolibre.com/oauth/token', {
+        const r = await mlFetch('https://api.mercadolibre.com/oauth/token', {
           method: 'POST',
           headers: { 'Content-Type':'application/x-www-form-urlencoded', 'Accept':'application/json' },
           body: new URLSearchParams({
@@ -1428,7 +1525,7 @@ const server = http.createServer(async (req, res) => {
       if (!token) return send(res, 200, { connected:false, error:'sem token' });
 
       try {
-        const r = await fetch('https://api.mercadolibre.com/users/me', {
+        const r = await mlFetch('https://api.mercadolibre.com/users/me', {
           headers: { 'Authorization': 'Bearer ' + token }
         });
         const data = await r.json().catch(() => ({}));
@@ -1455,7 +1552,8 @@ const server = http.createServer(async (req, res) => {
       return hdr.replace(/^Bearer\s+/i, '') || env.ML_ACCESS_TOKEN || '';
     };
     const authedFetch = async (url, token) => {
-      const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+      // URLs passadas aqui são sempre https://api.mercadolibre.com/* — mlFetch aplica rate limiter
+      const r = await mlFetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
       const data = await r.json().catch(() => ({}));
       return { ok: r.ok, status: r.status, data };
     };
@@ -1864,7 +1962,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         // 2) Predição de categoria no ML
         let categoryId = 'MLB1747'; // fallback autopeças
         try {
-          const cr = await fetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?q=${encodeURIComponent(produto.nome || '')}`, {
+          const cr = await mlFetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?q=${encodeURIComponent(produto.nome || '')}`, {
             headers: { 'Authorization': 'Bearer ' + mlToken }
           });
           const cj = await cr.json().catch(() => []);
@@ -1874,7 +1972,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         // 3) Atributos obrigatórios
         let requiredAttrs = [];
         try {
-          const ar = await fetch(`https://api.mercadolibre.com/categories/${categoryId}/attributes`, {
+          const ar = await mlFetch(`https://api.mercadolibre.com/categories/${categoryId}/attributes`, {
             headers: { 'Authorization': 'Bearer ' + mlToken }
           });
           const attrs = await ar.json().catch(() => []);
@@ -2001,7 +2099,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         };
 
         // 6) POST /items no ML
-        const mr = await fetch('https://api.mercadolibre.com/items', {
+        const mr = await mlFetch('https://api.mercadolibre.com/items', {
           method: 'POST',
           headers: { 'Authorization': 'Bearer ' + mlToken, 'Content-Type': 'application/json' },
           body: JSON.stringify(anuncio),
@@ -2201,7 +2299,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           item_id:   itemId,
         };
         if (productId) body.secondary_product_id = productId;
-        const r = await fetch('https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks', {
+        const r = await mlFetch('https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks', {
           method:'POST',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
           body: JSON.stringify(body),
@@ -2217,7 +2315,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       const partNumber = decodeURIComponent(u.pathname.replace('/api/ml/catalogo/buscar/',''));
       try {
-        const r = await fetch(`https://api.mercadolibre.com/products/search?status=active&site_id=MLB&q=${encodeURIComponent(partNumber)}`, {
+        const r = await mlFetch(`https://api.mercadolibre.com/products/search?status=active&site_id=MLB&q=${encodeURIComponent(partNumber)}`, {
           headers:{ 'Authorization':'Bearer '+token },
         });
         const data = await r.json().catch(()=>({}));
@@ -2230,7 +2328,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       const token = getMlToken();
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
-        const r = await fetch('https://api.mercadolibre.com/catalog_domains/MLB-CARS_AND_VANS/attributes/BRAND/top_values', {
+        const r = await mlFetch('https://api.mercadolibre.com/catalog_domains/MLB-CARS_AND_VANS/attributes/BRAND/top_values', {
           method:'POST',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
           body: JSON.stringify({}),
@@ -2246,7 +2344,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
         const { brandId } = await readBody(req);
-        const r = await fetch('https://api.mercadolibre.com/catalog_domains/MLB-CARS_AND_VANS/attributes/MODEL/top_values', {
+        const r = await mlFetch('https://api.mercadolibre.com/catalog_domains/MLB-CARS_AND_VANS/attributes/MODEL/top_values', {
           method:'POST',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
           body: JSON.stringify({ known_attributes: [{ id:'BRAND', value_id: brandId }] }),
@@ -2274,7 +2372,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
             })),
           };
         }
-        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+        const r = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
           method:'POST',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
           body: JSON.stringify(body),
@@ -2290,7 +2388,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       const itemId = u.pathname.replace('/api/ml/compat/listar/','');
       try {
-        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+        const r = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
           headers:{ 'Authorization':'Bearer '+token },
         });
         const data = await r.json().catch(()=>({}));
@@ -2303,11 +2401,11 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       const token = getMlToken();
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
-        const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+        const meResp = await mlFetch('https://api.mercadolibre.com/users/me', {
           headers:{ 'Authorization':'Bearer '+token },
         });
         const me = await meResp.json();
-        const itemsResp = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?tags=incomplete_compatibilities&status=active`, {
+        const itemsResp = await mlFetch(`https://api.mercadolibre.com/users/${me.id}/items/search?tags=incomplete_compatibilities&status=active`, {
           headers:{ 'Authorization':'Bearer '+token },
         });
         const itemsData = await itemsResp.json();
@@ -2326,7 +2424,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         const resultados = { itemId, etapas: [], sucesso: false };
 
         // 1) Detalhes do anúncio
-        const itemResp = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+        const itemResp = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, {
           headers:{ 'Authorization':'Bearer '+token },
         });
         const item = await itemResp.json();
@@ -2336,7 +2434,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         }
 
         // 2) Sugestões do ML
-        const sugResp = await fetch('https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks', {
+        const sugResp = await mlFetch('https://api.mercadolibre.com/catalog_compatibilities/products_search/chunks', {
           method:'POST',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
           body: JSON.stringify({
@@ -2354,7 +2452,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         // 3) Aplica sugestões (até 200)
         if (sugestoes.length > 0) {
           const productsToAdd = sugestoes.slice(0, 200).map(s => ({ id: s.id }));
-          const cadR = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+          const cadR = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
             method:'POST',
             headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
             body: JSON.stringify({ products: productsToAdd }),
@@ -2458,7 +2556,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
                 ],
               });
             }
-            const cadR = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+            const cadR = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
               method:'POST',
               headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
               body: JSON.stringify({ products_families: families }),
@@ -2483,7 +2581,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
             'grampo','abraçadeira','fita','cola','adesivo','limpador','desengripante',
             'óleo','oleo','fluido','aditivo'];
           if (termos.some(t => titulo.includes(t))) {
-            const univR = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+            const univR = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
               method:'POST',
               headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
               body: JSON.stringify({ products:[], products_families:[], products_group:[], universal:true }),
@@ -2524,11 +2622,11 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       const token = getMlToken();
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
-        const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+        const meResp = await mlFetch('https://api.mercadolibre.com/users/me', {
           headers:{ 'Authorization':'Bearer '+token },
         });
         const me = await meResp.json();
-        const pendResp = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?tags=incomplete_compatibilities&status=active&limit=50`, {
+        const pendResp = await mlFetch(`https://api.mercadolibre.com/users/${me.id}/items/search?tags=incomplete_compatibilities&status=active&limit=50`, {
           headers:{ 'Authorization':'Bearer '+token },
         });
         const pendData = await pendResp.json().catch(()=>({}));
@@ -2668,11 +2766,11 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       const token = getMlToken();
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
-        const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+        const meResp = await mlFetch('https://api.mercadolibre.com/users/me', {
           headers:{ 'Authorization':'Bearer '+token },
         });
         const me = await meResp.json();
-        const qResp = await fetch(
+        const qResp = await mlFetch(
           `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&status=UNANSWERED&api_version=4&sort_fields=date_created&sort_types=DESC`,
           { headers:{ 'Authorization':'Bearer '+token }}
         );
@@ -2697,11 +2795,11 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       const token = getMlToken();
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
-        const meResp = await fetch('https://api.mercadolibre.com/users/me', {
+        const meResp = await mlFetch('https://api.mercadolibre.com/users/me', {
           headers:{ 'Authorization':'Bearer '+token },
         });
         const me = await meResp.json();
-        const qResp = await fetch(
+        const qResp = await mlFetch(
           `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&api_version=4&sort_fields=date_created&sort_types=DESC&limit=50`,
           { headers:{ 'Authorization':'Bearer '+token }}
         );
@@ -2729,7 +2827,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         const { questionId, texto } = await readBody(req);
         if (!questionId || !texto) return send(res, 400, { success:false, error:'questionId e texto obrigatórios' });
         const textoSafe = limparRespostaSAC(texto);
-        const r = await fetch('https://api.mercadolibre.com/answers', {
+        const r = await mlFetch('https://api.mercadolibre.com/answers', {
           method:'POST',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
           body: JSON.stringify({ question_id: questionId, text: textoSafe }),
@@ -2752,13 +2850,13 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         let itemTitle = '', itemPrice = 0, compatTexto = '';
         if (itemId) {
           try {
-            const ir = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+            const ir = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, {
               headers:{ 'Authorization':'Bearer '+token }});
             const it = await ir.json();
             itemTitle = it.title || ''; itemPrice = it.price || 0;
           } catch(_) {}
           try {
-            const cr = await fetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+            const cr = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
               headers:{ 'Authorization':'Bearer '+token }});
             const cd = await cr.json();
             if (cd.products?.length > 0) {
@@ -2860,7 +2958,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
         const qid = u.pathname.replace('/api/ml/sac/excluir/', '');
-        const r = await fetch(`https://api.mercadolibre.com/questions/${qid}`, {
+        const r = await mlFetch(`https://api.mercadolibre.com/questions/${qid}`, {
           method:'DELETE', headers:{ 'Authorization':'Bearer '+token }});
         return send(res, 200, r.ok ? { success:true } : { success:false, error:'Erro ao excluir' });
       } catch(err) { return send(res, 200, { success:false, error: err.message }); }
@@ -2895,7 +2993,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         const itemId = u.pathname.split('/').pop();
         const { quantidade } = await readBody(req);
         if (typeof quantidade !== 'number' || quantidade < 0) return send(res, 400, { success:false, error:'quantidade inválida' });
-        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+        const r = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, {
           method:'PUT',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
           body: JSON.stringify({ available_quantity: quantidade }),
@@ -2919,7 +3017,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
         const itemId = u.pathname.split('/')[4];
-        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+        const r = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, {
           method:'PUT',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
           body: JSON.stringify({ status:'paused' }),
@@ -2936,7 +3034,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
         const itemId = u.pathname.split('/')[4];
-        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+        const r = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, {
           method:'PUT',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
           body: JSON.stringify({ status:'active' }),
@@ -2953,16 +3051,16 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
         const limiteBaixo = parseInt(u.query.limiteBaixo, 10) || 3;
-        const meR = await fetch('https://api.mercadolibre.com/users/me', {
+        const meR = await mlFetch('https://api.mercadolibre.com/users/me', {
           headers:{ 'Authorization':'Bearer '+token }});
         const me = await meR.json();
-        const itR = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?limit=50`, {
+        const itR = await mlFetch(`https://api.mercadolibre.com/users/${me.id}/items/search?limit=50`, {
           headers:{ 'Authorization':'Bearer '+token }});
         const itD = await itR.json().catch(()=>({}));
         const itemIds = itD.results || [];
         if (itemIds.length === 0) return send(res, 200, { success:true, itens:[], total:0 });
         const batch = itemIds.slice(0, 20).join(',');
-        const dR = await fetch(`https://api.mercadolibre.com/items?ids=${batch}&attributes=id,title,available_quantity,status,sub_status,price`, {
+        const dR = await mlFetch(`https://api.mercadolibre.com/items?ids=${batch}&attributes=id,title,available_quantity,status,sub_status,price`, {
           headers:{ 'Authorization':'Bearer '+token }});
         const det = await dR.json().catch(()=>[]);
         const itens = (Array.isArray(det) ? det : []).map(d => {
@@ -3009,13 +3107,13 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         const resultados = [];
         for (const map of mapeamentos) {
           try {
-            const mlR = await fetch(`https://api.mercadolibre.com/items/${map.mlItemId}?attributes=id,available_quantity,status`, {
+            const mlR = await mlFetch(`https://api.mercadolibre.com/items/${map.mlItemId}?attributes=id,available_quantity,status`, {
               headers:{ 'Authorization':'Bearer '+mlToken }});
             const mlIt = await mlR.json();
             const estoqueML    = mlIt.available_quantity || 0;
             const estoqueBling = Number(map.estoqueBling) || 0;
             if (estoqueBling !== estoqueML) {
-              const upR = await fetch(`https://api.mercadolibre.com/items/${map.mlItemId}`, {
+              const upR = await mlFetch(`https://api.mercadolibre.com/items/${map.mlItemId}`, {
                 method:'PUT',
                 headers:{ 'Authorization':'Bearer '+mlToken, 'Content-Type':'application/json' },
                 body: JSON.stringify({ available_quantity: estoqueBling }),
@@ -3058,6 +3156,20 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       return send(res, 200, { success:true, ...estoqueStats });
     }
 
+    // ============= RATE LIMITER — status =============
+    if (u.pathname === '/api/rate-limiter/status' && req.method === 'GET') {
+      return send(res, 200, {
+        success: true,
+        ...mlRateLimiter.status(),
+        monitores: {
+          compatibilidade: '6h',
+          sac:             '10min',
+          estoque:         '30min',
+          tokenRefresh:    '5h',
+        },
+      });
+    }
+
     // ============= WEBHOOKS ML — stats, vendas, missed_feeds =============
     if (u.pathname === '/api/webhooks/status' && req.method === 'GET') {
       return send(res, 200, {
@@ -3082,7 +3194,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 401, { success:false, error:'sem token ML' });
       try {
         const appId = process.env.ML_CLIENT_ID || (loadEnv().ML_CLIENT_ID) || '3688973136843575';
-        const r = await fetch(`https://api.mercadolibre.com/missed_feeds?app_id=${appId}`, {
+        const r = await mlFetch(`https://api.mercadolibre.com/missed_feeds?app_id=${appId}`, {
           headers:{ 'Authorization':'Bearer '+token }});
         const d = await r.json().catch(()=>({}));
         return send(res, 200, { success:true, perdidas:d });
