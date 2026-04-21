@@ -1565,7 +1565,8 @@ function useMLConnectionStatus() {
     return () => { window.removeEventListener('storage', sync); clearInterval(id); };
   }, []);
 
-  // Poll /api/tokens/status (cada 5 min) — detecta auto-refresh server-side
+  // Poll /api/tokens/status (a cada 60s) — FONTE DA VERDADE do status do token.
+  // Antes era 5min — lento demais pra feedback visual.
   useEffect(() => {
     let cancelled = false;
     const pull = async () => {
@@ -1593,11 +1594,12 @@ function useMLConnectionStatus() {
       }
     };
     pull();
-    const id = setInterval(pull, 5 * 60 * 1000); // 5 min
+    const id = setInterval(pull, 60 * 1000); // 60s
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  // Valida token live contra /api/ml/me (quando tem token)
+  // Valida token live contra /api/ml/me (auxiliar — preenche nickname/reputação).
+  // NÃO é usado pra determinar o estado "expired" (isso vem do srvStatus).
   useEffect(() => {
     if (!tokens || !tokens.access_token) { setLive(null); return; }
     let cancelled = false;
@@ -1608,19 +1610,24 @@ function useMLConnectionStatus() {
       .finally(() => { if (!cancelled) setChecking(false); });
     const id = setInterval(() => {
       mlFetchMe(tokens.access_token).then(d => { if (!cancelled) setLive(d); }).catch(()=>{});
-    }, 60000);
+    }, 5 * 60 * 1000); // nickname não muda; 5min é suficiente e economiza API
     return () => { cancelled = true; clearInterval(id); };
   }, [tokens?.access_token]);
 
-  // Derivar estado final
+  // Derivar estado final — PRIORIZA /api/tokens/status (server é a fonte da verdade).
+  // Antes a lógica marcava como "expired" se mlFetchMe retornasse connected:false,
+  // o que acontece por 429/5xx/rede e causava falso alarme.
   let state = 'off';     // 'off' | 'ok' | 'expired' | 'near_expiry'
-  if (tokens && tokens.access_token) {
-    if (srvStatus?.ml?.expired) state = 'expired';
-    else if (srvStatus?.ml?.near_expiry) state = 'near_expiry';
-    else if (live === null && checking) state = 'ok';
-    else if (live && live.connected) state = 'ok';
-    else if (live && !live.connected) state = 'expired';
-    else state = 'ok';
+  const srvMl = srvStatus?.ml;
+  if (srvMl) {
+    // Srv respondeu — é a palavra final
+    if (!srvMl.connected)      state = 'off';
+    else if (srvMl.expired)    state = 'expired';
+    else if (srvMl.near_expiry) state = 'near_expiry';
+    else                        state = 'ok';
+  } else if (tokens && tokens.access_token) {
+    // Fallback quando srv ainda não respondeu (primeira renderização): confia no local
+    state = 'ok';
   }
 
   return {
@@ -3475,31 +3482,33 @@ function MLStatusIndicator({onClickConnect}){
 
   let cfg;
   if (st.state === 'ok') {
+    // Verde: conectado e válido. Mostra horas restantes (5h, <1h etc).
     cfg = {
       dot:'#22c55e', bg:'rgba(34,197,94,.12)', border:'rgba(34,197,94,.4)',
-      label:'🟢 ML',
-      sub: hoursLeftTxt
-        ? `${hoursLeftTxt} ${st.autoRefresh ? '· auto ✓' : ''}`
-        : (st.nickname || st.userId || 'online'),
+      label: hoursLeftTxt ? `🟢 ML · ${hoursLeftTxt}` : '🟢 ML',
+      sub: st.nickname || st.userId || (st.autoRefresh ? 'auto ✓' : 'online'),
     };
   } else if (st.state === 'near_expiry') {
+    // Amarelo: expira em <1h. Auto-refresh cobre — não alarma muito.
     cfg = {
       dot:'#facc15', bg:'rgba(234,179,8,.12)', border:'rgba(234,179,8,.4)',
-      label: refreshing ? '🔄 renovando...' : '🟡 ML expirando',
-      sub: hoursLeftTxt || 'renovar',
+      label: refreshing ? '🔄 renovando...' : (hoursLeftTxt ? `🟡 ML · ${hoursLeftTxt}` : '🟡 ML · <1h'),
+      sub: st.autoRefresh ? 'auto-refresh' : 'renovar',
     };
   } else if (st.state === 'expired') {
     cfg = {
-      dot:'#f97316', bg:'rgba(249,115,22,.14)', border:'rgba(249,115,22,.4)',
-      label:'🟠 Token expirado',
+      dot:'#ef4444', bg:'rgba(239,68,68,.12)', border:'rgba(239,68,68,.4)',
+      label:'🔴 ML desconectado',
       sub: st.autoRefresh ? 'clicar p/ renovar' : 'reconectar',
     };
   } else {
-    cfg = {
-      dot:'#ef4444', bg:'rgba(239,68,68,.12)', border:'rgba(239,68,68,.4)',
-      label:'🔴 ML Desconectado',
-      sub:'Conectar',
-    };
+    // 'off' — sem token. Se srv nem respondeu ainda, mostra cinza ao invés de vermelho
+    const srvRespondeu = !!st.srvStatus;
+    cfg = srvRespondeu
+      ? { dot:'#ef4444', bg:'rgba(239,68,68,.12)', border:'rgba(239,68,68,.4)',
+          label:'🔴 ML desconectado', sub:'Conectar' }
+      : { dot:'#666',    bg:'rgba(255,255,255,.05)', border:'rgba(255,255,255,.12)',
+          label:'⚪ ML · ?', sub:'verificando...' };
   }
 
   // Ação: se expirado/near_expiry e tem auto_refresh no server, tenta renovar
