@@ -8785,6 +8785,362 @@ function ComingSoonCard({ icon, title, description, features }){
   );
 }
 
+// ============================================================
+// PÁGINAS REAIS — substituem placeholders ComingSoon
+// (ComingSoonCard continua disponível acima pra uso futuro)
+// ============================================================
+
+// ----- Financeiro > Relatórios -----
+function RelatoriosPage(){
+  const [dados, setDados]     = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr]         = useState(null);
+  const tokens = loadMLTokens();
+
+  const refresh = useCallback(async () => {
+    if (!tokens?.access_token) { setErr('Conecte sua conta ML primeiro'); setLoading(false); return; }
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch('/api/ml/pedidos/stats/resumo', {
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      });
+      const data = await r.json();
+      if (data.success === false) setErr(data.error || 'Falha ao carregar');
+      else setDados(data);
+    } catch(e) { setErr(e.message); }
+    setLoading(false);
+  }, [tokens?.access_token]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const d = dados?.ultimos30dias || {};
+  const h = dados?.hoje || {};
+  const ticket = d.total > 0 ? (Number(d.receitaTotal || 0) / d.total) : 0;
+  const taxaCancel = d.total > 0 ? ((Number(d.cancelados || 0) / d.total) * 100) : 0;
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">📊 Relatórios Financeiros</h1>
+          <p className="sub text-sm">Resumo de vendas, receita e indicadores chave (últimos 30 dias)</p>
+        </div>
+        <button className="btn-ghost" onClick={refresh} disabled={loading}>
+          {loading ? '🔄 ...' : '🔄 Atualizar'}
+        </button>
+      </div>
+
+      <MLTokenExpiredBanner/>
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+      {loading && !dados && <div className="ok mb-4">⏳ Carregando relatórios…</div>}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <KPI label="Vendas (30d)"  value={d.total || 0}     sub="pedidos recebidos"/>
+        <KPI label="Receita (30d)" value={`R$ ${Number(d.receitaTotal || 0).toFixed(2)}`} sub="bruto" glow={Number(d.receitaTotal||0) > 0}/>
+        <KPI label="Enviados"      value={d.enviados || 0}  sub="pedidos despachados"/>
+        <KPI label="Hoje"          value={h.total || 0}     sub={`R$ ${Number(h.receita || 0).toFixed(2)}`}/>
+      </div>
+
+      <div className="card p-5 mb-4">
+        <h3 className="font-bold mb-3">📈 Indicadores</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <div className="sub text-xs uppercase">Ticket Médio</div>
+            <div className="text-2xl font-bold mt-1">R$ {ticket.toFixed(2)}</div>
+            <div className="sub text-xs mt-1">receita / pedidos</div>
+          </div>
+          <div>
+            <div className="sub text-xs uppercase">Taxa de Cancelamento</div>
+            <div className="text-2xl font-bold mt-1" style={{color: taxaCancel > 0 ? '#ef4444' : 'var(--green)'}}>
+              {taxaCancel.toFixed(1)}%
+            </div>
+            <div className="sub text-xs mt-1">{d.cancelados || 0} de {d.total || 0} pedidos</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card p-5">
+        <h3 className="font-bold mb-3">🧾 Por status (30d)</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div><span className="sub">Pagos</span><br/><b>{d.pagos || 0}</b></div>
+          <div><span className="sub">Enviados</span><br/><b>{d.enviados || 0}</b></div>
+          <div><span className="sub">Entregues</span><br/><b>{d.entregues || 0}</b></div>
+          <div><span className="sub">Cancelados</span><br/><b style={{color: (d.cancelados||0) > 0 ? '#ef4444' : 'inherit'}}>{d.cancelados || 0}</b></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----- Logística > Envios -----
+function EnviosPage(){
+  const [pedidos, setPedidos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr]         = useState(null);
+  const [busyId, setBusyId]   = useState(null);
+  const tokens = loadMLTokens();
+
+  const refresh = useCallback(async () => {
+    if (!tokens?.access_token) { setErr('Conecte sua conta ML primeiro'); setLoading(false); return; }
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch('/api/ml/pedidos?status=paid', {
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      });
+      const data = await r.json();
+      if (data.success === false) setErr(data.error || 'Falha ao carregar');
+      else setPedidos(data.pedidos || []);
+    } catch(e) { setErr(e.message); }
+    setLoading(false);
+  }, [tokens?.access_token]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function despachar(shipmentId){
+    if (!shipmentId || !tokens?.access_token) return;
+    if (!window.confirm('Marcar como pronto pra despachar?')) return;
+    setBusyId(shipmentId);
+    try {
+      await fetch(`/api/ml/envios/${shipmentId}/despachar`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      });
+      await refresh();
+    } catch(e) {}
+    setBusyId(null);
+  }
+
+  const etiquetaHref = (shipmentId) =>
+    `/api/ml/envios/${shipmentId}/etiqueta?access_token=${encodeURIComponent(tokens?.access_token || '')}`;
+
+  const pendentes = pedidos.filter(p => p.status === 'paid' && p.envio?.id);
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">🚚 Envios Pendentes</h1>
+          <p className="sub text-sm">
+            {pendentes.length > 0 ? `⚠️ ${pendentes.length} envio(s) aguardando despacho` : '✅ Nenhum envio pendente'}
+          </p>
+        </div>
+        <button className="btn-ghost" onClick={refresh} disabled={loading}>
+          {loading ? '🔄 ...' : '🔄 Atualizar'}
+        </button>
+      </div>
+
+      <MLTokenExpiredBanner/>
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+      {loading && !pedidos.length && <div className="ok mb-4">⏳ Carregando envios…</div>}
+
+      {pendentes.length === 0 && !loading ? (
+        <div className="card p-8 text-center sub">
+          📦 Todos os pedidos pagos já foram processados. Quando novas vendas chegarem, aparecerão aqui.
+        </div>
+      ) : (
+        pendentes.map(p => (
+          <div key={p.id} className="card p-4 mb-3">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="font-bold">🛒 Pedido <span className="mono">#{p.id}</span></div>
+                <div className="sub text-xs mt-1 truncate">{(p.itens || []).map(i => i.titulo).join(', ') || '—'}</div>
+                <div className="sub text-xs mt-1">👤 {p.comprador?.nickname || 'N/A'} · R$ {Number(p.valorTotal || 0).toFixed(2)}</div>
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                {p.envio?.id && (
+                  <a className="btn-ghost text-xs" href={etiquetaHref(p.envio.id)} target="_blank" rel="noreferrer">🏷️ Etiqueta</a>
+                )}
+                {p.envio?.id && (
+                  <button className="btn-ghost text-xs" onClick={() => despachar(p.envio.id)} disabled={busyId === p.envio.id}>
+                    {busyId === p.envio.id ? '🚚 ...' : '🚚 Despachar'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+// ----- Logística > Etiquetas -----
+function EtiquetasPage(){
+  const [pedidos, setPedidos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr]         = useState(null);
+  const tokens = loadMLTokens();
+
+  const refresh = useCallback(async () => {
+    if (!tokens?.access_token) { setErr('Conecte sua conta ML primeiro'); setLoading(false); return; }
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch('/api/ml/pedidos', {
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      });
+      const data = await r.json();
+      if (data.success === false) setErr(data.error || 'Falha ao carregar');
+      else setPedidos((data.pedidos || []).filter(p => p.envio?.id));
+    } catch(e) { setErr(e.message); }
+    setLoading(false);
+  }, [tokens?.access_token]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const etiquetaHref = (shipmentId) =>
+    `/api/ml/envios/${shipmentId}/etiqueta?access_token=${encodeURIComponent(tokens?.access_token || '')}`;
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">🏷️ Etiquetas de Envio</h1>
+          <p className="sub text-sm">Clique em "Gerar PDF" pra abrir a etiqueta pronta pra impressão.</p>
+        </div>
+        <button className="btn-ghost" onClick={refresh} disabled={loading}>
+          {loading ? '🔄 ...' : '🔄 Atualizar'}
+        </button>
+      </div>
+
+      <MLTokenExpiredBanner/>
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+      {loading && !pedidos.length && <div className="ok mb-4">⏳ Carregando etiquetas…</div>}
+
+      {pedidos.length === 0 && !loading ? (
+        <div className="card p-8 text-center sub">
+          📦 Nenhuma etiqueta disponível. Quando pedidos com envio chegarem, as etiquetas aparecerão aqui.
+        </div>
+      ) : (
+        pedidos.map(p => (
+          <div key={p.id} className="card p-4 mb-3">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="font-bold truncate">📦 {(p.itens?.[0]?.titulo) || `Pedido #${p.id}`}</div>
+                <div className="sub text-xs mt-1">
+                  Pedido <span className="mono">#{p.id}</span> · {p.comprador?.nickname || '—'} · R$ {Number(p.valorTotal || 0).toFixed(2)}
+                </div>
+              </div>
+              <a className="btn-ghost" href={etiquetaHref(p.envio.id)} target="_blank" rel="noreferrer">📄 Gerar PDF</a>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+// ----- Atendimento > Avaliações -----
+function AvaliacoesPage(){
+  const [dados, setDados]     = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr]         = useState(null);
+  const tokens = loadMLTokens();
+
+  const refresh = useCallback(async () => {
+    if (!tokens?.access_token) { setErr('Conecte sua conta ML primeiro'); setLoading(false); return; }
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch('/api/ml/me', {
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      });
+      const data = await r.json();
+      if (!data.connected) setErr(data.error || 'Token ML inválido');
+      else setDados(data);
+    } catch(e) { setErr(e.message); }
+    setLoading(false);
+  }, [tokens?.access_token]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const rep     = dados?.seller_reputation || {};
+  const ratings = rep?.transactions?.ratings || {};
+  const levelId = rep?.level_id || rep?.power_seller_status || 'N/A';
+
+  const pct = (n) => ((Number(n) || 0) * 100).toFixed(0) + '%';
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">⭐ Avaliações e Reputação</h1>
+          <p className="sub text-sm">Reputação ML e distribuição das últimas avaliações</p>
+        </div>
+        <button className="btn-ghost" onClick={refresh} disabled={loading}>
+          {loading ? '🔄 ...' : '🔄 Atualizar'}
+        </button>
+      </div>
+
+      <MLTokenExpiredBanner/>
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+      {loading && !dados && <div className="ok mb-4">⏳ Carregando avaliações…</div>}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <KPI label="Reputação"  value={String(levelId).replace(/_/g,' ')} sub="nível ML" glow={!!rep?.level_id}/>
+        <KPI label="Positivas"  value={pct(ratings.positive)}              sub="últimas 60 transações"/>
+        <KPI label="Neutras"    value={pct(ratings.neutral)}               sub="últimas 60 transações"/>
+        <KPI label="Negativas"  value={pct(ratings.negative)}              sub="últimas 60 transações"/>
+      </div>
+
+      <div className="card p-5">
+        <h3 className="font-bold mb-3">💡 Dicas pra melhorar</h3>
+        <ul className="text-sm" style={{lineHeight:1.8, color:'var(--sub)'}}>
+          <li>• Responder perguntas rápido (SAC automático ativo ✅)</li>
+          <li>• Enviar dentro do prazo (Logística → Envios ✅)</li>
+          <li>• Mandar mensagem pós-venda (Atendimento → Mensagens ✅)</li>
+          <li>• Descrições completas + SEO (Comercial → SEO ✅)</li>
+          <li>• Fotos de qualidade e compatibilidade correta</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// ----- Config > Segurança -----
+function SegurancaPage(){
+  const itens = [
+    ['SSL / HTTPS',       '✅ Ativo (Let\'s Encrypt / certbot)'],
+    ['Rate Limiter ML',   '✅ 800 req/min global'],
+    ['Token ML',          '✅ Auto-refresh a cada 5h'],
+    ['Firewall VPS',      '✅ UFW ativo'],
+    ['Anti-duplicidade',  '✅ Jaccard 60% em títulos'],
+    ['ErrorBoundary',     '✅ isola falhas por card'],
+    ['Sanitização SAC',   '✅ sem links/telefone/WhatsApp'],
+  ];
+  return (
+    <div>
+      <h1 className="text-2xl font-extrabold mb-1">🛡️ Segurança</h1>
+      <p className="sub text-sm mb-4">Status das proteções do sistema</p>
+
+      <div className="card p-5 mb-4">
+        <h3 className="font-bold mb-3">🔒 Status</h3>
+        <table className="w-full text-sm">
+          <tbody>
+            {itens.map(([k, v]) => (
+              <tr key={k} className="border-b border-[var(--line)]">
+                <td className="py-2">{k}</td>
+                <td className="py-2 text-right" style={{color:'var(--green)'}}>{v}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="card p-5">
+        <h3 className="font-bold mb-3">📋 Como isso protege você</h3>
+        <ul className="text-sm" style={{lineHeight:1.8, color:'var(--sub)'}}>
+          <li>• Rate limiter impede bloqueio por excesso de requests no ML</li>
+          <li>• Token renova automaticamente antes de expirar (sem reconectar manualmente)</li>
+          <li>• Monitores pausam se token expirado — não fica em loop gerando 403</li>
+          <li>• Anti-duplicidade bloqueia publicação de anúncios repetidos</li>
+          <li>• Respostas SAC sanitizadas (ML pune contato externo nas perguntas)</li>
+          <li>• ErrorBoundary em cada card — uma falha não derruba a página inteira</li>
+          <li>• HTTPS com certificado válido (renovação automática)</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 // ===== SETOR: 🛍️ COMERCIAL (Catálogo, Anúncios, SEO, Compatibilidade) =====
 function ComercialSectorPage({ agent, onGoToAgent, initialSub }){
   const [sub, setSub] = useSubTab('comercial', 'catalogo', initialSub);
@@ -9126,10 +9482,7 @@ function FinanceiroSectorPage(){
         {sub === 'calculadora' && <PricingPage/>}
         {sub === 'simulador' && <div><SalesSimulator/></div>}
         {sub === 'concorrencia' && <ConcorrenciaPage/>}
-        {sub === 'relatorios' && <ComingSoonCard
-          icon="📊" title="Relatórios financeiros"
-          description="DRE simplificado, lucro líquido por período, conciliação de repasses do Mercado Livre."
-          features={['DRE simplificado', 'Lucro por SKU', 'Repasses ML', 'Impostos estimados']}/>}
+        {sub === 'relatorios' && <RelatoriosPage/>}
       </CardErrorBoundary>
     </div>
   );
@@ -9154,14 +9507,8 @@ function LogisticaSectorPage(){
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'estoque' && <EstoquePanel estoque={estoque} inline/>}
         {sub === 'pedidos' && <PedidosPanel pedidos={pedidos}/>}
-        {sub === 'envios' && <ComingSoonCard
-          icon="🚚" title="Gestão de Envios"
-          description="Envios pendentes, prazo de despacho, rastreamento em tempo real."
-          features={['Envios pendentes', 'Prazo de despacho', 'Rastreamento', 'Alertas de atraso']}/>}
-        {sub === 'etiquetas' && <ComingSoonCard
-          icon="🏷️" title="Emissão de Etiquetas"
-          description="Gerar etiquetas de envio em PDF, impressão em lote, Mercado Envios integrado."
-          features={['PDF em lote', 'Mercado Envios', 'Correios', 'Jadlog']}/>}
+        {sub === 'envios' && <EnviosPage/>}
+        {sub === 'etiquetas' && <EtiquetasPage/>}
       </CardErrorBoundary>
     </div>
   );
@@ -9372,10 +9719,7 @@ function AtendimentoSectorPage(){
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'perguntas' && <SACPanel sac={sac} inline/>}
         {sub === 'mensagens' && <MensagensPosVendaPage/>}
-        {sub === 'avaliacoes' && <ComingSoonCard
-          icon="⭐" title="Gestão de Avaliações"
-          description="Avaliações recebidas, respostas automáticas com IA, alertas de negativas."
-          features={['Resposta auto', 'Alertas 1-3★', 'Pedidos de revisão', 'Score do vendedor']}/>}
+        {sub === 'avaliacoes' && <AvaliacoesPage/>}
       </CardErrorBoundary>
     </div>
   );
@@ -9567,10 +9911,7 @@ function MarketingSectorPage({ agent, notif, onGoToAgent, initialSub }){
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'ranking' && <RankingPage agent={agent} notif={notif} onGoToAgent={onGoToAgent}/>}
         {sub === 'performance' && <PerformancePage/>}
-        {sub === 'concorrencia' && <ComingSoonCard
-          icon="🎯" title="Inteligência de Concorrência"
-          description="Monitoramento de preços dos concorrentes, keywords em alta e hot items do nicho."
-          features={['Preços rivais', 'Keywords', 'Hot items', 'Tendências']}/>}
+        {sub === 'concorrencia' && <ConcorrenciaPage/>}
       </CardErrorBoundary>
     </div>
   );
@@ -9602,10 +9943,7 @@ function ConfigSectorPage({ user, notif, agent, initialSub }){
           </div>
         )}
         {sub === 'conta' && <ContaConfigPage user={user} notif={notif}/>}
-        {sub === 'seguranca' && <ComingSoonCard
-          icon="🛡️" title="Segurança"
-          description="Logs de acesso, sessões ativas, 2FA, tokens de API."
-          features={['Logs acesso', 'Sessões ativas', '2FA', 'Tokens API']}/>}
+        {sub === 'seguranca' && <SegurancaPage/>}
       </CardErrorBoundary>
     </div>
   );
