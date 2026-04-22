@@ -12,7 +12,7 @@
 <title>Agente Marketplace — Painel de Controle</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -21,15 +21,46 @@
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <style>
   :root{
-    /* paleta iHub Affiliates (ihubaffiliates.com.br) — extraída direto do site
-       primária: azul de marca #00A7FF · hover #4dc3ff · profundo #005791
-       fundos: #0a0a0a / #141414 / #0e0e0e / #222222 */
-    --bg:#0a0a0a; --card:#141414; --card2:#0e0e0e; --line:#222222;
-    --green:#00A7FF; --green-dim:#005791; --green-soft:rgba(0,167,255,.14);
-    --green-light:#4dc3ff;
-    --mint:#22c55e; --mint-soft:rgba(34,197,94,.12);
-    --yellow:#ffb020; --red:#FF0000; --blue:#4dc3ff; --purple:#a855f7;
-    --mut:#7a7a7a; --txt:#e5e7eb;
+    /* Redesign SaaS moderno — estilo Vercel/Linear/Stripe
+       Zinc (neutro profundo) + blue-500 como accent. */
+
+    /* Tokens novos */
+    --bg-primary:   #09090b;  /* quase preto */
+    --bg-secondary: #18181b;  /* zinc-900 — cards */
+    --bg-tertiary:  #27272a;  /* zinc-800 — hover/nested */
+    --border-default: #27272a;
+    --border-hover:   #3f3f46;
+    --text-primary:   #fafafa;
+    --text-secondary: #a1a1aa;
+    --text-tertiary:  #71717a;
+    --accent:         #3b82f6;  /* blue-500 */
+    --accent-hover:   #2563eb;
+    --accent-soft:    rgba(59,130,246,.1);
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --error:   #ef4444;
+    --info:    #3b82f6;
+
+    /* Tokens legados remapeados pra nova paleta — toda UI existente
+       que usa var(--green), var(--bg), var(--line), var(--mut), var(--txt)
+       herda o redesign automaticamente, sem tocar em nenhum JSX. */
+    --bg:          #09090b;
+    --card:        #18181b;
+    --card2:       #09090b;
+    --line:        #27272a;
+    --green:       #3b82f6;              /* brand passa a ser blue-500 */
+    --green-dim:   #2563eb;
+    --green-soft:  rgba(59,130,246,.1);
+    --green-light: #60a5fa;
+    --mint:        #22c55e;
+    --mint-soft:   rgba(34,197,94,.12);
+    --yellow:      #f59e0b;
+    --red:         #ef4444;
+    --blue:        #3b82f6;
+    --purple:      #a855f7;
+    --mut:         #a1a1aa;              /* zinc-400 */
+    --txt:         #fafafa;
+    --sub:         #a1a1aa;              /* alias usado em alguns componentes */
   }
   html,body,#root{background:var(--bg);color:var(--txt);min-height:100vh;}
   body{font-family:'Manrope',system-ui,sans-serif;}
@@ -1196,6 +1227,245 @@
   /* Desktop >= 769px */
   @media (min-width: 769px) {
     .mobile-bottom-nav { display: none !important; }
+  }
+
+  /* ============================================================
+     REDESIGN SaaS — overrides finais (estilo Vercel/Linear/Stripe)
+     Sem neon, sem glow, bordas sutis zinc-800, accent blue-500.
+     ============================================================ */
+
+  /* Tipografia moderna */
+  body {
+    font-family: 'Inter', 'Manrope', -apple-system, BlinkMacSystemFont,
+      'Segoe UI', system-ui, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Cards — bordas sutis, hover discreto, sem glow */
+  .card, .card2 {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: 12px;
+    transition: border-color .2s ease, background-color .2s ease;
+  }
+  .card:hover, .card2:hover { border-color: var(--border-hover); }
+
+  /* Glow neutralizado — cards com destaque agora só usam borda fina accent */
+  .glow {
+    box-shadow: none !important;
+    border-color: rgba(59,130,246,.35) !important;
+  }
+
+  /* KPI — valor tabular, label uppercase sutil */
+  .kpi h2, .kpi .text-3xl {
+    font-family: 'Inter', system-ui, sans-serif !important;
+    font-feature-settings: 'tnum' 1;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+  }
+  .kpi .uppercase, .kpi .sub.text-xs {
+    color: var(--text-tertiary);
+    letter-spacing: 0.05em;
+    font-weight: 500;
+  }
+
+  /* Header mais limpo */
+  header {
+    background: var(--bg-primary) !important;
+    border-bottom: 1px solid var(--border-default);
+    backdrop-filter: none !important;
+  }
+  .tab {
+    color: var(--text-secondary);
+    font-weight: 500;
+    border-radius: 8px;
+  }
+  .tab:hover:not(.active) { color: var(--text-primary); background: var(--bg-tertiary); }
+  .tab.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+
+  /* Botão primário sem fonte bold extrema */
+  .btn {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 500;
+    border-radius: 8px;
+    padding: 10px 20px;
+    transition: background-color .2s ease;
+    box-shadow: none;
+  }
+  .btn:hover { background: var(--accent-hover); }
+
+  /* Botão ghost — hover mais sutil (sem virar azul puro) */
+  .btn-ghost {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-weight: 500;
+    font-size: 13px;
+    transition: all .2s ease;
+  }
+  .btn-ghost:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+  }
+
+  /* Inputs — focus ring estilo Tailwind */
+  .input, input, select, textarea {
+    border-radius: 8px;
+    transition: border-color .2s ease, box-shadow .2s ease;
+  }
+  .input:focus, input:focus, select:focus, textarea:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px var(--accent-soft) !important;
+    background: var(--bg-secondary) !important;
+    outline: none;
+  }
+
+  /* Chips / badges — pílula neutra, accent sutil no active/hover */
+  .chip {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid transparent;
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+  .chip:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-color: rgba(59,130,246,.25);
+  }
+
+  /* Badges de status nas tabelas */
+  .badge { font-weight: 500; letter-spacing: 0; }
+  .b-blue   { background: rgba(59,130,246,.1);  color: #60a5fa; }
+  .b-green  { background: rgba(34,197,94,.1);   color: #22c55e; }
+  .b-yellow { background: rgba(245,158,11,.1);  color: #f59e0b; }
+  .b-red    { background: rgba(239,68,68,.1);   color: #ef4444; }
+  .b-purple { background: rgba(168,85,247,.1);  color: #c084fc; }
+
+  /* Tabelas — head mais discreto */
+  th {
+    color: var(--text-tertiary);
+    font-weight: 500;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border-default);
+    padding: 10px 12px;
+  }
+  td {
+    border-bottom: 1px solid var(--border-default);
+    padding: 12px;
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+  td.mono, td .mono { font-variant-numeric: tabular-nums; }
+
+  /* Banners (err/ok) — muito mais sutis */
+  .err {
+    background: rgba(239,68,68,.08);
+    border: 1px solid rgba(239,68,68,.2);
+    color: var(--error);
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+  }
+  .ok {
+    background: var(--accent-soft);
+    border: 1px solid rgba(59,130,246,.2);
+    color: var(--accent);
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+  }
+
+  /* Logo ML — sombra leve em vez de glow cyan */
+  .logo-ml {
+    background: var(--accent);
+    box-shadow: 0 2px 8px -2px rgba(59,130,246,.4);
+    font-weight: 600;
+  }
+
+  /* Link colorido */
+  .link { color: var(--accent); font-weight: 500; }
+  .link:hover { color: var(--accent-hover); text-decoration: underline; }
+
+  /* Label sub — consistente */
+  .sub { color: var(--text-secondary); }
+
+  /* Scrollbar fina estilo SaaS */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-default);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+
+  /* Recharts — grid mais sutil */
+  .recharts-cartesian-grid line {
+    stroke: var(--border-default) !important;
+  }
+  .recharts-default-tooltip {
+    background: var(--bg-secondary) !important;
+    border: 1px solid var(--border-default) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 12px -4px rgba(0,0,0,.4) !important;
+  }
+
+  /* Hover cards do dropdown — sem borda neon */
+  .profile-dropdown, .dropdown, [class*="dropdown"] {
+    border-color: var(--border-default) !important;
+  }
+
+  /* Bottom nav mobile — mais espaçoso */
+  .mobile-bottom-nav {
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-default);
+  }
+  .mobile-bottom-nav button {
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+  .mobile-bottom-nav button.active {
+    color: var(--accent);
+  }
+
+  /* Mascote — opacidade reduzida pra não dominar visual (mantém login bonito) */
+  .mascote-placeholder { border-color: var(--border-default); }
+
+  /* Desabilita animações pesadas em hover pra sensação SaaS */
+  .card, .card2, .chip, .btn, .btn-ghost, .tab {
+    animation: none;
+  }
+
+  /* Headings mais secos */
+  h1, h2, h3 {
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+  }
+  h1.text-2xl, .text-2xl { font-weight: 600; }
+
+  /* Mobile — padding generoso */
+  @media (max-width: 768px) {
+    main { padding-left: 16px !important; padding-right: 16px !important; }
+    .card { margin-bottom: 12px; }
+    .mobile-bottom-nav { padding-bottom: env(safe-area-inset-bottom, 8px); }
   }
 </style>
 </head>
