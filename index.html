@@ -1468,6 +1468,27 @@
     .mobile-bottom-nav { padding-bottom: env(safe-area-inset-bottom, 8px); }
   }
 
+  /* ---- #root acima do fundo animado ---- */
+  #root { position: relative; z-index: 1; }
+
+  /* ---- Keyframes do fundo animado (div real, não pseudo) ---- */
+  @keyframes meshBG {
+    0%   { transform: translate(0%, 0%)   rotate(0deg); }
+    25%  { transform: translate(-10%, -5%) rotate(1deg); }
+    50%  { transform: translate(-5%, -10%) rotate(-1deg); }
+    75%  { transform: translate(-15%, -3%) rotate(0.5deg); }
+    100% { transform: translate(-8%, -8%) rotate(-0.5deg); }
+  }
+  @keyframes floatParticle {
+    0%   { transform: translate(0, 0) scale(1);   opacity: 0.3; }
+    50%  { transform: translate(15px, -20px) scale(1.2); opacity: 0.7; }
+    100% { transform: translate(-10px, 10px) scale(0.8); opacity: 0.4; }
+  }
+  @keyframes fadeSlideUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
   /* ============================================================
      UPGRADE VISUAL — fundo animado + ícones 3D + glassmorphism
      Sutil e profissional — animações CSS-only, nada pesado.
@@ -1703,11 +1724,157 @@
 </style>
 </head>
 <body>
+<!-- Fundo animado: div real (pseudo-elements no body bugavam por conflito CSS) -->
+<div id="animated-bg" aria-hidden="true"
+     style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;overflow:hidden;">
+  <div style="position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:
+       radial-gradient(ellipse at 20% 50%, rgba(59,130,246,0.12) 0%, transparent 50%),
+       radial-gradient(ellipse at 80% 20%, rgba(99,102,241,0.09) 0%, transparent 50%),
+       radial-gradient(ellipse at 40% 80%, rgba(14,165,233,0.07) 0%, transparent 50%),
+       radial-gradient(ellipse at 70% 60%, rgba(139,92,246,0.06) 0%, transparent 50%);
+       animation:meshBG 25s ease-in-out infinite alternate;"></div>
+  <div id="particles-layer" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>
+</div>
+<script>
+  // Gera 30 partículas flutuantes (CSS-only animation; sem JS loop)
+  (function(){
+    const pl = document.getElementById('particles-layer');
+    if (!pl) return;
+    for (let i = 0; i < 30; i++) {
+      const d = document.createElement('div');
+      const size = Math.random() * 2 + 1;
+      const x = Math.random() * 100;
+      const y = Math.random() * 100;
+      const dur = Math.random() * 20 + 15;
+      const delay = Math.random() * 10;
+      const opacity = Math.random() * 0.15 + 0.05;
+      const isBlue = Math.random() > 0.6;
+      const color = isBlue
+        ? 'rgba(59,130,246,' + (opacity * 2) + ')'
+        : 'rgba(255,255,255,' + opacity + ')';
+      d.style.cssText =
+        'position:absolute;left:' + x + '%;top:' + y + '%;' +
+        'width:' + size + 'px;height:' + size + 'px;' +
+        'border-radius:50%;background:' + color + ';' +
+        'animation:floatParticle ' + dur + 's ease-in-out ' + delay + 's infinite alternate;' +
+        'pointer-events:none;';
+      pl.appendChild(d);
+    }
+  })();
+</script>
+
 <div id="root"></div>
 
 <script type="text/babel" data-presets="react">
 const {useState,useEffect,useMemo,useRef,useCallback} = React;
 const {ResponsiveContainer,BarChart,Bar,LineChart,Line,PieChart,Pie,Cell,XAxis,YAxis,CartesianGrid,Tooltip,Legend,Area,AreaChart} = Recharts;
+
+// ============================================================
+// ÍCONES 3D — SVG inline + gradiente + perspective + hover lift
+// Substitui emojis do sistema por pictogramas consistentes.
+// ============================================================
+const ICON3D_COLORS = {
+  blue:   ['#3b82f6', '#2563eb'],
+  green:  ['#22c55e', '#16a34a'],
+  orange: ['#f59e0b', '#d97706'],
+  red:    ['#ef4444', '#dc2626'],
+  purple: ['#8b5cf6', '#7c3aed'],
+  cyan:   ['#06b6d4', '#0891b2'],
+  pink:   ['#ec4899', '#db2777'],
+  teal:   ['#14b8a6', '#0d9488'],
+  zinc:   ['#52525b', '#3f3f46'],
+  gold:   ['#eab308', '#ca8a04'],
+};
+
+const ICON3D_PATHS = {
+  'package':         '<path d="M16.5 9.4 7.55 4.24"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
+  'megaphone':       '<path d="m3 11 18-5v12L3 13v-2z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/>',
+  'shopping-cart':   '<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>',
+  'dollar-sign':     '<line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+  'file-text':       '<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/>',
+  'bar-chart':       '<line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/>',
+  'store':           '<path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/><path d="M2 7h20"/>',
+  'wallet':          '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>',
+  'truck':           '<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/>',
+  'message-circle':  '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  'trending-up':     '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
+  'bot':             '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
+  'settings':        '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  'shield':          '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  'zap':             '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  'bell':            '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  'check-circle':    '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+  'alert-triangle':  '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  'rocket':          '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
+  'star':            '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+};
+
+function Icon3D({ name, color = 'blue', size = 32, style = {} }) {
+  const [hover, setHover] = useState(false);
+  const [c1, c2] = ICON3D_COLORS[color] || ICON3D_COLORS.blue;
+  const iconSize = Math.floor(size * 0.55);
+  const svgPath = ICON3D_PATHS[name] || ICON3D_PATHS['package'];
+  const baseTransform  = 'perspective(500px) rotateY(-5deg) rotateX(5deg)';
+  const hoverTransform = 'perspective(500px) rotateY(0deg) rotateX(0deg) scale(1.1)';
+  const baseShadow  = `0 4px 12px ${c1}40, inset 0 1px 0 rgba(255,255,255,0.2)`;
+  const hoverShadow = `0 8px 24px ${c1}55, inset 0 1px 0 rgba(255,255,255,0.28)`;
+  return (
+    <div
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width:  size,
+        height: size,
+        borderRadius: Math.round(size * 0.25),
+        background: `linear-gradient(135deg, ${c1}, ${c2})`,
+        boxShadow: hover ? hoverShadow : baseShadow,
+        transform: hover ? hoverTransform : baseTransform,
+        transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s ease',
+        flexShrink: 0,
+        ...style,
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      dangerouslySetInnerHTML={{
+        __html: `<svg xmlns="http://www.w3.org/2000/svg" width="${iconSize}" height="${iconSize}" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${svgPath}</svg>`,
+      }}
+    />
+  );
+}
+
+// ============================================================
+// AnimatedCard — wrapper opcional com glassmorphism + hover lift
+// Usado quando um card específico precisa de destaque extra.
+// (Cards normais já têm glass via CSS global.)
+// ============================================================
+function AnimatedCard({ children, delay = 0, glow = false, style = {}, className = '' }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      className={`card ${className}`}
+      style={{
+        background: 'rgba(24, 24, 27, 0.75)',
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
+        border: hovered || glow ? '1px solid rgba(59,130,246,0.3)' : '1px solid rgba(255,255,255,0.06)',
+        borderRadius: 16,
+        padding: 20,
+        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+        transform: hovered ? 'translateY(-2px)' : 'translateY(0)',
+        boxShadow: hovered
+          ? '0 8px 30px rgba(0,0,0,0.3), 0 0 20px rgba(59,130,246,0.1)'
+          : '0 2px 10px rgba(0,0,0,0.2)',
+        animation: `fadeSlideUp 0.5s ease ${delay}s both`,
+        ...style,
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {children}
+    </div>
+  );
+}
 
 // ============================================================
 // MODO DEMO — dados simulados pra apresentação
@@ -4408,14 +4575,14 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
   // Estrutura reorganizada por SETORES (nível empresa).
   // Cada setor agrupa funcionalidades relacionadas e tem sub-abas internas.
   const tabs = [
-    ['overview',     '📊 Visão Geral'],
-    ['comercial',    '🛍️ Comercial'],
-    ['financeiro',   '💰 Financeiro'],
-    ['logistica',    '📦 Logística'],
-    ['atendimento',  '💬 Atendimento'],
-    ['marketing',    '📈 Marketing'],
-    ['agent',        '🤖 Agente'],
-    ['config',       '⚙️ Config'],
+    ['overview',     'Visão Geral',  'bar-chart',       'blue'  ],
+    ['comercial',    'Comercial',    'store',           'green' ],
+    ['financeiro',   'Financeiro',   'wallet',          'orange'],
+    ['logistica',    'Logística',    'truck',           'cyan'  ],
+    ['atendimento',  'Atendimento',  'message-circle',  'purple'],
+    ['marketing',    'Marketing',    'trending-up',     'pink'  ],
+    ['agent',        'Agente',       'bot',             'teal'  ],
+    ['config',       'Config',       'settings',        'zinc'  ],
   ];
   // Mapeia qual setor está "ativo" visualmente mesmo com rotas legadas
   const activeSector = {
@@ -4435,8 +4602,11 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
           </div>
         </div>
         <nav className="desktop-header-tabs flex gap-1 ml-6">
-          {tabs.map(([k,lbl])=>(
-            <div key={k} className={`tab ${activeSector===k?'active':''}`} onClick={()=>setTab(k)}>{lbl}</div>
+          {tabs.map(([k, lbl, iconName, iconColor]) => (
+            <div key={k} className={`tab ${activeSector===k?'active':''} flex items-center gap-2`} onClick={()=>setTab(k)}>
+              <Icon3D name={iconName} color={iconColor} size={22}/>
+              <span>{lbl}</span>
+            </div>
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-3">
@@ -4494,10 +4664,18 @@ function MobileBottomNav({ tab, setTab }){
   );
 }
 
-function KPI({label, value, sub, glow}){
+function KPI({label, value, sub, glow, icon}){
+  // icon = { name: 'package', color: 'blue' } — opcional
   return (
     <div className={`card p-5 kpi ${glow?'glow':''}`}>
-      <p className="sub text-xs uppercase tracking-wider">{label}</p>
+      {icon ? (
+        <div className="flex items-center gap-3">
+          <Icon3D name={icon.name} color={icon.color || 'blue'} size={32}/>
+          <p className="sub text-xs uppercase tracking-wider">{label}</p>
+        </div>
+      ) : (
+        <p className="sub text-xs uppercase tracking-wider">{label}</p>
+      )}
       <h2 className="text-3xl mt-2">{value}</h2>
       {sub && <p className="text-xs mt-2" style={{color:'var(--green)'}}>{sub}</p>}
     </div>
@@ -5796,11 +5974,11 @@ function OverviewPage({onGoToProducts, onGoToIntegrations, onGoToLogistica}){
       {ml.err && !ml.expired && <div className="err mb-4 text-xs">Falha ao carregar ML: {ml.err} · exibindo dados mock</div>}
 
       <div className="grid grid-cols-5 gap-4 mb-6">
-        <KPI label="📦 Produtos" value="0" sub="importar catálogo"/>
-        <KPI label="📢 Anúncios ativos" value={kpiAnuncios.toLocaleString('pt-BR')} sub={hasReal ? 'ao vivo · ML' : 'nenhum publicado'} glow={hasReal && kpiAnuncios>0}/>
-        <KPI label="🛒 Vendas (30d)" value={kpiVendas.toLocaleString('pt-BR')} sub={hasReal ? 'orders totais' : '—'}/>
-        <KPI label="💰 Receita (30d)" value={hasReal ? fmt(kpiReceita30) : 'R$ 0,00'} sub={hasReal ? 'últimas 10 vendas' : '—'}/>
-        <KPI label="📤 Publicados hoje" value={<span>0<span className="sub text-lg">/15</span></span>} sub="limite diário" glow={!hasReal}/>
+        <KPI icon={{name:'package',       color:'blue'  }} label="Produtos"         value="0" sub="importar catálogo"/>
+        <KPI icon={{name:'megaphone',     color:'green' }} label="Anúncios ativos"  value={kpiAnuncios.toLocaleString('pt-BR')} sub={hasReal ? 'ao vivo · ML' : 'nenhum publicado'} glow={hasReal && kpiAnuncios>0}/>
+        <KPI icon={{name:'shopping-cart', color:'orange'}} label="Vendas (30d)"     value={kpiVendas.toLocaleString('pt-BR')} sub={hasReal ? 'orders totais' : '—'}/>
+        <KPI icon={{name:'dollar-sign',   color:'gold'  }} label="Receita (30d)"    value={hasReal ? fmt(kpiReceita30) : 'R$ 0,00'} sub={hasReal ? 'últimas 10 vendas' : '—'}/>
+        <KPI icon={{name:'file-text',     color:'purple'}} label="Publicados hoje"  value={<span>0<span className="sub text-lg">/15</span></span>} sub="limite diário" glow={!hasReal}/>
       </div>
       {!hasReal && (
         <div className="card p-5 mb-6" style={{borderColor:'rgba(0,167,255,.35)'}}>
