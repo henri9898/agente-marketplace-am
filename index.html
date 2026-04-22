@@ -8935,21 +8935,197 @@ function CompatSubPage({ compat }){
 }
 
 // ===== SETOR: 💰 FINANCEIRO =====
+// ===== CONCORRÊNCIA — análise + ajuste automático de preço =====
+function ConcorrenciaPage(){
+  const [percentualAbaixo, setPercentualAbaixo] = useState(5);
+  const [margemMinima, setMargemMinima]         = useState(15);
+  const [rodando, setRodando]                   = useState(false);
+  const [resp, setResp]                         = useState(null);
+  const [historico, setHistorico]               = useState([]);
+  const [err, setErr]                           = useState(null);
+
+  const tokens = loadMLTokens();
+  const authHeader = tokens?.access_token ? { 'Authorization': 'Bearer ' + tokens.access_token } : {};
+
+  const carregarHistorico = useCallback(async () => {
+    if (!tokens?.access_token) return;
+    try {
+      const r = await fetch('/api/ml/preco/historico', { headers: authHeader });
+      const d = await r.json();
+      if (d.success) setHistorico(d.ajustes || []);
+    } catch(e) {}
+  }, [tokens?.access_token]);
+
+  useEffect(() => { carregarHistorico(); }, [carregarHistorico]);
+
+  async function analisar(modoTeste){
+    if (!tokens?.access_token) { setErr('Conecte sua conta ML primeiro'); return; }
+    if (!modoTeste && !window.confirm(`Tem certeza que deseja ALTERAR OS PREÇOS DE VERDADE (${percentualAbaixo}% abaixo do concorrente, margem mínima ${margemMinima}%)?`)) return;
+    setRodando(true); setErr(null); setResp(null);
+    try {
+      const r = await fetch('/api/ml/preco/ajuste-automatico', {
+        method: 'POST',
+        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ percentualAbaixo, margemMinima, modoTeste }),
+      });
+      const d = await r.json();
+      setResp(d);
+      if (!modoTeste) await carregarHistorico();
+    } catch(e) { setErr(e.message); }
+    setRodando(false);
+  }
+
+  const tempoAtras = (iso) => {
+    if (!iso) return '';
+    const ms = Date.now() - new Date(iso).getTime();
+    const min = Math.floor(ms / 60000);
+    if (min < 1) return 'agora';
+    if (min < 60) return `há ${min}min`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `há ${h}h`;
+    const d = Math.floor(h / 24);
+    return `há ${d}d`;
+  };
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">🔍 Ajuste de Preço — Concorrência</h1>
+          <p className="sub text-sm">Analisa os top 5 concorrentes por anúncio e sugere/aplica ajustes mantendo margem mínima</p>
+        </div>
+      </div>
+
+      <MLTokenExpiredBanner/>
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+
+      {/* Configuração */}
+      <div className="card p-5 mb-4">
+        <h3 className="font-bold mb-3">⚙️ Configuração</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="sub text-xs block mb-1">Ficar X% abaixo do concorrente mais barato</label>
+            <div className="flex items-center gap-2">
+              <input type="number" min="0" max="50" step="0.5" value={percentualAbaixo}
+                     onChange={e => setPercentualAbaixo(Math.max(0, Math.min(50, +e.target.value || 0)))}
+                     className="input mono" style={{width:100}}/>
+              <span className="sub text-sm">%</span>
+            </div>
+          </div>
+          <div>
+            <label className="sub text-xs block mb-1">Margem mínima (não baixar se margem &lt; isso)</label>
+            <div className="flex items-center gap-2">
+              <input type="number" min="0" max="80" step="1" value={margemMinima}
+                     onChange={e => setMargemMinima(Math.max(0, Math.min(80, +e.target.value || 0)))}
+                     className="input mono" style={{width:100}}/>
+              <span className="sub text-sm">%</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-2 mt-4 flex-wrap">
+          <button className="btn-ghost" onClick={() => analisar(true)} disabled={rodando}>
+            {rodando ? '🔍 ...' : '🔍 Analisar Todos (modo teste)'}
+          </button>
+          <button className="btn-ghost" onClick={() => analisar(false)} disabled={rodando}
+                  style={{borderColor:'rgba(220,38,38,.4)', color:'#dc2626'}}>
+            {rodando ? '💰 ...' : '💰 Ajustar de Verdade'}
+          </button>
+        </div>
+        <p className="sub text-xs mt-3">⚠️ Análise demora ~10s por conta do rate limit (1s entre itens, até 10 anúncios).</p>
+      </div>
+
+      {/* Resultado */}
+      {resp && (
+        <div className="card p-5 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-bold">
+              {resp.modoTeste ? '🧪 Simulação' : '💰 Ajuste aplicado'} —
+              {' '}{resp.total || 0} anúncio(s), {resp.ajustados || 0} ajustado(s)
+            </h3>
+            <button className="btn-ghost text-xs" onClick={() => setResp(null)}>fechar</button>
+          </div>
+          {resp.success === false && <div className="err text-xs">{resp.error}</div>}
+          {(resp.resultados || []).length === 0 ? (
+            <div className="sub text-xs italic">Sem resultados.</div>
+          ) : (
+            <div style={{maxHeight: 360, overflowY:'auto'}}>
+              {resp.resultados.map((r, i) => (
+                <div key={i} className="card p-3 mb-2" style={{background:'rgba(255,255,255,.02)'}}>
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-bold text-sm truncate">{r.titulo || r.itemId}</div>
+                      <div className="sub text-xs mono mt-1">{r.itemId}</div>
+                      <div className="text-xs mt-1">{r.acao}</div>
+                      {r.error && <div className="err text-xs mt-1">{r.error}</div>}
+                    </div>
+                    {(r.meuPreco || r.precoAnterior) && (
+                      <div className="text-xs text-right whitespace-nowrap">
+                        {r.meuPreco        && <div><span className="sub">meu</span> <b>R$ {Number(r.meuPreco).toFixed(2)}</b></div>}
+                        {r.menorConc       && <div><span className="sub">conc</span> <b>R$ {Number(r.menorConc).toFixed(2)}</b></div>}
+                        {r.precoIdeal      && <div><span className="sub">ideal</span> <b style={{color:'var(--green)'}}>R$ {Number(r.precoIdeal).toFixed(2)}</b></div>}
+                        {r.novoPreco && !r.precoIdeal && <div><span className="sub">novo</span> <b style={{color:'var(--green)'}}>R$ {Number(r.novoPreco).toFixed(2)}</b></div>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Histórico */}
+      <div className="card p-5 mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold">📜 Histórico de Ajustes ({historico.length})</h3>
+          <button className="btn-ghost text-xs" onClick={carregarHistorico}>🔄</button>
+        </div>
+        {historico.length === 0 ? (
+          <div className="sub text-xs italic">Nenhum ajuste registrado ainda.</div>
+        ) : (
+          <div style={{maxHeight: 280, overflowY:'auto'}}>
+            {historico.slice(0, 50).map((a, i) => {
+              const delta = Number(a.novoPreco) - Number(a.precoAnterior);
+              const deltaPct = a.precoAnterior ? ((delta / a.precoAnterior) * 100).toFixed(1) : '0';
+              return (
+                <div key={i} className="flex items-center justify-between py-2 border-b border-[var(--line)] text-sm">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold truncate">💰 {a.titulo}</div>
+                    <div className="sub text-xs mt-1">
+                      <span className="mono">{a.itemId}</span> · {a.motivo}
+                    </div>
+                  </div>
+                  <div className="text-xs text-right whitespace-nowrap ml-2">
+                    <div><span className="sub">R$ {Number(a.precoAnterior).toFixed(2)}</span> → <b style={{color: delta < 0 ? '#eab308' : 'var(--green)'}}>R$ {Number(a.novoPreco).toFixed(2)}</b></div>
+                    <div className="sub">{delta >= 0 ? '+' : ''}{deltaPct}% · {tempoAtras(a.data)}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FinanceiroSectorPage(){
   const [sub, setSub] = useSubTab('financeiro', 'calculadora');
   const tabs = [
-    { id:'calculadora', label:'🧮 Calculadora' },
-    { id:'simulador',   label:'🔍 Simulador' },
-    { id:'relatorios',  label:'📊 Relatórios' },
+    { id:'calculadora',  label:'🧮 Calculadora' },
+    { id:'simulador',    label:'🔍 Simulador' },
+    { id:'concorrencia', label:'🎯 Concorrência' },
+    { id:'relatorios',   label:'📊 Relatórios' },
   ];
   return (
     <div>
       <h1 className="text-2xl font-extrabold mb-1">💰 Financeiro</h1>
-      <p className="sub text-sm mb-4">Precificação inteligente, simulador de venda e relatórios</p>
+      <p className="sub text-sm mb-4">Precificação inteligente, simulador de venda, ajuste por concorrência e relatórios</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'calculadora' && <PricingPage/>}
         {sub === 'simulador' && <div><SalesSimulator/></div>}
+        {sub === 'concorrencia' && <ConcorrenciaPage/>}
         {sub === 'relatorios' && <ComingSoonCard
           icon="📊" title="Relatórios financeiros"
           description="DRE simplificado, lucro líquido por período, conciliação de repasses do Mercado Livre."

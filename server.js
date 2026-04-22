@@ -522,6 +522,9 @@ global.mensagensPosVenda = global.mensagensPosVenda || [];
 global.msgAutoConfig     = global.msgAutoConfig     || { venda_confirmada:true, produto_enviado:true, produto_entregue:true };
 global.msgEnviadas       = global.msgEnviadas       || new Set(); // deduplica por "orderId:tipo"
 
+// Histórico de ajustes de preço (acompanhamento de concorrência)
+global.ajustesPreco = global.ajustesPreco || [];
+
 const mensagensPosVenda = {
   venda_confirmada: (comprador, item) =>
     `Olá ${comprador}! 😊\n\nObrigado pela sua compra de "${item}"!\n\nEstamos preparando seu pedido com todo cuidado. Enviaremos em até 24h úteis após a confirmação do pagamento.\n\nQualquer dúvida, estamos à disposição!\n\nEquipe Agente Marketplace`,
@@ -4001,6 +4004,260 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           },
         });
       } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ============================================================
+    // AJUSTE AUTOMÁTICO DE PREÇO — concorrência, ajuste manual e em lote
+    // ============================================================
+
+    // GET /api/ml/preco/concorrencia/:itemId — top 5 concorrentes + análise de posição
+    if (u.pathname.startsWith('/api/ml/preco/concorrencia/') && req.method === 'GET') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const itemId = u.pathname.split('/').pop();
+        if (!itemId) return send(res, 400, { success:false, error:'itemId obrigatório' });
+
+        const itemResp = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const item = await itemResp.json();
+        if (!itemResp.ok || !item.id) {
+          return send(res, 200, { success:false, error: item.message || 'Anúncio não encontrado' });
+        }
+
+        const query = encodeURIComponent(String(item.title || '').substring(0, 40));
+        const searchResp = await mlFetch(
+          `https://api.mercadolibre.com/sites/MLB/search?q=${query}&category=${item.category_id || ''}&sort=price_asc&limit=10`,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        const searchData = await searchResp.json();
+
+        const meResp = await mlFetch('https://api.mercadolibre.com/users/me', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const me = await meResp.json();
+
+        const concorrentes = (searchData.results || [])
+          .filter(r => r.seller?.id !== me.id)
+          .slice(0, 5)
+          .map(r => ({
+            id: r.id,
+            titulo: r.title,
+            preco: r.price,
+            vendedor: r.seller?.nickname,
+            vendas: r.sold_quantity || 0,
+            frete_gratis: r.shipping?.free_shipping || false,
+            tipo_listagem: r.listing_type_id,
+          }));
+
+        const menorPreco = concorrentes.length > 0 ? Math.min(...concorrentes.map(c => c.price)) : null;
+        const precoMedio = concorrentes.length > 0 ? concorrentes.reduce((s, c) => s + c.price, 0) / concorrentes.length : null;
+
+        let posicao = 'desconhecida';
+        let sugestao = null;
+        if (menorPreco && item.price) {
+          if (item.price <= menorPreco) {
+            posicao = '🟢 Mais barato';
+            sugestao = 'Você já tem o melhor preço! Considere subir um pouco pra aumentar margem.';
+          } else if (item.price <= menorPreco * 1.1) {
+            posicao = '🟡 Competitivo';
+            sugestao = `Você está ${((item.price / menorPreco - 1) * 100).toFixed(0)}% acima do mais barato (R$ ${menorPreco.toFixed(2)}). Está bom!`;
+          } else {
+            posicao = '🔴 Caro';
+            sugestao = `Você está ${((item.price / menorPreco - 1) * 100).toFixed(0)}% acima do mais barato (R$ ${menorPreco.toFixed(2)}). Considere baixar.`;
+          }
+        }
+
+        return send(res, 200, {
+          success: true,
+          meuAnuncio: {
+            id: item.id,
+            titulo: item.title,
+            preco: item.price,
+            categoria: item.category_id,
+          },
+          concorrentes,
+          analise: {
+            menorPreco,
+            precoMedio: precoMedio ? parseFloat(precoMedio.toFixed(2)) : null,
+            meuPreco: item.price,
+            posicao,
+            sugestao,
+            diferencaParaMaisBarato: menorPreco ? parseFloat((item.price - menorPreco).toFixed(2)) : null,
+          },
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // PUT /api/ml/preco/ajustar/:itemId — altera preço e registra no histórico
+    if (u.pathname.startsWith('/api/ml/preco/ajustar/') && req.method === 'PUT') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const itemId = u.pathname.split('/').pop();
+        if (!itemId) return send(res, 400, { success:false, error:'itemId obrigatório' });
+        const body = await readBody(req).catch(() => ({}));
+        const novoPreco = Number(body.novoPreco);
+        const motivo = body.motivo || 'ajuste manual';
+
+        if (!novoPreco || novoPreco <= 0) {
+          return send(res, 200, { success:false, error:'Preço inválido' });
+        }
+
+        const itemResp = await mlFetch(
+          `https://api.mercadolibre.com/items/${itemId}?attributes=id,title,price`,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        const item = await itemResp.json();
+        if (!itemResp.ok || !item.id) {
+          return send(res, 200, { success:false, error: item.message || 'Anúncio não encontrado' });
+        }
+        const precoAnterior = item.price;
+
+        const updateResp = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          method: 'PUT',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ price: novoPreco }),
+        });
+        const updateData = await updateResp.json().catch(() => ({}));
+
+        if (updateResp.ok) {
+          console.log(`💰 [preço] ${itemId}: R$ ${precoAnterior} → R$ ${novoPreco} (${motivo})`);
+          global.ajustesPreco.unshift({
+            itemId,
+            titulo: item.title,
+            precoAnterior,
+            novoPreco,
+            motivo,
+            data: new Date().toISOString(),
+          });
+          if (global.ajustesPreco.length > 50) global.ajustesPreco = global.ajustesPreco.slice(0, 50);
+          return send(res, 200, { success:true, precoAnterior, novoPreco, motivo });
+        } else {
+          return send(res, 200, { success:false, error: updateData.message || 'Erro ao ajustar preço', details: updateData });
+        }
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // POST /api/ml/preco/ajuste-automatico — analisa/ajusta em lote (modo teste default)
+    if (u.pathname === '/api/ml/preco/ajuste-automatico' && req.method === 'POST') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const percentualAbaixo = Number.isFinite(+body.percentualAbaixo) ? +body.percentualAbaixo : 5;
+        const margemMinima = Number.isFinite(+body.margemMinima) ? +body.margemMinima : 15;
+        const modoTeste = body.modoTeste !== false; // default true
+
+        const meResp = await mlFetch('https://api.mercadolibre.com/users/me', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const me = await meResp.json();
+        if (!meResp.ok || !me.id) return send(res, 200, { success:false, error:'Token inválido' });
+
+        const itemsResp = await mlFetch(
+          `https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=20`,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        const itemsData = await itemsResp.json();
+        const itemIds = itemsData.results || [];
+
+        const resultados = [];
+        const base = `http://127.0.0.1:${PORT}`;
+
+        for (const itemId of itemIds.slice(0, 10)) {
+          try {
+            const concResp = await fetch(`${base}/api/ml/preco/concorrencia/${itemId}`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const concData = await concResp.json();
+
+            if (!concData.success || !concData.analise?.menorPreco) {
+              resultados.push({ itemId, acao: '⚪ Sem concorrentes encontrados' });
+              await new Promise(r => setTimeout(r, 1000));
+              continue;
+            }
+
+            const menorConc = concData.analise.menorPreco;
+            const meuPreco  = concData.analise.meuPreco;
+            const precoIdeal = parseFloat((menorConc * (1 - percentualAbaixo / 100)).toFixed(2));
+
+            // Estimativa simples: custo = 40% do preço atual
+            const custoEstimado = meuPreco * 0.4;
+            const margemNova = ((precoIdeal - custoEstimado) / precoIdeal) * 100;
+
+            if (margemNova < margemMinima) {
+              resultados.push({
+                itemId, titulo: concData.meuAnuncio.titulo,
+                meuPreco, menorConc, precoIdeal,
+                acao: `🔴 Margem insuficiente (${margemNova.toFixed(0)}% < ${margemMinima}%) — não ajustar`
+              });
+              await new Promise(r => setTimeout(r, 1000));
+              continue;
+            }
+
+            if (meuPreco <= precoIdeal) {
+              resultados.push({
+                itemId, titulo: concData.meuAnuncio.titulo,
+                meuPreco, menorConc,
+                acao: '🟢 Já está competitivo — sem ajuste necessário'
+              });
+              await new Promise(r => setTimeout(r, 1000));
+              continue;
+            }
+
+            if (modoTeste) {
+              resultados.push({
+                itemId, titulo: concData.meuAnuncio.titulo,
+                meuPreco, menorConc, precoIdeal,
+                acao: `🟡 Ajustaria: R$ ${meuPreco} → R$ ${precoIdeal} (-${percentualAbaixo}% do concorrente)`,
+                modoTeste: true
+              });
+            } else {
+              const ajResp = await fetch(`${base}/api/ml/preco/ajustar/${itemId}`, {
+                method: 'PUT',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ novoPreco: precoIdeal, motivo: `auto: -${percentualAbaixo}% do concorrente` })
+              });
+              const ajData = await ajResp.json();
+              resultados.push({
+                itemId, titulo: concData.meuAnuncio.titulo,
+                precoAnterior: meuPreco, novoPreco: precoIdeal,
+                acao: ajData.success ? `✅ Ajustado: R$ ${meuPreco} → R$ ${precoIdeal}` : '❌ Erro ao ajustar'
+              });
+            }
+
+            await new Promise(r => setTimeout(r, 1000));
+          } catch(e) {
+            resultados.push({ itemId, acao: '❌ Erro', error: e.message });
+          }
+        }
+
+        return send(res, 200, {
+          success: true,
+          modoTeste,
+          config: { percentualAbaixo, margemMinima },
+          total: resultados.length,
+          ajustados: resultados.filter(r => r.acao?.includes('Ajustado')).length,
+          resultados
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // GET /api/ml/preco/historico — últimos 50 ajustes
+    if (u.pathname === '/api/ml/preco/historico' && req.method === 'GET') {
+      return send(res, 200, {
+        success: true,
+        ajustes: global.ajustesPreco || [],
+        total: (global.ajustesPreco || []).length,
+      });
     }
 
     // ============================================================
