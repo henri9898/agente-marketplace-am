@@ -10240,12 +10240,260 @@ function MarketingSectorPage({ agent, notif, onGoToAgent, initialSub }){
 }
 
 // ===== SETOR: ⚙️ CONFIGURAÇÕES =====
+// ===== Setup do Sistema — painel unificado de configuração =====
+// Consome /api/config/status + permite salvar Anthropic key e configurar webhooks.
+// O X-Admin-Secret fica no localStorage (só o painel do dono precisa saber).
+const ADMIN_SECRET_KEY = 'agente_admin_secret';
+function getAdminSecret(){
+  try { return localStorage.getItem(ADMIN_SECRET_KEY) || 'agente-marketplace-2026'; } catch(_) { return 'agente-marketplace-2026'; }
+}
+function setAdminSecret(s){
+  try { if (s) localStorage.setItem(ADMIN_SECRET_KEY, s); else localStorage.removeItem(ADMIN_SECRET_KEY); } catch(_) {}
+}
+
+function SetupPage(){
+  const [cfg, setCfg]         = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr]         = useState(null);
+
+  const [apiKey, setApiKey]           = useState('');
+  const [savingKey, setSavingKey]     = useState(false);
+  const [keyMsg, setKeyMsg]           = useState(null);
+
+  const [whBusy, setWhBusy]           = useState(false);
+  const [whResp, setWhResp]           = useState(null);
+
+  const [secretInput, setSecretInput] = useState(() => getAdminSecret());
+
+  const refresh = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch('/api/config/status');
+      const d = await r.json();
+      if (d.success === false) setErr(d.error || 'Falha ao carregar status');
+      else setCfg(d);
+    } catch(e) { setErr(e.message); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function salvarAnthropicKey(){
+    if (!apiKey.trim().startsWith('sk-ant-')) {
+      setKeyMsg({ ok:false, text:'API key deve começar com sk-ant-' });
+      return;
+    }
+    setSavingKey(true); setKeyMsg(null);
+    try {
+      const r = await fetch('/api/config/anthropic-key', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'X-Admin-Secret': getAdminSecret() },
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
+      });
+      const d = await r.json();
+      if (d.success) {
+        setKeyMsg({ ok:true, text:d.message || 'API key salva!' });
+        setApiKey('');
+        await refresh();
+      } else {
+        setKeyMsg({ ok:false, text: d.error || 'Falha ao salvar' });
+      }
+    } catch(e) {
+      setKeyMsg({ ok:false, text: e.message });
+    }
+    setSavingKey(false);
+  }
+
+  async function configurarWebhooks(){
+    setWhBusy(true); setWhResp(null);
+    try {
+      const r = await fetch('/api/webhooks/configurar', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+      });
+      const d = await r.json();
+      setWhResp(d);
+      await refresh();
+    } catch(e) {
+      setWhResp({ success:false, error: e.message });
+    }
+    setWhBusy(false);
+  }
+
+  const dot = (ok) => ok ? '🟢' : '⚪';
+  const hoursLeftLabel = (exp) => {
+    if (!exp) return '—';
+    const h = (new Date(exp).getTime() - Date.now()) / 3600000;
+    if (h <= 0) return 'expirado';
+    return `${h.toFixed(1)}h restantes`;
+  };
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">🔧 Setup do Sistema</h1>
+          <p className="sub text-sm">Status de todas as integrações · configuração sem SSH</p>
+        </div>
+        <button className="btn-ghost" onClick={refresh} disabled={loading}>
+          {loading ? '🔄 ...' : '🔄 Atualizar'}
+        </button>
+      </div>
+
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+      {loading && !cfg && <div className="ok mb-4">⏳ Carregando status…</div>}
+
+      {cfg && (
+        <>
+          {/* Status das integrações */}
+          <div className="card p-5 mb-4">
+            <h3 className="font-bold mb-3">🔌 Status das Integrações</h3>
+
+            <div className="py-3 border-b border-[var(--line)]">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <div className="font-bold">{dot(cfg.ml?.tokenValido)} Mercado Livre</div>
+                  <div className="sub text-xs mt-1">
+                    {cfg.ml?.tokenValido
+                      ? <>Conectado · {hoursLeftLabel(cfg.ml.expires_at)} · user <span className="mono">{cfg.ml.user_id || '—'}</span></>
+                      : cfg.ml?.connected ? 'Token salvo mas expirado' : 'Não conectado'}
+                  </div>
+                  {cfg.ml?.auto_refresh && <div className="sub text-xs" style={{color:'var(--green)'}}>✅ Auto-refresh ativo</div>}
+                </div>
+              </div>
+            </div>
+
+            <div className="py-3 border-b border-[var(--line)]">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <div className="font-bold">{dot(cfg.bling?.connected)} Bling ERP</div>
+                  <div className="sub text-xs mt-1">
+                    {cfg.bling?.connected ? 'Conectado' :
+                     cfg.bling?.configured ? 'Credenciais configuradas, sem OAuth ainda' : 'Não configurado (aguardando Client ID)'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="py-3 border-b border-[var(--line)]">
+              <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+                <div>
+                  <div className="font-bold">{dot(cfg.ia?.configured)} IA Generativa (Anthropic)</div>
+                  <div className="sub text-xs mt-1">
+                    {cfg.ia?.configured ? <>Configurada · modelo <span className="mono">{cfg.ia.modelo}</span></> : 'Não configurada — SAC usa templates (funcional)'}
+                  </div>
+                </div>
+              </div>
+              {!cfg.ia?.configured && (
+                <div className="mt-2">
+                  <div className="flex flex-wrap gap-2 items-end">
+                    <div className="flex-1 min-w-[220px]">
+                      <label className="sub text-xs block mb-1">API Key (sk-ant-…)</label>
+                      <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                             placeholder="sk-ant-api03-..." className="input mono" style={{width:'100%'}}/>
+                    </div>
+                    <button className="btn" onClick={salvarAnthropicKey} disabled={savingKey || !apiKey.trim()}>
+                      {savingKey ? '💾 ...' : '💾 Salvar'}
+                    </button>
+                  </div>
+                  <div className="sub text-xs mt-1">Obter em <span className="mono">console.anthropic.com</span></div>
+                  {keyMsg && <div className={`text-xs mt-2 ${keyMsg.ok ? 'ok' : 'err'}`}>{keyMsg.ok ? '✅' : '❌'} {keyMsg.text}</div>}
+                </div>
+              )}
+            </div>
+
+            <div className="py-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+                <div>
+                  <div className="font-bold">{dot(cfg.webhooks?.recebendo)} Webhooks ML</div>
+                  <div className="sub text-xs mt-1">
+                    URL: <span className="mono">{cfg.webhooks?.urlConfigurada}</span>
+                    {' · '}
+                    {cfg.webhooks?.recebendo ? `✅ ${cfg.webhooks.total} recebidos` : '⚠️ nenhum recebido ainda'}
+                  </div>
+                </div>
+                <button className="btn-ghost text-xs" onClick={configurarWebhooks} disabled={whBusy}>
+                  {whBusy ? '🔔 ...' : '🔔 Configurar Automaticamente'}
+                </button>
+              </div>
+              {whResp && (
+                <div className="mt-2 text-xs">
+                  {whResp.success
+                    ? <div className="ok">✅ {whResp.message || 'Webhooks configurados!'}</div>
+                    : (
+                      <div>
+                        <div className="err">❌ {whResp.error || 'Falha'}</div>
+                        {whResp.instrucoes && (
+                          <div className="card p-3 mt-2" style={{background:'rgba(255,255,255,.02)'}}>
+                            <div className="font-bold text-xs mb-2">Configuração manual no DevCenter:</div>
+                            {Object.entries(whResp.instrucoes).map(([k,v]) => (
+                              <div key={k} className="text-xs"><span className="sub">{k}:</span> {v}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Cache + Rate Limiter */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div className="card p-5">
+              <h3 className="font-bold mb-2">📦 Cache ML</h3>
+              <div className="text-2xl font-bold">{cfg.cache?.entradas || 0}</div>
+              <div className="sub text-xs mt-1">entrada(s) em cache · TTL 5 min</div>
+              <div className="sub text-xs mt-1">Serve fallback quando ML retorna 429 ou vazio</div>
+            </div>
+            <div className="card p-5">
+              <h3 className="font-bold mb-2">📊 Rate Limiter</h3>
+              {cfg.rateLimiter ? (
+                <>
+                  <div className="text-2xl font-bold">
+                    {cfg.rateLimiter.reqUltimoMinuto}/{cfg.rateLimiter.limite}
+                    <span className="sub text-sm ml-2">({cfg.rateLimiter.percentual}%)</span>
+                  </div>
+                  <div className="sub text-xs mt-1">
+                    Hoje: {cfg.rateLimiter.totalHoje} · Bloqueios: {cfg.rateLimiter.bloqueios}
+                    {cfg.rateLimiter.pausado && <span style={{color:'#ef4444'}}> · PAUSADO</span>}
+                  </div>
+                </>
+              ) : <div className="sub text-xs">—</div>}
+            </div>
+          </div>
+
+          {/* Admin secret */}
+          <div className="card p-5 mb-4" style={{borderColor: cfg.admin?.usando_secret_default ? 'rgba(234,179,8,.35)' : 'var(--line)'}}>
+            <h3 className="font-bold mb-3">🛡️ Admin Secret</h3>
+            <p className="sub text-xs mb-2">
+              Protege <span className="mono">/api/tokens/manual-connect</span> e <span className="mono">/api/config/anthropic-key</span>.
+              {cfg.admin?.usando_secret_default && <span style={{color:'var(--yellow)'}}> ⚠️ Usando secret default — defina <span className="mono">ADMIN_SECRET</span> no <span className="mono">.env</span> do servidor.</span>}
+            </p>
+            <div className="flex flex-wrap gap-2 items-end">
+              <div className="flex-1 min-w-[220px]">
+                <label className="sub text-xs block mb-1">Secret (armazenado só no seu navegador)</label>
+                <input type="password" value={secretInput} onChange={e => setSecretInput(e.target.value)}
+                       className="input mono" style={{width:'100%'}}/>
+              </div>
+              <button className="btn-ghost" onClick={() => { setAdminSecret(secretInput); setKeyMsg({ ok:true, text:'Secret do navegador atualizado' }); }}>
+                💾 Salvar
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ConfigSectorPage({ user, notif, agent, initialSub }){
   const [sub, setSub] = useSubTab('config', 'integracoes', initialSub);
   const wh = useWebhooks();
   const [whInstruOpen, setWhInstruOpen] = useState(false);
   const tabs = [
     { id:'integracoes', label:'🔌 Integrações' },
+    { id:'setup',       label:'🔧 Setup' },
     { id:'webhooks',    label:'🔔 Webhooks' },
     { id:'conta',       label:'👤 Conta' },
     { id:'seguranca',   label:'🛡️ Segurança' },
@@ -10253,10 +10501,11 @@ function ConfigSectorPage({ user, notif, agent, initialSub }){
   return (
     <div>
       <h1 className="text-2xl font-extrabold mb-1">⚙️ Configurações</h1>
-      <p className="sub text-sm mb-4">Integrações, webhooks, conta e segurança</p>
+      <p className="sub text-sm mb-4">Integrações, setup, webhooks, conta e segurança</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'integracoes' && <IntegracoesPage agent={agent} notif={notif}/>}
+        {sub === 'setup' && <SetupPage/>}
         {sub === 'webhooks' && (
           <div>
             <WebhooksCard wh={wh} onOpenInstrucoes={() => setWhInstruOpen(true)}/>

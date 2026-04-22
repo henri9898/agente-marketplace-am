@@ -74,36 +74,139 @@ const mlRateLimiter = {
 // Wrapper que torna o fetch tolerante a respostas vazias / erros de rede.
 // Garante que callers que fazem `await r.json()` nunca crashem.
 // Retorna sempre um Response-like com { ok, status, statusText, headers, json(), text() }.
-function _fakeResponse({ ok, status, statusText, payload }) {
+function _fakeResponse({ ok, status, statusText, payload, fromCache }) {
   const jsonBody = typeof payload === 'string' ? payload : JSON.stringify(payload);
   return {
     ok, status, statusText,
+    fromCache: !!fromCache,
     headers: { get: () => null },
     json: async () => { try { return JSON.parse(jsonBody); } catch(_) { return payload || {}; } },
     text: async () => jsonBody,
   };
 }
 
-async function _safeFetch(url, options) {
-  try {
-    const resp = await fetch(url, options);
-    // Lê o body como texto primeiro pra detectar resposta vazia (comum no VPS quando ML retorna 429 seco)
-    const text = await resp.text().catch(() => '');
-    if (!text || !text.trim()) {
-      // Resposta vazia — ML ou infra intermediária não mandou body
-      const degraded = resp.status === 429
-        ? 'ml_rate_limited_upstream'
-        : 'ml_empty_response';
-      return _fakeResponse({
-        ok: false,
-        status: resp.status || 0,
-        statusText: resp.statusText || 'Empty response',
-        payload: { error: degraded, message: degraded, hint: 'ML não retornou body — possível rate-limit no IP do VPS' },
-      });
+// ============================================================
+// CACHE ML — última resposta boa por URL (TTL 5min, máx 100 entradas)
+// Cai em cache quando o ML retorna 429/vazio pro VPS.
+// ============================================================
+const mlCache = {
+  dados: {}, // { url: { data, timestamp } }
+  TTL: 5 * 60 * 1000,
+
+  get(url) {
+    const entry = this.dados[url];
+    if (entry && (Date.now() - entry.timestamp) < this.TTL) {
+      console.log(`📦 [cache] HIT: ${url.substring(0, 80)}`);
+      return entry.data;
     }
-    // Tenta parsear JSON; se não der, preserva texto
-    let parsed = null;
-    try { parsed = JSON.parse(text); } catch(_) { parsed = null; }
+    return null;
+  },
+
+  set(url, data) {
+    this.dados[url] = { data, timestamp: Date.now() };
+    const keys = Object.keys(this.dados);
+    if (keys.length > 100) {
+      // remove o mais antigo
+      let oldestKey = keys[0];
+      let oldestTs = this.dados[oldestKey].timestamp;
+      for (const k of keys) {
+        if (this.dados[k].timestamp < oldestTs) { oldestKey = k; oldestTs = this.dados[k].timestamp; }
+      }
+      delete this.dados[oldestKey];
+    }
+  },
+
+  stats() {
+    return { entradas: Object.keys(this.dados).length, ttl_ms: this.TTL };
+  },
+};
+
+// Headers que parecem navegador — alguns CDNs/edge tratam bot diferente
+const _browserHeaders = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'application/json',
+  'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+};
+
+// Sinaliza se um 429 ou resposta vazia deve tentar cache.
+// Evita cache pra endpoints sensíveis (oauth).
+function _cacheable(url, method) {
+  if ((method || 'GET').toUpperCase() !== 'GET') return false;
+  if (!/mercadolibre\.com|mercadolivre\.com/.test(url)) return false;
+  if (/\/oauth\/token/.test(url)) return false;
+  return true;
+}
+
+async function _rawFetch(url, options) {
+  // Merge de headers: defaults de navegador primeiro, options por cima (pra Authorization etc sobrescrever)
+  const merged = { ...options, headers: { ..._browserHeaders, ...(options && options.headers) } };
+  const resp = await fetch(url, merged);
+  const text = await resp.text().catch(() => '');
+  return { resp, text };
+}
+
+async function _safeFetch(url, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
+  const cacheable = _cacheable(url, method);
+
+  const tryParse = (t) => { try { return JSON.parse(t); } catch(_) { return null; } };
+
+  const degraded = (status, reason) => _fakeResponse({
+    ok: false,
+    status: status || 0,
+    statusText: reason,
+    payload: { error: reason, message: reason, hint: 'ML não retornou body — possível rate-limit no IP do VPS' },
+  });
+
+  try {
+    const { resp, text } = await _rawFetch(url, options);
+
+    // Resposta vazia → tenta cache, senão retry 1x com headers diferentes, senão degrada
+    const isEmpty = !text || !text.trim();
+    if (isEmpty || resp.status === 429) {
+      const reason = resp.status === 429 ? 'ml_rate_limited_upstream' : 'ml_empty_response';
+
+      // 1) fallback cache
+      if (cacheable) {
+        const cached = mlCache.get(url);
+        if (cached != null) {
+          return _fakeResponse({
+            ok: true, status: 200, statusText: 'cached',
+            payload: cached, fromCache: true,
+          });
+        }
+      }
+
+      // 2) retry único após 3s com headers levemente diferentes
+      await new Promise(r => setTimeout(r, 3000));
+      try {
+        const altOptions = {
+          ...options,
+          headers: {
+            ..._browserHeaders,
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',
+            'Accept-Language': 'en-US,en;q=0.9',
+            ...(options.headers || {}),
+          },
+        };
+        const r2 = await fetch(url, altOptions);
+        const t2 = await r2.text().catch(() => '');
+        if (t2 && t2.trim() && r2.status !== 429) {
+          const parsed2 = tryParse(t2);
+          if (r2.ok && cacheable && parsed2 != null) mlCache.set(url, parsed2);
+          return _fakeResponse({
+            ok: r2.ok, status: r2.status, statusText: r2.statusText,
+            payload: parsed2 != null ? parsed2 : t2,
+          });
+        }
+      } catch(_) { /* cai pro degraded */ }
+
+      return degraded(resp.status, reason);
+    }
+
+    // Resposta normal com body
+    const parsed = tryParse(text);
+    if (resp.ok && cacheable && parsed != null) mlCache.set(url, parsed);
     return _fakeResponse({
       ok: resp.ok,
       status: resp.status,
@@ -111,7 +214,16 @@ async function _safeFetch(url, options) {
       payload: parsed != null ? parsed : text,
     });
   } catch (err) {
-    // Erro de rede (DNS, timeout, reset, etc.)
+    // Erro de rede (DNS, timeout, reset, etc.) → tenta cache
+    if (cacheable) {
+      const cached = mlCache.get(url);
+      if (cached != null) {
+        return _fakeResponse({
+          ok: true, status: 200, statusText: 'cached-on-network-error',
+          payload: cached, fromCache: true,
+        });
+      }
+    }
     return _fakeResponse({
       ok: false,
       status: 0,
@@ -126,7 +238,14 @@ async function mlFetch(url, options = {}) {
   if (u.includes('mercadolibre.com') || u.includes('mercadolivre.com')) {
     if (!mlRateLimiter.podeFazer()) {
       console.log(`🚫 [rate-limiter] Bloqueado: ${u.slice(0, 80)}...`);
-      // Rate limiter INTERNO estourado — não chega nem a bater no ML
+      // Rate limiter INTERNO estourado — tenta cache antes de falhar
+      const cached = _cacheable(u, options.method) ? mlCache.get(u) : null;
+      if (cached != null) {
+        return _fakeResponse({
+          ok: true, status: 200, statusText: 'cached-on-rate-limit-local',
+          payload: cached, fromCache: true,
+        });
+      }
       return _fakeResponse({
         ok: false,
         status: 429,
@@ -595,6 +714,22 @@ async function rodarMonitorEstoque() {
 setInterval(rodarMonitorEstoque, 2 * 60 * 60 * 1000);
 // Primeira verificação 2min após boot (antes era 60s)
 setTimeout(rodarMonitorEstoque, 2 * 60 * 1000);
+
+// ============================================================
+// AUTO-CONFIGURAR WEBHOOKS NO BOOT — tenta 1x 3min após subir.
+// Se a app ML não permitir (comum), log cai gracioso.
+// ============================================================
+setTimeout(async () => {
+  try {
+    const resp = await fetch(`http://127.0.0.1:${PORT}/api/webhooks/configurar`, { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (data.success) {
+      console.log('🔔 [boot] Webhooks configurados automaticamente ✅');
+    } else if (data.instrucoes) {
+      console.log('🔔 [boot] Webhooks não configurados via API (normal) — configure manualmente no DevCenter');
+    }
+  } catch (e) { /* silencioso */ }
+}, 3 * 60 * 1000);
 
 // ============================================================
 // WEBHOOKS ML — processamento assíncrono (chamado por /webhooks)
@@ -2729,8 +2864,15 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
 
     // POST /api/tokens/manual-connect — reconecta manualmente colando tokens obtidos externamente
     // (emergência: quando o VPS não consegue trocar code por token e o usuário faz no PC dele)
+    // Protegida por X-Admin-Secret (default 'agente-marketplace-2026' — override via ADMIN_SECRET no .env)
     if (u.pathname === '/api/tokens/manual-connect' && req.method === 'POST') {
       try {
+        const adminSecret = process.env.ADMIN_SECRET || loadEnv().ADMIN_SECRET || 'agente-marketplace-2026';
+        const providedSecret = req.headers['x-admin-secret'] || req.headers['X-Admin-Secret'];
+        if (providedSecret !== adminSecret) {
+          return send(res, 403, { success:false, error:'Acesso negado — X-Admin-Secret inválido ou ausente' });
+        }
+
         const body = await readBody(req).catch(() => ({}));
         const { access_token, refresh_token, expires_in, user_id } = body || {};
 
@@ -4157,6 +4299,122 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           },
         });
       } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ============================================================
+    // CONFIG & WEBHOOKS — painel unificado de setup do sistema
+    // ============================================================
+
+    // POST /api/webhooks/configurar — tenta registrar callback+topics via API ML
+    // Se a app ML não permite edição via API (comum), retorna instruções manuais.
+    if (u.pathname === '/api/webhooks/configurar' && req.method === 'POST') {
+      try {
+        const tokens = loadTokens();
+        const token = tokens.ml_access_token;
+        if (!token) return send(res, 200, { success:false, error:'Token ML não disponível' });
+
+        const appId = process.env.ML_CLIENT_ID || loadEnv().ML_CLIENT_ID || '3688973136843575';
+        const callbackUrl = 'https://agentemarkt.com/webhooks';
+        const topics = ['items', 'questions', 'orders_v2', 'payments', 'shipments'];
+
+        const configResp = await mlFetch(`https://api.mercadolibre.com/applications/${appId}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            notifications_callback_url: callbackUrl,
+            notifications_topics: topics,
+          }),
+        });
+        const data = await configResp.json().catch(() => ({}));
+
+        if (configResp.ok) {
+          console.log('🔔 [webhooks] Configurados com sucesso via API!');
+          return send(res, 200, { success:true, message:'Webhooks configurados!', callback:callbackUrl, topics, data });
+        }
+        return send(res, 200, {
+          success: false,
+          error: data.message || 'Não foi possível configurar via API (normal — muitos apps ML não permitem)',
+          instrucoes: {
+            passo1: 'Acesse https://developers.mercadolivre.com.br/devcenter',
+            passo2: `Edite o app ${appId}`,
+            passo3: `Callback URL: ${callbackUrl}`,
+            passo4: `Topics: ${topics.join(', ')}`,
+            passo5: 'Salve',
+          },
+          details: data,
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // POST /api/config/anthropic-key — salva ANTHROPIC_API_KEY no .env (requer X-Admin-Secret)
+    if (u.pathname === '/api/config/anthropic-key' && req.method === 'POST') {
+      try {
+        const adminSecret = process.env.ADMIN_SECRET || loadEnv().ADMIN_SECRET || 'agente-marketplace-2026';
+        const providedSecret = req.headers['x-admin-secret'] || req.headers['X-Admin-Secret'];
+        if (providedSecret !== adminSecret) {
+          return send(res, 403, { success:false, error:'Acesso negado — X-Admin-Secret inválido ou ausente' });
+        }
+
+        const body = await readBody(req).catch(() => ({}));
+        const apiKey = (body && body.apiKey) || '';
+        if (!apiKey || !apiKey.startsWith('sk-ant-')) {
+          return send(res, 200, { success:false, error:'API key inválida — deve começar com sk-ant-' });
+        }
+
+        saveEnv({ ANTHROPIC_API_KEY: apiKey });
+        process.env.ANTHROPIC_API_KEY = apiKey;
+        console.log('🧠 [config] ANTHROPIC_API_KEY configurada com sucesso!');
+        return send(res, 200, { success:true, message:'API key configurada! IA generativa ativada.' });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // GET /api/config/status — resumo de todas as integrações (pro painel Setup)
+    if (u.pathname === '/api/config/status' && req.method === 'GET') {
+      try {
+        const toks = loadTokens();
+        const currentEnv = loadEnv();
+        const mlExpiresAt = toks.ml_token_expires_at ? new Date(toks.ml_token_expires_at) : null;
+        const mlValid = !!(toks.ml_access_token && mlExpiresAt && mlExpiresAt > new Date());
+
+        return send(res, 200, {
+          success: true,
+          ml: {
+            connected:   !!toks.ml_access_token,
+            tokenValido: mlValid,
+            expires_at:  toks.ml_token_expires_at || null,
+            user_id:     toks.ml_user_id || null,
+            auto_refresh: !!toks.ml_refresh_token,
+          },
+          bling: {
+            configured: !!(process.env.BLING_CLIENT_ID || currentEnv.BLING_CLIENT_ID),
+            connected:  !!toks.bling_access_token,
+          },
+          ia: {
+            configured: !!(process.env.ANTHROPIC_API_KEY || currentEnv.ANTHROPIC_API_KEY),
+            modelo: (process.env.ANTHROPIC_API_KEY || currentEnv.ANTHROPIC_API_KEY) ? 'claude-sonnet-4-20250514' : null,
+          },
+          webhooks: {
+            urlConfigurada: 'https://agentemarkt.com/webhooks',
+            recebendo: (global.webhookStats?.total || 0) > 0,
+            total: global.webhookStats?.total || 0,
+          },
+          cache: mlCache.stats(),
+          rateLimiter: mlRateLimiter.status(),
+          admin: {
+            // nunca expõe o secret — só indica se o default tá sendo usado
+            usando_secret_default: !process.env.ADMIN_SECRET && !currentEnv.ADMIN_SECRET,
+          },
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
     }
 
     // ============================================================
