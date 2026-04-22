@@ -951,6 +951,50 @@ global.estoqueConfig = global.estoqueConfig || {
   reativarQuandoVoltar:true,
 };
 
+// ============================================================
+// CONFIG DO AGENTE — estratégias de top sellers 2026
+// (primeiras vendas, listagem automática, frete grátis, etc.)
+// ============================================================
+global.agenteConfig = global.agenteConfig || {
+  modoPrimeirasVendas:   false, // true = margem baixa pra construir reputação
+  markupNormal:          2.5,   // multiplicador normal (~60% margem)
+  markupPrimeirasVendas: 1.5,   // multiplicador baixo (~33% margem)
+  vendasParaSairDoModo:  10,    // sair do modo após X vendas
+  scoreMinimo:           60,
+  limiteDiario:          10,
+  preferirPremium:       true,  // preferir Premium quando preço ≥ mínimo
+  freteGratisMinimo:     79,    // preço mínimo pra frete grátis (ML 2026)
+};
+
+// ============================================================
+// NOMES POPULARES — traduz termo técnico pro que cliente procura
+// (top sellers usam nomes que as pessoas realmente digitam na busca)
+// ============================================================
+const nomesPopulares = {
+  'módulo inflador':       'bolsa airbag',
+  'coxim do motor':        'coxim motor',
+  'bieleta estabilizadora':'bieleta barra estabilizadora',
+  'terminal de direção':   'terminal ponteira direção',
+  'pivô de suspensão':     'pivô suspensão dianteira',
+  'cilindro mestre':       'cilindro mestre freio',
+  'bomba combustível':     'bomba elétrica combustível',
+  'sensor oxigênio':       'sonda lambda',
+  'catalisador':           'catalisador escapamento',
+  'junta cabeçote':        'junta do cabeçote',
+  'retentor virabrequim':  'retentor dianteiro virabrequim',
+  'kit distribuição':      'kit correia dentada',
+  'tensor correia':        'tensor esticador correia',
+};
+function aplicarNomesPopulares(titulo) {
+  let resultado = String(titulo || '');
+  for (const [tecnico, popular] of Object.entries(nomesPopulares)) {
+    const escaped = tecnico.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'gi');
+    if (regex.test(resultado)) resultado = resultado.replace(regex, popular);
+  }
+  return resultado.substring(0, 60);
+}
+
 const mensagensPosVenda = {
   venda_confirmada: (comprador, item) =>
     `Olá ${comprador}! 😊\n\nObrigado pela sua compra de "${item}"!\n\nEstamos preparando seu pedido com todo cuidado. Enviaremos em até 24h úteis após a confirmação do pagamento.\n\nQualquer dúvida, estamos à disposição!\n\nEquipe Agente Marketplace`,
@@ -1064,7 +1108,10 @@ const catalogoSimulado = [
 // Score 0-100 pra decidir se vale publicar
 function scoreProdutoSimulado(p) {
   let score = 0;
-  const precoVenda = p.preco_custo * 2.5;
+  // Markup dinâmico baseado em agenteConfig (modo "primeiras vendas" usa menor)
+  const cfg = global.agenteConfig || {};
+  const markup = cfg.modoPrimeirasVendas ? (cfg.markupPrimeirasVendas || 1.5) : (cfg.markupNormal || 2.5);
+  const precoVenda = p.preco_custo * markup;
   const margem = ((precoVenda - p.preco_custo) / precoVenda) * 100;
   if (margem >= 40) score += 30;
   else if (margem >= 25) score += 20;
@@ -1079,7 +1126,11 @@ function scoreProdutoSimulado(p) {
   const marcasTop = ['Frasle','Monroe','Fremax','Tecfil','NGK','Bosch','Continental','Nakata'];
   if (marcasTop.includes(p.marca)) score += 15; else score += 5;
   if (p.imagens && p.imagens.length > 0) score += 15;
-  return { score: Math.min(score, 100), precoVenda, margem };
+  // Bônus/penalidade frete grátis — top sellers priorizam >= R$79
+  const minFrete = cfg.freteGratisMinimo || 79;
+  if (precoVenda >= minFrete) score += 10;
+  else score -= 5;
+  return { score: Math.max(0, Math.min(score, 100)), precoVenda, margem, markup };
 }
 
 // Rotaciona contador diário à meia-noite
@@ -4098,10 +4149,22 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
 
         // Compliance: sanitiza título removendo termos proibidos (réplica/zap/concorrente/etc)
         const tituloCompl = validarTituloML(produto.titulo || '');
-        const tituloFinal = tituloCompl.titulo;
+        // Aplica nomes populares (top sellers: "bolsa airbag" em vez de "módulo inflador")
+        const tituloFinal = aplicarNomesPopulares(tituloCompl.titulo);
         if (!tituloCompl.valido) {
           console.log(`🛡️ [compliance] Título sanitizado antes de publicar: removidos ${tituloCompl.termosRemovidos.join(', ')}`);
         }
+        if (tituloFinal !== tituloCompl.titulo) {
+          console.log(`🤖 [agente] Nomes populares aplicados no título`);
+        }
+
+        // Estratégia Clássico vs Premium — baseado em preço e config
+        const cfgAg  = global.agenteConfig || {};
+        const minFrete = cfgAg.freteGratisMinimo || 79;
+        const preferPrem = cfgAg.preferirPremium !== false;
+        const listingType = (preferPrem && precoVenda >= minFrete) ? 'gold_special' : 'gold_pro';
+        const freteGratis = precoVenda >= minFrete;
+        console.log(`🤖 [agente] Listagem: ${listingType === 'gold_special' ? 'PREMIUM' : 'CLÁSSICO'} (R$ ${precoVenda.toFixed(2)}${freteGratis ? ' + frete grátis' : ''})`);
 
         const payload = {
           title: tituloFinal.substring(0, 60),
@@ -4111,10 +4174,10 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           available_quantity: Math.min(estoqueParaML, 50),
           buying_mode: 'buy_it_now',
           condition: produto.condicao,
-          listing_type_id: 'gold_special',
+          listing_type_id: listingType,
           description: { plain_text: produto.descricao },
           pictures: produto.imagens.map(url => ({ source: url })),
-          shipping: { mode: 'me2', local_pick_up: false, free_shipping: precoVenda >= 79 },
+          shipping: { mode: 'me2', local_pick_up: false, free_shipping: freteGratis },
           seller_custom_field: produto.sku,
           attributes: [
             { id: 'BRAND', value_name: produto.marca },
@@ -4308,7 +4371,123 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         catalogoTotal:   catalogoSimulado.filter(p => p.ativo).length,
         comEstoque:      catalogoSimulado.filter(p => p.ativo && p.estoque > 0).length,
         rateLimiter:     mlRateLimiter.status(),
+        agenteConfig:    global.agenteConfig,
       });
+    }
+
+    // ============================================================
+    // CONFIG DO AGENTE — estratégias editáveis (top sellers 2026)
+    // ============================================================
+    if (u.pathname === '/api/agente/config' && req.method === 'GET') {
+      return send(res, 200, { success:true, config: global.agenteConfig });
+    }
+    if (u.pathname === '/api/agente/config' && req.method === 'POST') {
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const campos = ['modoPrimeirasVendas','markupNormal','markupPrimeirasVendas',
+          'vendasParaSairDoModo','scoreMinimo','limiteDiario','preferirPremium','freteGratisMinimo'];
+        for (const c of campos) {
+          if (body[c] !== undefined) {
+            if (typeof global.agenteConfig[c] === 'boolean') global.agenteConfig[c] = !!body[c];
+            else global.agenteConfig[c] = Number(body[c]);
+          }
+        }
+        console.log(`🤖 [agente] Config atualizada:`, global.agenteConfig);
+        return send(res, 200, { success:true, config: global.agenteConfig });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // ============================================================
+    // SUGESTÃO DE KITS — combinações que ativam frete grátis (≥ R$ 79)
+    // ============================================================
+    if (u.pathname === '/api/agente/sugerir-kits' && req.method === 'GET') {
+      try {
+        const produtos = catalogoSimulado.filter(p => p.ativo && p.estoque > 0);
+        const cfgKit = global.agenteConfig || {};
+        const minFreteKit = cfgKit.freteGratisMinimo || 79;
+        const markupKit = cfgKit.modoPrimeirasVendas ? (cfgKit.markupPrimeirasVendas || 1.5) : (cfgKit.markupNormal || 2.5);
+        // Kit tem markup ligeiramente menor — aumenta apelo e volume
+        const markupDoKit = Math.max(1.5, markupKit - 0.2);
+        const kits = [];
+
+        const combinacoes = [
+          { tipo:'freio',      itens:['pastilha','disco'],                       nome:'Kit Freio Completo' },
+          { tipo:'suspensao',  itens:['amortecedor','mola','batente','coifa'],   nome:'Kit Suspensão' },
+          { tipo:'motor',      itens:['filtro','vela','correia'],                nome:'Kit Revisão Motor' },
+          { tipo:'embreagem',  itens:['disco','platô','plato','rolamento'],      nome:'Kit Embreagem Completo' },
+        ];
+
+        for (const combo of combinacoes) {
+          const itensKit = produtos.filter(p =>
+            combo.itens.some(item => String(p.titulo || '').toLowerCase().includes(item))
+          );
+          if (itensKit.length >= 2) {
+            const custoTotal    = itensKit.reduce((s, p) => s + (p.preco_custo || 0), 0);
+            const precoKit      = custoTotal * markupDoKit;
+            const precoSeparado = itensKit.reduce((s, p) => s + ((p.preco_custo || 0) * markupKit), 0);
+            const economia      = precoSeparado - precoKit;
+            kits.push({
+              nome: combo.nome,
+              tipo: combo.tipo,
+              itens: itensKit.map(p => ({ id:p.id, titulo:p.titulo, custo:p.preco_custo })),
+              custoTotal:       parseFloat(custoTotal.toFixed(2)),
+              precoKit:         parseFloat(precoKit.toFixed(2)),
+              precoSeparado:    parseFloat(precoSeparado.toFixed(2)),
+              economiaCliente:  parseFloat(economia.toFixed(2)),
+              margemKit:        parseFloat(((precoKit - custoTotal) / precoKit * 100).toFixed(1)),
+              freteGratis:      precoKit >= minFreteKit,
+              listingType:      precoKit >= minFreteKit ? 'Premium' : 'Clássico',
+              recomendacao:     precoKit >= minFreteKit
+                                ? '✅ Kit ativa frete grátis — alta conversão!'
+                                : `⚠️ Considere adicionar mais itens pra chegar em R$ ${minFreteKit}`,
+            });
+          }
+        }
+
+        // Sugere pares pra produtos abaixo do piso de frete grátis
+        const abaixoPiso = produtos.filter(p => (p.preco_custo || 0) * markupKit < minFreteKit);
+        const jaCombinado = new Set();
+        for (const p of abaixoPiso) {
+          const complementares = produtos.filter(q => {
+            if (q.id === p.id) return false;
+            const combinado = (p.preco_custo + q.preco_custo) * markupKit;
+            return combinado >= minFreteKit && combinado <= 200;
+          });
+          if (complementares.length > 0) {
+            const melhor = complementares[0];
+            const chave = [p.id, melhor.id].sort().join('|');
+            if (jaCombinado.has(chave)) continue;
+            jaCombinado.add(chave);
+            const custoTotal = p.preco_custo + melhor.preco_custo;
+            const precoKit = custoTotal * markupDoKit;
+            kits.push({
+              nome: `Kit ${String(p.titulo).split(' ')[0]} + ${String(melhor.titulo).split(' ')[0]}`,
+              tipo: 'custom',
+              itens: [
+                { id:p.id,      titulo:p.titulo,      custo:p.preco_custo },
+                { id:melhor.id, titulo:melhor.titulo, custo:melhor.preco_custo },
+              ],
+              custoTotal:  parseFloat(custoTotal.toFixed(2)),
+              precoKit:    parseFloat(precoKit.toFixed(2)),
+              freteGratis: precoKit >= minFreteKit,
+              margemKit:   parseFloat(((precoKit - custoTotal) / precoKit * 100).toFixed(1)),
+              recomendacao:'💡 Sugestão: combinar pra ativar frete grátis',
+            });
+          }
+        }
+
+        return send(res, 200, {
+          success: true,
+          total: kits.length,
+          kits,
+          config: { minFreteKit, markupKit, markupDoKit },
+          regra: `Kits com preço ≥ R$ ${minFreteKit} ativam frete grátis e convertem mais`,
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
     }
 
     // ============================================================
@@ -4367,6 +4546,19 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         const tituloCheck = validarTituloML(produto.titulo || '');
         if (!tituloCheck.valido) {
           avisos.push(`📝 Título contém termos que serão removidos: ${tituloCheck.termosRemovidos.join(', ')}`);
+        }
+
+        // ESTRATÉGIA 3 — Preço mínimo pra frete grátis (regra dos top sellers)
+        const cfgVal = global.agenteConfig || {};
+        const markupVal = cfgVal.modoPrimeirasVendas ? (cfgVal.markupPrimeirasVendas || 1.5) : (cfgVal.markupNormal || 2.5);
+        const precoVendaVal = (produto.preco_custo || 0) * markupVal;
+        const minFreteVal = cfgVal.freteGratisMinimo || 79;
+        if (produto.preco_custo > 0 && precoVendaVal < minFreteVal) {
+          avisos.push(`💡 Preço R$ ${precoVendaVal.toFixed(2)} não ativa frete grátis (mínimo R$ ${minFreteVal}). Considere criar um kit ou ajustar margem.`);
+          const margemComFreteGratis = ((minFreteVal - produto.preco_custo) / minFreteVal) * 100;
+          if (margemComFreteGratis >= 15) {
+            avisos.push(`💰 Se subir pra R$ ${minFreteVal.toFixed(2)} (margem ${margemComFreteGratis.toFixed(1)}%), ativa frete grátis e converte muito mais.`);
+          }
         }
 
         // GAP 2 — Inmetro obrigatório para autopeças (categorias comuns)
