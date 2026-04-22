@@ -806,6 +806,128 @@ function registrarErro(origem, mensagem, detalhes = null) {
 }
 
 // ============================================================
+// COMPLIANCE ML — validadores aplicados em toda saída pro ML
+// (respostas SAC, mensagens pós-venda, títulos de anúncios)
+// ============================================================
+
+/**
+ * Sanitiza respostas que vão pro ML. Remove telefone, email, WhatsApp,
+ * URLs, redes sociais, CPF/CNPJ, marketplaces concorrentes e pedidos
+ * de contato externo. Se > 3 violações, substitui por resposta segura.
+ */
+function validarRespostaML(texto) {
+  const proibidos = {
+    telefone:       /(\+?\d{2,3}[\s.-]?\d{4,5}[\s.-]?\d{4})/g,
+    celular:        /(\d{2}[\s.-]?9\d{4}[\s.-]?\d{4})/g,
+    telefoneFixo:   /\(\d{2}\)\s*\d{4}-\d{4}/g,
+    whatsapp:       /(whats\s*app|wpp|zap\s*zap|\bzap\b|\bwhats\b)/gi,
+    email:          /[\w.+-]+@[\w.-]+\.\w{2,}/g,
+    url:            /(https?:\/\/[^\s]+|www\.[^\s]+|bit\.ly|goo\.gl|t\.me|tinyurl)/gi,
+    cpf:            /\d{3}\.\d{3}\.\d{3}-\d{2}/g,
+    cnpj:           /\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/g,
+    instagram:      /(instagram|\binsta\b|@[a-z_][a-z0-9_.]{2,})/gi,
+    facebook:       /(facebook|fb\.com|fb\.me)/gi,
+    site:           /(\.com\.br|\.com\b|\.net\b|\.org\b|\.io\b|\.shop\b|\.store\b)/gi,
+    concorrente:    /(shopee|amazon|aliexpress|shein|magalu|magazine\s+luiza|americanas|casas\s+bahia|olx|enjoei)/gi,
+    marketplace:    /(compre\s+fora|fora\s+d[oa]\s+mercado|meu\s+site|minha\s+loja|loja\s+virtual)/gi,
+    dados_pessoais: /(meu\s+telefone|meu\s+numero|meu\s+nu?mero|me\s+chama|liga\s+pra|manda\s+mensagem\s+pra|me\s+liga)/gi,
+  };
+
+  let limpo = String(texto || '');
+  const violacoes = [];
+
+  for (const [tipo, regex] of Object.entries(proibidos)) {
+    regex.lastIndex = 0;
+    if (regex.test(limpo)) {
+      violacoes.push(tipo);
+      regex.lastIndex = 0;
+      limpo = limpo.replace(regex, '[REMOVIDO]');
+    }
+  }
+
+  if (violacoes.length > 0) {
+    console.log(`🛡️ [compliance] Violações detectadas: ${violacoes.join(', ')}`);
+    try { registrarErro('compliance', `Resposta continha: ${violacoes.join(', ')}`, { textoOriginal: String(texto).substring(0, 120) }); } catch(_){}
+    if (violacoes.length >= 3) {
+      limpo = 'Olá! Todas as informações sobre o produto estão na descrição e ficha técnica do anúncio. Pode comprar com segurança pelo Mercado Livre!';
+    } else {
+      // limpa tags [REMOVIDO] duplicadas e espaços
+      limpo = limpo.replace(/\[REMOVIDO\](\s*\[REMOVIDO\])+/g, '[REMOVIDO]').replace(/\s{2,}/g, ' ').trim();
+    }
+  }
+
+  return { texto: limpo, violacoes, limpo: violacoes.length === 0 };
+}
+
+/**
+ * Remove termos proibidos de títulos de anúncio (réplica/cópia/WhatsApp/
+ * concorrentes/urgência falsa) e garante 60 chars.
+ */
+function validarTituloML(titulo) {
+  const termosProibidos = [
+    'réplica','replica','cópia','copia','imitação','imitacao',
+    'semelhante','similar','genérico','generico','paralelo',
+    'inspirado','tipo','modelo de','estilo',
+    'whatsapp','whats','zap','telefone','tel:','ligue',
+    'email','e-mail','@','instagram','facebook',
+    'shopee','amazon','aliexpress','shein','magalu',
+    'americanas','casas bahia','olx',
+    'grátis','gratis','brinde','promoção relâmpago',
+    'últimas unidades','ultimas unidades','só hoje','só amanhã',
+  ];
+
+  let limpo = String(titulo || '');
+  const encontrados = [];
+
+  for (const termo of termosProibidos) {
+    const escaped = termo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'gi');
+    if (regex.test(limpo)) {
+      encontrados.push(termo);
+      regex.lastIndex = 0;
+      limpo = limpo.replace(regex, '');
+    }
+  }
+  limpo = limpo.replace(/\s{2,}/g, ' ').trim().substring(0, 60).trim();
+
+  if (encontrados.length > 0) {
+    console.log(`🛡️ [compliance] Termos proibidos removidos do título: ${encontrados.join(', ')}`);
+    try { registrarErro('compliance', `Título continha termos proibidos: ${encontrados.join(', ')}`, { tituloOriginal: String(titulo).substring(0, 80) }); } catch(_){}
+  }
+  return { titulo: limpo, termosRemovidos: encontrados, valido: encontrados.length === 0 };
+}
+
+/**
+ * Detecta produtos proibidos (peças USADAS de segurança — freio/suspensão/direção/airbag
+ * — ou produtos de segurança que exigem certificação especial).
+ * Retorna array de strings; 🚫 = erro bloqueante, ⚠️ = aviso.
+ */
+function validarProdutoProibido(produto) {
+  const alertas = [];
+  const produtoSeguranca = [
+    { regex: /(airbag|air\s*bag)/i,                                 msg: 'Airbag — verificar se é novo e certificado' },
+    { regex: /(cinto\s*de?\s*segurança|cinto\s*seguranca)/i,        msg: 'Cinto de segurança — verificar se é novo' },
+    { regex: /(vidro\s*(de)?\s*segurança|vidro\s*blindado)/i,       msg: 'Vidro de segurança — pode exigir certificação especial' },
+  ];
+
+  const cond = String(produto.condicao || '').toLowerCase();
+  if (cond === 'used' || cond === 'usado') {
+    const categoriasSeguranca = ['freio','suspensão','suspensao','direção','direcao','airbag'];
+    for (const cat of categoriasSeguranca) {
+      if (String(produto.titulo || '').toLowerCase().includes(cat)) {
+        alertas.push(`🚫 PROIBIDO: ${cat} USADO não pode ser vendido no ML (regra de segurança)`);
+      }
+    }
+  }
+  for (const item of produtoSeguranca) {
+    if (item.regex.test(String(produto.titulo || ''))) {
+      alertas.push(`⚠️ ${item.msg}`);
+    }
+  }
+  return alertas;
+}
+
+// ============================================================
 // TEMPLATES DE MENSAGEM EDITÁVEIS — persistidos em msg-templates.json
 // ============================================================
 const TEMPLATES_FILE = path.join(ROOT, 'msg-templates.json');
@@ -3610,7 +3732,11 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       try {
         const { questionId, texto } = await readBody(req);
         if (!questionId || !texto) return send(res, 400, { success:false, error:'questionId e texto obrigatórios' });
-        const textoSafe = limparRespostaSAC(texto);
+        // Dupla camada: limparRespostaSAC (legado) + validarRespostaML (compliance rigoroso)
+        let textoSafe = limparRespostaSAC(texto);
+        const compl = validarRespostaML(textoSafe);
+        textoSafe = compl.texto;
+        if (compl.violacoes.length > 0) console.log(`🛡️ [compliance] /sac/responder sanitizado: ${compl.violacoes.join(', ')}`);
         const r = await mlFetch('https://api.mercadolibre.com/answers', {
           method:'POST',
           headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
@@ -3650,10 +3776,15 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           } catch(_) {}
         }
         const { respostaGerada, categoriaDetectada } = categorizarPerguntaSAC(pergunta, compatTexto);
+        // Compliance: sanitiza a resposta gerada pelo template antes de devolver
+        const compl = validarRespostaML(respostaGerada);
+        if (compl.violacoes.length > 0) console.log(`🛡️ [compliance] /sac/auto-responder sanitizado: ${compl.violacoes.join(', ')}`);
         return send(res, 200, {
           success: true,
           questionId, pergunta, categoriaDetectada,
-          respostaGerada, itemTitle, preview: true,
+          respostaGerada: compl.texto,
+          complianceViolacoes: compl.violacoes,
+          itemTitle, preview: true,
         });
       } catch(err) { return send(res, 200, { success:false, error: err.message }); }
     }
@@ -3862,12 +3993,21 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           }
         }
 
-        // 7. Limpar resposta (regras ML)
+        // 7. Limpar resposta (regras ML) — dupla camada: legado + compliance
         if (typeof limparRespostaSAC === 'function' && respostaIA) {
           respostaIA = limparRespostaSAC(respostaIA);
         }
         if (respostaIA && respostaIA.length > 2000) {
           respostaIA = respostaIA.substring(0, 1997) + '...';
+        }
+        let complianceViolacoes = [];
+        if (respostaIA) {
+          const compl = validarRespostaML(respostaIA);
+          respostaIA = compl.texto;
+          complianceViolacoes = compl.violacoes;
+          if (complianceViolacoes.length > 0) {
+            console.log(`🛡️ [compliance] /sac/ia-responder sanitizado: ${complianceViolacoes.join(', ')}`);
+          }
         }
 
         return send(res, 200, {
@@ -3876,6 +4016,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           pergunta,
           respostaGerada: respostaIA,
           fonte,
+          complianceViolacoes,
           itemTitle: itemData.title || '',
           preview: true,
         });
@@ -3955,8 +4096,15 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         const reserva = (global.estoqueConfig?.reservaSeguranca) || 0;
         const estoqueParaML = Math.max(0, (produto.estoque || 0) - reserva);
 
+        // Compliance: sanitiza título removendo termos proibidos (réplica/zap/concorrente/etc)
+        const tituloCompl = validarTituloML(produto.titulo || '');
+        const tituloFinal = tituloCompl.titulo;
+        if (!tituloCompl.valido) {
+          console.log(`🛡️ [compliance] Título sanitizado antes de publicar: removidos ${tituloCompl.termosRemovidos.join(', ')}`);
+        }
+
         const payload = {
-          title: produto.titulo.substring(0, 60),
+          title: tituloFinal.substring(0, 60),
           category_id: produto.categoria_ml,
           price: +precoVenda.toFixed(2),
           currency_id: 'BRL',
@@ -4197,6 +4345,30 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         if (!produto.compatibilidade || produto.compatibilidade.length === 0)
           avisos.push('Sem compatibilidade — recomendado pra autopeças');
 
+        // RISCO 3 — Fotos: fundo branco (aviso) + mín 3 (aviso) + máx 10 (erro)
+        if (produto.imagens && produto.imagens.length > 0) {
+          avisos.push('📷 Garanta que a PRIMEIRA foto tem fundo BRANCO (obrigatório ML — anúncio pode ser moderado)');
+          if (produto.imagens.length < 3) {
+            avisos.push('📷 Recomendado ter pelo menos 3 fotos (ML prioriza anúncios com mais fotos)');
+          }
+          if (produto.imagens.length > 10) {
+            erros.push('📷 Máximo 10 fotos por anúncio (ML não aceita mais)');
+          }
+        }
+
+        // RISCO 4 — Produtos proibidos (peças usadas de segurança) + alertas
+        const alertasProibidos = validarProdutoProibido(produto);
+        for (const a of alertasProibidos) {
+          if (a.startsWith('🚫')) erros.push(a);
+          else avisos.push(a);
+        }
+
+        // RISCO 2 — Termos proibidos no título (réplica/whatsapp/concorrentes)
+        const tituloCheck = validarTituloML(produto.titulo || '');
+        if (!tituloCheck.valido) {
+          avisos.push(`📝 Título contém termos que serão removidos: ${tituloCheck.termosRemovidos.join(', ')}`);
+        }
+
         // GAP 2 — Inmetro obrigatório para autopeças (categorias comuns)
         const categoriasAutopeças = ['MLB180634','MLB449571','MLB180635','MLB455239','MLB455227',
           'MLB1747','MLB6312','MLB6316','MLB6320','MLB6308','MLB6328'];
@@ -4387,7 +4559,9 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           tituloBase.replace(/Dianteiro|Traseiro/i, (m) => (m.toLowerCase() === 'dianteiro' ? 'Diant.' : 'Tras.')).substring(0, 60),
           (tituloBase + ' Premium').substring(0, 60),
         ];
-        const variacoes = [...new Set(variacoesRaw.filter(v => v && v !== tituloBase))];
+        // Compliance: filtra termos proibidos de cada variação
+        const variacoesLimpas = variacoesRaw.map(v => validarTituloML(v).titulo);
+        const variacoes = [...new Set(variacoesLimpas.filter(v => v && v !== tituloBase))];
 
         if (modoTeste) {
           return send(res, 200, {
@@ -5309,12 +5483,19 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         }
 
         // Se tem template editável, substitui placeholders; senão usa função hardcoded
-        const texto = templateEditavel
+        let texto = templateEditavel
           ? String(templateEditavel)
               .replace(/\{comprador\}/g, comprador)
               .replace(/\{item\}/g, item)
               .replace(/\{rastreio\}/g, rastreio ? '📍 Rastreamento: ' + rastreio + '\n\n' : '')
           : template(comprador, item, rastreio);
+
+        // Compliance: sanitiza antes de mandar pro ML
+        const complMsg = validarRespostaML(texto);
+        texto = complMsg.texto;
+        if (complMsg.violacoes.length > 0) {
+          console.log(`🛡️ [compliance] /mensagem/enviar sanitizada: ${complMsg.violacoes.join(', ')}`);
+        }
 
         const msgResp = await mlFetch(
           `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${me.id}`,
@@ -5452,7 +5633,12 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
             const mlBody = {};
             if (alt.preco   != null)   mlBody.price              = Number(alt.preco);
             if (alt.estoque !== undefined) mlBody.available_quantity = Number(alt.estoque);
-            if (alt.titulo)            mlBody.title              = String(alt.titulo).substring(0, 60);
+            if (alt.titulo) {
+              // Compliance: sanitiza título antes de aplicar no ML
+              const tc = validarTituloML(String(alt.titulo));
+              if (!tc.valido) console.log(`🛡️ [compliance] editar-massa ${alt.itemId}: removidos ${tc.termosRemovidos.join(', ')}`);
+              mlBody.title = tc.titulo.substring(0, 60);
+            }
             if (alt.status)            mlBody.status             = alt.status;
 
             const updateResp = await mlFetch(`https://api.mercadolibre.com/items/${alt.itemId}`, {
@@ -5608,6 +5794,23 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           return send(res, 403, { success:false, error:'Acesso negado — X-Admin-Secret inválido' });
         }
         const body = await readBody(req).catch(() => ({}));
+
+        // RISCO 5 — valida/sanitiza cada template antes de salvar.
+        // Se tem violações, recusa o salvamento inteiro e avisa o usuário.
+        for (const tipo of ['venda_confirmada','produto_enviado','produto_entregue']) {
+          if (body[tipo]) {
+            const v = validarRespostaML(body[tipo]);
+            if (v.violacoes.length > 0) {
+              return send(res, 200, {
+                success: false,
+                error: `Template "${tipo}" contém conteúdo proibido pelo ML: ${v.violacoes.join(', ')}`,
+                violacoes: v.violacoes,
+                campo: tipo,
+              });
+            }
+          }
+        }
+
         if (!global.msgTemplates) global.msgTemplates = {};
         if (body.venda_confirmada) global.msgTemplates.venda_confirmada = String(body.venda_confirmada);
         if (body.produto_enviado)  global.msgTemplates.produto_enviado  = String(body.produto_enviado);
@@ -5623,6 +5826,50 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
       } catch (error) {
         return send(res, 200, { success:false, error: error.message });
       }
+    }
+
+    // ============================================================
+    // COMPLIANCE STATUS — resumo das regras ativas
+    // ============================================================
+    if (u.pathname === '/api/compliance/status' && req.method === 'GET') {
+      return send(res, 200, {
+        success: true,
+        regras: {
+          sac: {
+            sanitizacao: true,
+            validacaoIA: true,
+            limiteCaracteres: 2000,
+            bloqueioTelefone: true,
+            bloqueioEmail: true,
+            bloqueioWhatsApp: true,
+            bloqueioLinks: true,
+            bloqueioConcorrentes: true,
+            tmrAlvo: '< 30 minutos',
+          },
+          publicacao: {
+            tituloMax60: true,
+            validacaoTermosProibidos: true,
+            validacaoInmetro: true,
+            antiDuplicidade: true,
+            validacaoFotoFundoBranco: 'aviso (não automático)',
+            fichaTenicaCompleta: true,
+            filtroProibidos: true,
+          },
+          mensagens: {
+            sanitizacaoTemplates: true,
+            semLinksExternos: true,
+            semDadosPessoais: true,
+            semConcorrentes: true,
+          },
+          conta: {
+            multiConta: false,
+            cancelamentoMonitorado: 'futuro',
+            reputacaoMonitorada: true,
+          },
+        },
+        violacoesRegistradas: (global.errosIntegracao || []).filter(e => e.origem === 'compliance').length,
+        ultimaVerificacao: new Date().toISOString(),
+      });
     }
 
     // ============================================================
