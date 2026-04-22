@@ -9020,6 +9020,176 @@ function AtendimentoSectorPage(){
   );
 }
 
+// ===== PERFORMANCE PAGE — classificação automática TOP/MÉDIO/RUIM =====
+function PerformancePage(){
+  const [perf, setPerf]       = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr]         = useState(null);
+  const [pausando, setPausando] = useState(false);
+  const [ultPausa, setUltPausa] = useState(null);
+
+  const refresh = useCallback(async () => {
+    const tokens = loadMLTokens();
+    if (!tokens || !tokens.access_token) { setErr('Conecte sua conta ML primeiro'); return; }
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch('/api/ml/performance', {
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      });
+      const data = await r.json();
+      if (data.success) setPerf(data);
+      else setErr(data.error || 'Falha ao carregar performance');
+    } catch(e) { setErr(e.message); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function pausarRuins(modoTeste = true){
+    const tokens = loadMLTokens();
+    if (!tokens || !tokens.access_token) { setErr('Conecte sua conta ML primeiro'); return; }
+    if (!modoTeste && !window.confirm('Tem certeza que deseja PAUSAR DE VERDADE os anúncios ruins (14+ dias sem venda)?')) return;
+    setPausando(true);
+    try {
+      const r = await fetch('/api/ml/performance/pausar-ruins', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ diasSemVenda: 14, modoTeste })
+      });
+      const data = await r.json();
+      setUltPausa(data);
+      if (!modoTeste) await refresh();
+    } catch(e) { setUltPausa({ success:false, error: e.message }); }
+    setPausando(false);
+  }
+
+  const resumo = perf?.resumo;
+  const cls    = perf?.classificacao;
+
+  const renderItem = (a) => (
+    <div key={a.id} className="card p-3 mb-2" style={{background:'rgba(255,255,255,.02)'}}>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-sm truncate">{a.titulo}</div>
+          <div className="sub text-xs mono mt-1">{a.id} · R$ {Number(a.preco||0).toFixed(2)} · estoque {a.estoque}</div>
+          {a.sugestao && <div className="text-xs mt-1" style={{color:'#eab308'}}>{a.sugestao}</div>}
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          <div><span className="sub">vendas</span> <b>{a.vendas30d}</b></div>
+          <div><span className="sub">visitas</span> <b>{a.visitas30d}</b></div>
+          <div><span className="sub">CTR</span> <b>{a.ctr}%</b></div>
+          <div><span className="sub">score</span> <b style={{color:'var(--green)'}}>{a.perfScore}</b></div>
+          <div><span className="sub">{a.diasAtivo}d</span></div>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">
+            📊 Performance
+            {perf && <span className="chip ml-3" style={{color:'var(--green)',borderColor:'rgba(0,167,255,.4)',fontSize:11,verticalAlign:'middle'}}>
+              <span className="dot" style={{background:'var(--green)'}}/>{perf.total} anúncio(s) · últimos 30d
+            </span>}
+          </h1>
+          <p className="sub text-sm">Classificação automática: TOP 20% · MÉDIO 30% · RUIM 50%</p>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <button className="btn-ghost" onClick={() => pausarRuins(true)} disabled={pausando || loading || !perf}>
+            {pausando ? '⏸️ ...' : '⏸️ Pausar Ruins (modo teste)'}
+          </button>
+          <button className="btn-ghost" onClick={() => pausarRuins(false)} disabled={pausando || loading || !perf}
+                  style={{borderColor:'rgba(220,38,38,.4)', color:'#dc2626'}}>
+            {pausando ? '⏸️ ...' : '⏸️ Pausar de verdade'}
+          </button>
+          <button className="btn-ghost" onClick={refresh} disabled={loading}>
+            {loading ? '🔄 ...' : '🔄 Atualizar'}
+          </button>
+        </div>
+      </div>
+
+      <MLTokenExpiredBanner/>
+
+      {loading && !perf && <div className="ok mb-4">🔄 Carregando performance dos anúncios (pode levar ~30s por conta do rate limit)…</div>}
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+
+      {resumo && (
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          <KPI label="Anúncios"   value={perf.total}          sub="total analisado"/>
+          <KPI label="Visitas"    value={resumo.totalVisitas} sub="últimos 30 dias"/>
+          <KPI label="Vendas"     value={resumo.totalVendas}  sub="últimos 30 dias" glow={resumo.totalVendas > 0}/>
+          <KPI label="CTR Médio"  value={`${resumo.ctrMedio}%`} sub="vendas / visitas"/>
+        </div>
+      )}
+
+      {cls && (
+        <>
+          <div className="card p-5 mb-4" style={{borderColor:'rgba(0,167,255,.35)'}}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold">🟢 TOP ({cls.top.length}) — escalar</h3>
+              <span className="sub text-xs">criar variações, considerar Ads</span>
+            </div>
+            {cls.top.length === 0
+              ? <div className="sub text-xs italic">Nenhum anúncio no topo ainda — publique mais ou aguarde vendas.</div>
+              : cls.top.map(renderItem)}
+          </div>
+
+          <div className="card p-5 mb-4" style={{borderColor:'rgba(234,179,8,.35)'}}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold">🟡 MÉDIO ({cls.medio.length}) — otimizar</h3>
+              <span className="sub text-xs">melhorar título, ajustar preço</span>
+            </div>
+            {cls.medio.length === 0
+              ? <div className="sub text-xs italic">Nada na faixa média.</div>
+              : cls.medio.map(renderItem)}
+          </div>
+
+          <div className="card p-5 mb-6" style={{borderColor:'rgba(220,38,38,.35)'}}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold">🔴 RUIM ({cls.ruim.length}) — pausar</h3>
+              <span className="sub text-xs">14+ dias sem venda → candidato a pausa</span>
+            </div>
+            {cls.ruim.length === 0
+              ? <div className="sub text-xs italic">Nenhum anúncio classificado como ruim.</div>
+              : cls.ruim.map(renderItem)}
+          </div>
+        </>
+      )}
+
+      {ultPausa && (
+        <div className="card p-4 mb-6" style={{borderColor:'rgba(0,167,255,.4)'}}>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-bold text-sm">
+              {ultPausa.modoTeste ? '🧪 Simulação' : '⏸️ Pausa executada'} —
+              {' '}{ultPausa.candidatos || 0} candidato(s), {ultPausa.pausados || 0} pausado(s)
+            </h3>
+            <button className="btn-ghost text-xs" onClick={() => setUltPausa(null)}>fechar</button>
+          </div>
+          {(ultPausa.resultados || []).length > 0 && (
+            <div className="text-xs mono" style={{maxHeight:200, overflowY:'auto'}}>
+              {ultPausa.resultados.map(r => (
+                <div key={r.id} className="flex justify-between py-1 border-b border-[var(--line)]">
+                  <span className="truncate">{r.titulo}</span>
+                  <span className="sub ml-2 whitespace-nowrap">{r.acao}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {ultPausa.error && <div className="err text-xs">{ultPausa.error}</div>}
+        </div>
+      )}
+
+      {/* Health score (fonte ML) abaixo da classificação */}
+      <div className="mt-6">
+        <HealthPage/>
+      </div>
+    </div>
+  );
+}
+
 // ===== SETOR: 📈 MARKETING =====
 function MarketingSectorPage({ agent, notif, onGoToAgent, initialSub }){
   const [sub, setSub] = useSubTab('marketing', 'ranking', initialSub);
@@ -9035,7 +9205,7 @@ function MarketingSectorPage({ agent, notif, onGoToAgent, initialSub }){
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'ranking' && <RankingPage agent={agent} notif={notif} onGoToAgent={onGoToAgent}/>}
-        {sub === 'performance' && <HealthPage/>}
+        {sub === 'performance' && <PerformancePage/>}
         {sub === 'concorrencia' && <ComingSoonCard
           icon="🎯" title="Inteligência de Concorrência"
           description="Monitoramento de preços dos concorrentes, keywords em alta e hot items do nicho."

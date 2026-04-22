@@ -3942,6 +3942,206 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
       } catch(err) { return send(res, 200, { success:false, error: err.message }); }
     }
 
+    // ============================================================
+    // MONITORAMENTO DE PERFORMANCE + CLASSIFICAÇÃO AUTOMÁTICA
+    // ============================================================
+
+    // GET /api/ml/performance — visitas, vendas, CTR e classificação (TOP/MÉDIO/RUIM)
+    if (u.pathname === '/api/ml/performance' && req.method === 'GET') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const meResp = await mlFetch('https://api.mercadolibre.com/users/me', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const me = await meResp.json();
+        if (!meResp.ok || !me.id) {
+          return send(res, meResp.status || 401, { success:false, error: me.message || 'Token inválido' });
+        }
+
+        const itemsResp = await mlFetch(
+          `https://api.mercadolibre.com/users/${me.id}/items/search?limit=50`,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        const itemsData = await itemsResp.json();
+        const itemIds = itemsData.results || [];
+
+        if (itemIds.length === 0) {
+          return send(res, 200, {
+            success: true,
+            anuncios: [],
+            total: 0,
+            classificacao: { top: [], medio: [], ruim: [] },
+            resumo: { top:0, medio:0, ruim:0, totalVendas:0, totalVisitas:0, ctrMedio:'0.00' }
+          });
+        }
+
+        // Buscar detalhes em batch (máx 20 por chamada)
+        const batch = itemIds.slice(0, 20).join(',');
+        const detailsResp = await mlFetch(
+          `https://api.mercadolibre.com/items?ids=${batch}&attributes=id,title,price,available_quantity,sold_quantity,status,date_created,listing_type_id,health`,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        const details = await detailsResp.json();
+
+        // Janela de visitas: últimos 30 dias
+        const desde = new Date();
+        desde.setDate(desde.getDate() - 30);
+        const desdeStr = desde.toISOString().split('T')[0];
+        const ateStr = new Date().toISOString().split('T')[0];
+
+        const anuncios = [];
+        for (const d of (details || [])) {
+          const item = d && d.body;
+          if (!item) continue;
+
+          let visitas = 0;
+          try {
+            const visitResp = await mlFetch(
+              `https://api.mercadolibre.com/visits/items/${item.id}?date_from=${desdeStr}&date_to=${ateStr}`,
+              { headers: { 'Authorization': 'Bearer ' + token } }
+            );
+            const visitData = await visitResp.json();
+            visitas = visitData.total_visits || 0;
+          } catch(e) {}
+
+          const vendas = item.sold_quantity || 0;
+          const ctr = visitas > 0 ? ((vendas / visitas) * 100).toFixed(2) : '0.00';
+          const diasAtivo = Math.floor((Date.now() - new Date(item.date_created).getTime()) / (1000*60*60*24));
+
+          // Score de performance (0-100)
+          let perfScore = 0;
+          if (vendas >= 10) perfScore += 40;
+          else if (vendas >= 5) perfScore += 30;
+          else if (vendas >= 1) perfScore += 20;
+
+          if (visitas >= 100) perfScore += 20;
+          else if (visitas >= 30) perfScore += 15;
+          else if (visitas >= 10) perfScore += 10;
+
+          if (parseFloat(ctr) >= 5) perfScore += 20;
+          else if (parseFloat(ctr) >= 2) perfScore += 15;
+          else if (parseFloat(ctr) >= 0.5) perfScore += 10;
+
+          if (item.available_quantity > 0) perfScore += 10;
+          if (item.status === 'active') perfScore += 10;
+
+          anuncios.push({
+            id: item.id,
+            titulo: item.title,
+            preco: item.price,
+            status: item.status,
+            estoque: item.available_quantity,
+            vendas30d: vendas,
+            visitas30d: visitas,
+            ctr: parseFloat(ctr),
+            diasAtivo,
+            perfScore: Math.min(perfScore, 100),
+            listingType: item.listing_type_id
+          });
+
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        // Classificar: Top 20%, Médio 30%, Ruim 50%
+        anuncios.sort((a, b) => b.perfScore - a.perfScore);
+        const totalAnuncios = anuncios.length;
+        const topLimit = Math.ceil(totalAnuncios * 0.2);
+        const medioLimit = Math.ceil(totalAnuncios * 0.5);
+
+        const classificacao = {
+          top: anuncios.slice(0, topLimit).map(a => ({ ...a, classe: '🟢 TOP — escalar' })),
+          medio: anuncios.slice(topLimit, medioLimit).map(a => ({ ...a, classe: '🟡 MÉDIO — otimizar' })),
+          ruim: anuncios.slice(medioLimit).map(a => ({
+            ...a,
+            classe: '🔴 RUIM — pausar',
+            sugestao: a.diasAtivo >= 14 && a.vendas30d === 0 ? '⚠️ 14+ dias sem venda — considerar pausar' : null
+          }))
+        };
+
+        return send(res, 200, {
+          success: true,
+          total: totalAnuncios,
+          anuncios,
+          classificacao,
+          resumo: {
+            top: classificacao.top.length,
+            medio: classificacao.medio.length,
+            ruim: classificacao.ruim.length,
+            totalVendas: anuncios.reduce((s, a) => s + a.vendas30d, 0),
+            totalVisitas: anuncios.reduce((s, a) => s + a.visitas30d, 0),
+            ctrMedio: anuncios.length > 0 ? (anuncios.reduce((s, a) => s + a.ctr, 0) / anuncios.length).toFixed(2) : '0.00'
+          }
+        });
+      } catch (error) {
+        return send(res, 200, { success: false, error: error.message });
+      }
+    }
+
+    // POST /api/ml/performance/pausar-ruins — pausa anúncios ruins (modoTeste por padrão)
+    if (u.pathname === '/api/ml/performance/pausar-ruins' && req.method === 'POST') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const diasSemVenda = Number.isFinite(+body.diasSemVenda) ? +body.diasSemVenda : 14;
+        const modoTeste = body.modoTeste !== false; // default true
+
+        // Reusa a rota /api/ml/performance localmente
+        const perfResp = await fetch(`http://localhost:${PORT}/api/ml/performance`, {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const perfData = await perfResp.json();
+
+        if (!perfData.success) return send(res, 200, perfData);
+
+        const aPausar = (perfData.classificacao?.ruim || []).filter(
+          a => a.diasAtivo >= diasSemVenda && a.vendas30d === 0 && a.status === 'active'
+        );
+
+        const resultados = [];
+        for (const anuncio of aPausar) {
+          if (modoTeste) {
+            resultados.push({
+              id: anuncio.id,
+              titulo: anuncio.titulo,
+              acao: '⏸️ Seria pausado (modo teste)',
+              modoTeste: true
+            });
+            console.log(`🤖 [perf] TESTE: pausaria ${anuncio.id} (${anuncio.diasAtivo}d sem venda)`);
+          } else {
+            try {
+              const pauseResp = await mlFetch(`https://api.mercadolibre.com/items/${anuncio.id}`, {
+                method: 'PUT',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'paused' })
+              });
+              resultados.push({
+                id: anuncio.id,
+                titulo: anuncio.titulo,
+                acao: pauseResp.ok ? '⏸️ PAUSADO' : '❌ Erro ao pausar',
+                modoTeste: false
+              });
+              console.log(`🤖 [perf] ${pauseResp.ok ? '⏸️ PAUSADO' : '❌ ERRO'}: ${anuncio.id} (${anuncio.diasAtivo}d sem venda)`);
+            } catch(e) {
+              resultados.push({ id: anuncio.id, titulo: anuncio.titulo, acao: '❌ Erro', error: e.message });
+            }
+            await new Promise(r => setTimeout(r, 500));
+          }
+        }
+
+        return send(res, 200, {
+          success: true,
+          modoTeste,
+          candidatos: aPausar.length,
+          pausados: resultados.filter(r => r.acao.includes('PAUSADO')).length,
+          resultados
+        });
+      } catch (error) {
+        return send(res, 200, { success: false, error: error.message });
+      }
+    }
+
     // Estáticos
     return serveStatic(req, res);
   } catch (e) {
