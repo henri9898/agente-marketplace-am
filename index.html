@@ -1207,6 +1207,211 @@ const {useState,useEffect,useMemo,useRef,useCallback} = React;
 const {ResponsiveContainer,BarChart,Bar,LineChart,Line,PieChart,Pie,Cell,XAxis,YAxis,CartesianGrid,Tooltip,Legend,Area,AreaChart} = Recharts;
 
 // ============================================================
+// MODO DEMO — dados simulados pra apresentação
+// Ativado por toggle no header OU quando ML rate-limita o VPS.
+// Intercepta fetch() pros endpoints de leitura e devolve payload fake.
+// ============================================================
+const DEMO_KEY = 'agente_demo_mode';
+function isDemoMode(){
+  try { return localStorage.getItem(DEMO_KEY) === '1'; } catch(_) { return false; }
+}
+function setDemoMode(on){
+  try {
+    if (on) localStorage.setItem(DEMO_KEY, '1');
+    else    localStorage.removeItem(DEMO_KEY);
+  } catch(_) {}
+  window.dispatchEvent(new CustomEvent('demoModeChange', { detail:{ enabled: !!on } }));
+}
+
+// Payload client-side — mirror do /api/demo/dados
+const _demoAgora = Date.now();
+const _demoAnuncios = [
+  { id:'MLB001', titulo:'Pastilha de Freio Dianteira Gol G5 G6 Frasle',   price:87.50,  preco:87.50,  sold_quantity:23, vendas:23, visitas:412, ctr:5.6, available_quantity:45, estoque:45, status:'active', classe:'top',   perfScore:92, listingType:'gold_pro',  listing_type:'gold_pro',  condition:'new', date_created:new Date(_demoAgora - 50*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.92} },
+  { id:'MLB002', titulo:'Amortecedor Traseiro Honda Civic Monroe',        price:289.90, preco:289.90, sold_quantity:15, vendas:15, visitas:287, ctr:5.2, available_quantity:18, estoque:18, status:'active', classe:'top',   perfScore:88, listingType:'gold_pro',  listing_type:'gold_pro',  condition:'new', date_created:new Date(_demoAgora - 48*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.88} },
+  { id:'MLB003', titulo:'Disco de Freio Dianteiro Toyota Corolla Fremax', price:212.50, preco:212.50, sold_quantity:12, vendas:12, visitas:198, ctr:6.1, available_quantity:25, estoque:25, status:'active', classe:'top',   perfScore:85, listingType:'gold_pro',  listing_type:'gold_pro',  condition:'new', date_created:new Date(_demoAgora - 40*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.85} },
+  { id:'MLB004', titulo:'Filtro de Óleo Hyundai HB20 Tecfil',             price:42.90,  preco:42.90,  sold_quantity:31, vendas:31, visitas:523, ctr:5.9, available_quantity:89, estoque:89, status:'active', classe:'top',   perfScore:95, listingType:'gold_pro',  listing_type:'gold_pro',  condition:'new', date_created:new Date(_demoAgora - 60*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.95} },
+  { id:'MLB005', titulo:'Jogo Velas Ignição Onix Prisma NGK Iridium',     price:162.50, preco:162.50, sold_quantity:8,  vendas:8,  visitas:156, ctr:5.1, available_quantity:34, estoque:34, status:'active', classe:'top',   perfScore:78, listingType:'gold_pro',  listing_type:'gold_pro',  condition:'new', date_created:new Date(_demoAgora - 35*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.78} },
+  { id:'MLB006', titulo:'Kit Embreagem Palio Siena 1.0 LUK',              price:459.90, preco:459.90, sold_quantity:5,  vendas:5,  visitas:89,  ctr:5.6, available_quantity:12, estoque:12, status:'active', classe:'medio', perfScore:62, listingType:'gold_pro',  listing_type:'gold_pro',  condition:'new', date_created:new Date(_demoAgora - 28*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.62} },
+  { id:'MLB007', titulo:'Bomba Água Celta Corsa 1.0 Urba',                price:78.90,  preco:78.90,  sold_quantity:4,  vendas:4,  visitas:112, ctr:3.6, available_quantity:22, estoque:22, status:'active', classe:'medio', perfScore:55, listingType:'gold_pro',  listing_type:'gold_pro',  condition:'new', date_created:new Date(_demoAgora - 22*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.55} },
+  { id:'MLB008', titulo:'Correia Dentada Fiat Uno Fire Gates',            price:34.90,  preco:34.90,  sold_quantity:3,  vendas:3,  visitas:87,  ctr:3.4, available_quantity:56, estoque:56, status:'active', classe:'medio', perfScore:48, listingType:'gold',      listing_type:'gold',      condition:'new', date_created:new Date(_demoAgora - 20*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.48} },
+  { id:'MLB009', titulo:'Pivô Suspensão Dianteira Civic Viemar',          price:124.90, preco:124.90, sold_quantity:2,  vendas:2,  visitas:67,  ctr:3.0, available_quantity:15, estoque:15, status:'active', classe:'medio', perfScore:42, listingType:'gold',      listing_type:'gold',      condition:'new', date_created:new Date(_demoAgora - 18*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.42} },
+  { id:'MLB010', titulo:'Farol Direito HB20 2016-2019 Arteb',             price:389.90, preco:389.90, sold_quantity:0,  vendas:0,  visitas:23,  ctr:0,   available_quantity:8,  estoque:8,  status:'active', classe:'ruim',  perfScore:18, diasSemVenda:18, diasAtivo:18, listingType:'gold', listing_type:'gold', condition:'new', date_created:new Date(_demoAgora - 18*24*3600000).toISOString(), currency:'BRL', permalink:'#', thumbnail:'', category_id:'MLB1234', health:{global:0.18} },
+];
+const _demoPedidos = [
+  { id:2000008779, status:'paid',      valorTotal:289.90, dataCriacao:new Date(_demoAgora - 2*3600000).toISOString(),   comprador:{ nickname:'JOAO***' },   itens:[{ titulo:'Amortecedor Traseiro Honda Civic Monroe', quantidade:1, precoUnitario:289.90 }], envio:{ id:'SHP001' }, fraude:false },
+  { id:2000008780, status:'shipped',   valorTotal:175.00, dataCriacao:new Date(_demoAgora - 24*3600000).toISOString(),  comprador:{ nickname:'MARIA***' },  itens:[{ titulo:'Pastilha de Freio Dianteira Gol G5 G6 Frasle', quantidade:2, precoUnitario:87.50 }], envio:{ id:'SHP002', rastreamento:'BR987654321' }, fraude:false },
+  { id:2000008781, status:'delivered', valorTotal:212.50, dataCriacao:new Date(_demoAgora - 72*3600000).toISOString(),  comprador:{ nickname:'PEDRO***' },  itens:[{ titulo:'Disco de Freio Dianteiro Toyota Corolla Fremax', quantidade:1, precoUnitario:212.50 }], envio:{ id:'SHP003' }, fraude:false },
+  { id:2000008782, status:'paid',      valorTotal:459.90, dataCriacao:new Date(_demoAgora - 1*3600000).toISOString(),   comprador:{ nickname:'ANA***' },    itens:[{ titulo:'Kit Embreagem Palio Siena 1.0 LUK', quantidade:1, precoUnitario:459.90 }], envio:{ id:'SHP004' }, fraude:false },
+  { id:2000008783, status:'paid',      valorTotal:42.90,  dataCriacao:new Date(_demoAgora - 0.5*3600000).toISOString(), comprador:{ nickname:'CARLOS***' }, itens:[{ titulo:'Filtro de Óleo Hyundai HB20 Tecfil', quantidade:1, precoUnitario:42.90 }], envio:{ id:'SHP005' }, fraude:false },
+];
+const _demoMensagens = [
+  { orderId:2000008780, tipo:'venda_confirmada', comprador:'MARIA***',  item:'Pastilha Freio', enviada:new Date(_demoAgora - 24*3600000).toISOString(), sucesso:true },
+  { orderId:2000008781, tipo:'produto_enviado',  comprador:'PEDRO***',  item:'Disco Freio',    enviada:new Date(_demoAgora - 48*3600000).toISOString(), sucesso:true },
+  { orderId:2000008781, tipo:'produto_entregue', comprador:'PEDRO***',  item:'Disco Freio',    enviada:new Date(_demoAgora - 24*3600000).toISOString(), sucesso:true },
+];
+const _demoAjustesPreco = [
+  { itemId:'MLB010', titulo:'Farol Direito HB20 2016-2019 Arteb', precoAnterior:419.90, novoPreco:389.90, motivo:'auto: -5% do concorrente', data:new Date(_demoAgora - 6*3600000).toISOString() },
+  { itemId:'MLB004', titulo:'Filtro de Óleo Hyundai HB20 Tecfil', precoAnterior:39.90,  novoPreco:42.90,  motivo:'ajuste manual',            data:new Date(_demoAgora - 48*3600000).toISOString() },
+];
+
+// Classificação a partir dos anúncios
+const _demoClassificacao = {
+  top:   _demoAnuncios.filter(a => a.classe === 'top')
+           .map(a => ({ ...a, classe:'🟢 TOP — escalar', diasAtivo:40, vendas30d:a.vendas, visitas30d:a.visitas })),
+  medio: _demoAnuncios.filter(a => a.classe === 'medio')
+           .map(a => ({ ...a, classe:'🟡 MÉDIO — otimizar', diasAtivo:25, vendas30d:a.vendas, visitas30d:a.visitas })),
+  ruim:  _demoAnuncios.filter(a => a.classe === 'ruim')
+           .map(a => ({ ...a, classe:'🔴 RUIM — pausar', diasAtivo:18, vendas30d:a.vendas, visitas30d:a.visitas,
+                        sugestao:'⚠️ 14+ dias sem venda — considerar pausar' })),
+};
+
+// Mapeia pathname → payload demo. Retorna null se não deve interceptar.
+function _demoResponseFor(pathname, method){
+  if ((method || 'GET').toUpperCase() !== 'GET') return null;
+
+  // /api/tokens/status propositalmente NÃO interceptado — banner auth usa status real
+  if (pathname === '/api/ml/me') {
+    return {
+      connected:true, demo:true, nickname:'AGENTE_MARKETPLACE_DEMO', user_id:2947005156, email:'demo@agentemarkt.com', site_id:'MLB', country_id:'BR',
+      seller_reputation: {
+        level_id:'5_green', power_seller_status:'platinum',
+        transactions: { total:1247, ratings:{ positive:0.985, neutral:0.010, negative:0.005 } },
+      },
+    };
+  }
+  if (pathname === '/api/ml/items') {
+    return { success:true, demo:true, total:32, items:_demoAnuncios.map(a => ({
+      id:a.id, title:a.titulo, price:a.price, currency:a.currency, status:a.status,
+      permalink:a.permalink, thumbnail:a.thumbnail, sold_quantity:a.sold_quantity,
+      available_quantity:a.available_quantity, listing_type:a.listing_type, condition:a.condition,
+      category_id:a.category_id, health:a.health, date_created:a.date_created,
+    })) };
+  }
+  if (pathname === '/api/ml/orders') {
+    return { success:true, demo:true, total:156, orders:_demoPedidos };
+  }
+  if (pathname === '/api/ml/pedidos') {
+    return { success:true, demo:true, pedidos:_demoPedidos };
+  }
+  if (pathname === '/api/ml/pedidos/stats/resumo') {
+    return { success:true, demo:true,
+      ultimos30dias:{ total:156, receitaTotal:28750.00, pagos:120, enviados:110, entregues:98, cancelados:3 },
+      hoje:{ total:8, receita:1890.00 },
+    };
+  }
+  if (pathname === '/api/ml/questions') {
+    return { success:true, demo:true, total:2, questions:[
+      { id:'Q001', text:'Serve no Gol G5 2012 1.0?',           item_id:'MLB001', date:new Date(_demoAgora - 300000).toISOString(), status:'UNANSWERED' },
+      { id:'Q002', text:'Tem disponível pra entrega imediata?', item_id:'MLB002', date:new Date(_demoAgora - 600000).toISOString(), status:'UNANSWERED' },
+    ] };
+  }
+  if (pathname === '/api/ml/sac/pendentes') {
+    return { success:true, demo:true, total:2, perguntas:[
+      { id:'Q001', texto:'Serve no Gol G5 2012 1.0?',           itemId:'MLB001', data:new Date(_demoAgora - 300000).toISOString() },
+      { id:'Q002', texto:'Tem disponível pra entrega imediata?', itemId:'MLB002', data:new Date(_demoAgora - 600000).toISOString() },
+    ] };
+  }
+  if (pathname === '/api/ml/sac/stats') {
+    return { success:true, demo:true, tentativas:56, respondidas:48, falhas:8, pendentes:2, ultima:new Date(_demoAgora - 600000).toISOString(), historico:[] };
+  }
+  if (pathname === '/api/ml/performance') {
+    const total = _demoAnuncios.length;
+    const totalVendas  = _demoAnuncios.reduce((s,a)=>s+a.vendas,  0);
+    const totalVisitas = _demoAnuncios.reduce((s,a)=>s+a.visitas, 0);
+    const ctrMedio = (_demoAnuncios.reduce((s,a)=>s+a.ctr, 0) / total).toFixed(2);
+    return { success:true, demo:true, total, anuncios:_demoAnuncios,
+      classificacao:_demoClassificacao,
+      resumo:{ top:_demoClassificacao.top.length, medio:_demoClassificacao.medio.length, ruim:_demoClassificacao.ruim.length, totalVendas, totalVisitas, ctrMedio },
+    };
+  }
+  if (pathname === '/api/ml/preco/historico') {
+    return { success:true, demo:true, total:_demoAjustesPreco.length, ajustes:_demoAjustesPreco };
+  }
+  if (pathname === '/api/ml/mensagem/historico') {
+    return { success:true, demo:true, total:_demoMensagens.length, mensagens:_demoMensagens };
+  }
+  if (pathname === '/api/ml/mensagem/config') {
+    return { success:true, demo:true, autoEnviar:{ venda_confirmada:true, produto_enviado:true, produto_entregue:true },
+             templates:['venda_confirmada','produto_enviado','produto_entregue'] };
+  }
+  if (pathname === '/api/estoque/stats') {
+    return { success:true, demo:true, resumo:{ ativos:28, pausados:2, semEstoque:2, estoqueBaixo:3 } };
+  }
+  if (pathname === '/api/estoque/ml/todos') {
+    return { success:true, demo:true, items:_demoAnuncios.map(a => ({
+      id:a.id, title:a.titulo, price:a.price, available_quantity:a.available_quantity,
+      sold_quantity:a.sold_quantity, status:a.status,
+    })) };
+  }
+  if (pathname === '/api/webhooks/status') {
+    return { success:true, demo:true, total:347,
+      porTopic:{ questions:98, orders_v2:156, items:52, payments:23, shipments:18 },
+      ultimoRecebido:new Date(_demoAgora - 180000).toISOString(),
+      topicsAtivos:['items','questions','orders_v2','payments','shipments','messages','claims'],
+      historico:[],
+    };
+  }
+  if (pathname === '/api/webhooks/vendas') {
+    return { success:true, demo:true, vendas:_demoPedidos.filter(p => p.status === 'paid').map(p => ({
+      orderId:p.id, valor:p.valorTotal, data:p.dataCriacao,
+      items:p.itens.map(i => ({ titulo:i.titulo, quantidade:i.quantidade, preco:i.precoUnitario })),
+      comprador:p.comprador.nickname,
+    })) };
+  }
+  if (pathname === '/api/agente/status') {
+    return { success:true, demo:true, publicadosHoje:3, limiteDiario:15, items:[] };
+  }
+  if (pathname === '/api/agente/catalogo') {
+    return { success:true, demo:true, produtos:_demoAnuncios.slice(0, 5).map(a => ({
+      id:a.id, sku:a.id, titulo:a.titulo, preco_custo:a.price*0.5, estoque:a.available_quantity,
+      marca:'Demo', categoria_ml:a.category_id, condicao:'new', imagens:[], compatibilidade:[],
+    })) };
+  }
+  return null;
+}
+
+// Monkey-patch fetch — intercepta só GETs dos endpoints mapeados quando demo está on
+(function installDemoFetch(){
+  if (window.__demoFetchInstalled) return;
+  window.__demoFetchInstalled = true;
+  const realFetch = window.fetch.bind(window);
+  window.fetch = function(input, init) {
+    try {
+      if (isDemoMode()) {
+        const url    = typeof input === 'string' ? input : (input && input.url) || '';
+        const method = (init && init.method) || (typeof input === 'object' && input && input.method) || 'GET';
+        // Ignora URLs externas
+        if (url && !/^https?:\/\//i.test(url)) {
+          const pathname = url.split('?')[0];
+          const payload  = _demoResponseFor(pathname, method);
+          if (payload) {
+            const body = JSON.stringify(payload);
+            return Promise.resolve(new Response(body, {
+              status: 200,
+              headers: { 'Content-Type':'application/json', 'X-Demo-Mode':'1' },
+            }));
+          }
+        }
+      }
+    } catch(e) { /* cai pro real */ }
+    return realFetch(input, init);
+  };
+})();
+
+function useDemoMode(){
+  const [enabled, setEnabled] = useState(isDemoMode());
+  useEffect(() => {
+    const h = (e) => setEnabled(!!e.detail?.enabled);
+    window.addEventListener('demoModeChange', h);
+    const s = () => setEnabled(isDemoMode());
+    window.addEventListener('storage', s);
+    return () => { window.removeEventListener('demoModeChange', h); window.removeEventListener('storage', s); };
+  }, []);
+  const toggle = useCallback((v) => setDemoMode(typeof v === 'boolean' ? v : !isDemoMode()), []);
+  return [enabled, toggle];
+}
+
+// ============================================================
 // ENV CONFIG — apenas valores PÚBLICOS no frontend
 // O client_secret fica SÓ no server.js (.env) — o front troca
 // o code pelo access_token via POST /api/ml/token (proxy).
@@ -3585,6 +3790,38 @@ function SACHeaderBadge(){
   );
 }
 
+// Toggle pequeno no header — clica pra ativar/desativar modo demo
+function DemoToggle(){
+  const [demo, toggle] = useDemoMode();
+  const style = demo
+    ? { background:'rgba(0,167,255,.15)', borderColor:'rgba(0,167,255,.5)', color:'var(--green)' }
+    : { background:'transparent', borderColor:'var(--line)', color:'var(--sub)' };
+  return (
+    <button
+      onClick={() => toggle()}
+      title={demo ? 'Modo demo ativo — clique pra desligar' : 'Ativar modo demo (dados simulados)'}
+      aria-pressed={demo}
+      className="text-xs px-2 py-1 rounded-md border transition-colors"
+      style={{...style, whiteSpace:'nowrap', fontWeight:600}}
+    >
+      🎭 {demo ? 'Demo ON' : 'Demo'}
+    </button>
+  );
+}
+
+// Banner azul no topo quando modo demo está ativo
+function DemoBanner(){
+  const [demo, toggle] = useDemoMode();
+  if (!demo) return null;
+  return (
+    <div className="mb-4 p-3 rounded-lg flex items-center gap-3 flex-wrap text-sm"
+      style={{background:'rgba(0,167,255,.08)', border:'1px solid rgba(0,167,255,.4)', color:'var(--green)'}}>
+      <span>🎭 <b>Modo Demo</b> — dados simulados para demonstração. Os valores não refletem sua conta real.</span>
+      <button className="btn-ghost text-xs ml-auto" onClick={() => toggle(false)}>Desligar</button>
+    </div>
+  );
+}
+
 function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNotifPanel}){
   // Estrutura reorganizada por SETORES (nível empresa).
   // Cada setor agrupa funcionalidades relacionadas e tem sub-abas internas.
@@ -3622,6 +3859,7 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
         </nav>
         <div className="ml-auto flex items-center gap-3">
           <span onClick={() => setTab('overview')}><SACHeaderBadge/></span>
+          <DemoToggle/>
           <MLStatusIndicator onClickConnect={() => setTab('integrations')}/>
           <NotificationBell count={unreadCount} onClick={onBellClick}/>
           <ProfileDropdown
@@ -3714,6 +3952,7 @@ class CardErrorBoundary extends React.Component {
 // Se tudo ok, renderiza null.
 function MLTokenExpiredBanner(){
   const [st, setSt] = useState(null);
+  const [demo, toggleDemo] = useDemoMode();
   useEffect(() => {
     let alive = true;
     const fetchStatus = async () => {
@@ -3727,6 +3966,8 @@ function MLTokenExpiredBanner(){
     const id = setInterval(fetchStatus, 60_000);
     return () => { alive = false; clearInterval(id); };
   }, []);
+  // Se o modo demo está ativo, nunca mostra banner de erro (demo substitui os dados)
+  if (demo) return null;
   if (!st) return null;
   // Sem token = não mostra banner aqui (o usuário vê o bloco de "Conecte ML")
   if (!st.connected) return null;
@@ -3734,6 +3975,7 @@ function MLTokenExpiredBanner(){
     return (
       <div className="err mb-4 flex items-center gap-3 flex-wrap">
         <span>🔴 Token do Mercado Livre expirou — reconecte na aba <span className="mono">🔌 Integrações</span> para voltar a ver dados reais.</span>
+        <button className="btn-ghost text-xs ml-auto" onClick={() => toggleDemo(true)}>🎭 Ver com dados demo</button>
       </div>
     );
   }
@@ -3743,6 +3985,7 @@ function MLTokenExpiredBanner(){
       <div className="mb-4 p-3 rounded-lg flex items-center gap-3 flex-wrap text-xs"
         style={{background:'rgba(234,179,8,.08)', border:'1px solid rgba(234,179,8,.35)', color:'var(--yellow)'}}>
         <span>🟡 Token expirando em breve — sem refresh_token cadastrado. Reconecte na aba <span className="mono">🔌 Integrações</span>.</span>
+        <button className="btn-ghost text-xs ml-auto" onClick={() => toggleDemo(true)}>🎭 Ver com dados demo</button>
       </div>
     );
   }
@@ -10127,6 +10370,7 @@ function Dashboard({user, onLogout}){
         onOpenNotifPanel={() => setPanelOpen(true)}
       />
       <main className="max-w-[1400px] mx-auto px-6 py-8">
+        <DemoBanner/>
         {showPermBanner && <PermissionBanner onEnable={handleEnablePush} onDismiss={handleDismissBanner}/>}
 
         {/* Setor 📊 Visão Geral */}

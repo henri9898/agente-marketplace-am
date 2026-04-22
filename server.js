@@ -4160,6 +4160,106 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
     }
 
     // ============================================================
+    // MODO DEMO — dados simulados realistas pra demonstração
+    // Ativado quando: (a) usuário liga toggle no header
+    //                 (b) ML rate-limita o VPS (429)
+    // ============================================================
+    if ((u.pathname === '/api/demo/dados' || u.pathname === '/api/ml/dashboard-demo') && req.method === 'GET') {
+      const anunciosDemo = [
+        { id:'MLB001', titulo:'Pastilha de Freio Dianteira Gol G5 G6 Frasle',   preco:87.50,  vendas:23, visitas:412, ctr:5.6, estoque:45, status:'active', classe:'top',   perfScore:92 },
+        { id:'MLB002', titulo:'Amortecedor Traseiro Honda Civic Monroe',        preco:289.90, vendas:15, visitas:287, ctr:5.2, estoque:18, status:'active', classe:'top',   perfScore:88 },
+        { id:'MLB003', titulo:'Disco de Freio Dianteiro Toyota Corolla Fremax', preco:212.50, vendas:12, visitas:198, ctr:6.1, estoque:25, status:'active', classe:'top',   perfScore:85 },
+        { id:'MLB004', titulo:'Filtro de Óleo Hyundai HB20 Tecfil',             preco:42.90,  vendas:31, visitas:523, ctr:5.9, estoque:89, status:'active', classe:'top',   perfScore:95 },
+        { id:'MLB005', titulo:'Jogo Velas Ignição Onix Prisma NGK Iridium',     preco:162.50, vendas:8,  visitas:156, ctr:5.1, estoque:34, status:'active', classe:'top',   perfScore:78 },
+        { id:'MLB006', titulo:'Kit Embreagem Palio Siena 1.0 LUK',              preco:459.90, vendas:5,  visitas:89,  ctr:5.6, estoque:12, status:'active', classe:'medio', perfScore:62 },
+        { id:'MLB007', titulo:'Bomba Água Celta Corsa 1.0 Urba',                preco:78.90,  vendas:4,  visitas:112, ctr:3.6, estoque:22, status:'active', classe:'medio', perfScore:55 },
+        { id:'MLB008', titulo:'Correia Dentada Fiat Uno Fire Gates',            preco:34.90,  vendas:3,  visitas:87,  ctr:3.4, estoque:56, status:'active', classe:'medio', perfScore:48 },
+        { id:'MLB009', titulo:'Pivô Suspensão Dianteira Civic Viemar',          preco:124.90, vendas:2,  visitas:67,  ctr:3.0, estoque:15, status:'active', classe:'medio', perfScore:42 },
+        { id:'MLB010', titulo:'Farol Direito HB20 2016-2019 Arteb',             preco:389.90, vendas:0,  visitas:23,  ctr:0,   estoque:8,  status:'active', classe:'ruim',  perfScore:18, diasSemVenda:18 },
+      ];
+      const agora = Date.now();
+      const pedidosDemo = [
+        { id:2000008779, status:'paid',      valorTotal:289.90, dataCriacao:new Date(agora - 2*3600000).toISOString(),  comprador:{ nickname:'JOAO***' },   itens:[{ titulo:'Amortecedor Traseiro Honda Civic Monroe', quantidade:1, precoUnitario:289.90 }], envio:{ id:'SHP001' }, fraude:false },
+        { id:2000008780, status:'shipped',   valorTotal:175.00, dataCriacao:new Date(agora - 24*3600000).toISOString(), comprador:{ nickname:'MARIA***' },  itens:[{ titulo:'Pastilha de Freio Dianteira Gol G5 G6 Frasle', quantidade:2, precoUnitario:87.50 }], envio:{ id:'SHP002', rastreamento:'BR987654321' }, fraude:false },
+        { id:2000008781, status:'delivered', valorTotal:212.50, dataCriacao:new Date(agora - 72*3600000).toISOString(), comprador:{ nickname:'PEDRO***' },  itens:[{ titulo:'Disco de Freio Dianteiro Toyota Corolla Fremax', quantidade:1, precoUnitario:212.50 }], envio:{ id:'SHP003' }, fraude:false },
+        { id:2000008782, status:'paid',      valorTotal:459.90, dataCriacao:new Date(agora - 1*3600000).toISOString(),  comprador:{ nickname:'ANA***' },    itens:[{ titulo:'Kit Embreagem Palio Siena 1.0 LUK', quantidade:1, precoUnitario:459.90 }], envio:{ id:'SHP004' }, fraude:false },
+        { id:2000008783, status:'paid',      valorTotal:42.90,  dataCriacao:new Date(agora - 0.5*3600000).toISOString(),comprador:{ nickname:'CARLOS***' }, itens:[{ titulo:'Filtro de Óleo Hyundai HB20 Tecfil', quantidade:1, precoUnitario:42.90 }], envio:{ id:'SHP005' }, fraude:false },
+      ];
+      const dadosDemo = {
+        dashboard: {
+          produtos: 47, anunciosAtivos: 32, vendas30d: 156, receita30d: 28750.00,
+          publicadosHoje: 3, limiteDiario: 15, vendasHoje: 8, receitaHoje: 1890.00, ticketMedio: 184.29,
+        },
+        vendasDiarias: Array.from({length:30}, (_, i) => ({
+          dia: `D${i+1}`,
+          vendas:  Math.floor(Math.random() * 8) + 1,
+          receita: Math.floor(Math.random() * 2000) + 500,
+        })),
+        ctrDiario: Array.from({length:30}, (_, i) => ({
+          dia: `D${i+1}`,
+          ctr: parseFloat((Math.random() * 3 + 0.5).toFixed(1)),
+        })),
+        classificacao: { top: 7, medio: 12, ruim: 8, novo: 5 },
+        anuncios: anunciosDemo,
+        pedidos: pedidosDemo,
+        sac: {
+          pendentes: 2, respondidas: 48,
+          perguntas: [
+            { id:'Q001', texto:'Serve no Gol G5 2012 1.0?',        itemId:'MLB001', data:new Date(agora - 300000).toISOString(), status:'UNANSWERED' },
+            { id:'Q002', texto:'Tem disponível pra entrega imediata?', itemId:'MLB002', data:new Date(agora - 600000).toISOString(), status:'UNANSWERED' },
+          ],
+        },
+        estoque: {
+          resumo: { ativos: 28, pausados: 2, semEstoque: 2, estoqueBaixo: 3, alerta: '⚠️ 3 anúncios com estoque baixo' },
+        },
+        webhooks: {
+          total: 347,
+          porTopic: { questions: 98, orders_v2: 156, items: 52, payments: 23, shipments: 18 },
+          ultimoRecebido: new Date(agora - 180000).toISOString(),
+        },
+        reputacao: {
+          level: 'gold', powerSeller: 'platinum',
+          positivas: 98.5, neutras: 1.0, negativas: 0.5, totalVendas: 1247,
+        },
+        mensagens: [
+          { orderId:2000008780, tipo:'venda_confirmada', comprador:'MARIA***',  item:'Pastilha Freio', enviada:new Date(agora - 24*3600000).toISOString(), sucesso:true },
+          { orderId:2000008781, tipo:'produto_enviado',  comprador:'PEDRO***',  item:'Disco Freio',    enviada:new Date(agora - 48*3600000).toISOString(), sucesso:true },
+          { orderId:2000008781, tipo:'produto_entregue', comprador:'PEDRO***',  item:'Disco Freio',    enviada:new Date(agora - 24*3600000).toISOString(), sucesso:true },
+        ],
+      };
+
+      if (u.pathname === '/api/demo/dados') {
+        return send(res, 200, { success:true, demo:true, ...dadosDemo });
+      }
+
+      // dashboard-demo: mesmo formato do /api/ml/dashboard real, pro front trocar sem if/else
+      return send(res, 200, {
+        success: true,
+        demo: true,
+        connected: true,
+        user: {
+          id: 2947005156,
+          nickname: 'AGENTE_MARKETPLACE',
+          seller_reputation: {
+            level_id: dadosDemo.reputacao.level,
+            power_seller_status: dadosDemo.reputacao.powerSeller,
+            transactions: {
+              total: dadosDemo.reputacao.totalVendas,
+              ratings: {
+                positive: dadosDemo.reputacao.positivas / 100,
+                neutral:  dadosDemo.reputacao.neutras   / 100,
+                negative: dadosDemo.reputacao.negativas / 100,
+              },
+            },
+          },
+        },
+        items:  { total: dadosDemo.dashboard.anunciosAtivos, results: dadosDemo.anuncios.map(a => a.id) },
+        orders: { total: dadosDemo.dashboard.vendas30d,      results: dadosDemo.pedidos },
+        metrics: dadosDemo.dashboard,
+      });
+    }
+
+    // ============================================================
     // AJUSTE AUTOMÁTICO DE PREÇO — concorrência, ajuste manual e em lote
     // ============================================================
 
