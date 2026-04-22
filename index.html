@@ -1467,6 +1467,239 @@
     .card { margin-bottom: 12px; }
     .mobile-bottom-nav { padding-bottom: env(safe-area-inset-bottom, 8px); }
   }
+
+  /* ============================================================
+     UPGRADE VISUAL — fundo animado + ícones 3D + glassmorphism
+     Sutil e profissional — animações CSS-only, nada pesado.
+     ============================================================ */
+
+  /* ---- Fundo animado: mesh gradient sutil + partículas ---- */
+  html, body { background: var(--bg-primary); }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background:
+      radial-gradient(ellipse 800px 600px at 20% 50%, rgba(59,130,246,0.09)  0%, transparent 60%),
+      radial-gradient(ellipse 700px 500px at 80% 20%, rgba(99,102,241,0.07)  0%, transparent 60%),
+      radial-gradient(ellipse 900px 700px at 50% 90%, rgba(14,165,233,0.06)  0%, transparent 65%),
+      radial-gradient(ellipse 600px 500px at 90% 80%, rgba(139,92,246,0.05)  0%, transparent 60%);
+    background-size: 200% 200%, 180% 180%, 220% 220%, 200% 200%;
+    animation: meshMove 28s ease-in-out infinite alternate;
+    pointer-events: none;
+  }
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background-image:
+      radial-gradient(1px 1px at 10% 20%, rgba(255,255,255,0.18) 0%, transparent 100%),
+      radial-gradient(1px 1px at 30% 60%, rgba(255,255,255,0.10) 0%, transparent 100%),
+      radial-gradient(1px 1px at 50% 40%, rgba(255,255,255,0.14) 0%, transparent 100%),
+      radial-gradient(1px 1px at 70% 80%, rgba(255,255,255,0.08) 0%, transparent 100%),
+      radial-gradient(1px 1px at 90% 30%, rgba(255,255,255,0.10) 0%, transparent 100%),
+      radial-gradient(1.5px 1.5px at 15% 75%, rgba(59,130,246,0.22)  0%, transparent 100%),
+      radial-gradient(1.5px 1.5px at 85% 55%, rgba(99,102,241,0.18)  0%, transparent 100%);
+    animation: particleFloat 40s linear infinite;
+    pointer-events: none;
+    opacity: 0.6;
+  }
+  @keyframes meshMove {
+    0%   { background-position: 0% 0%,   100% 0%,   50% 100%, 100% 100%; }
+    33%  { background-position: 30% 20%, 70% 40%,   20% 60%,  40% 80%;  }
+    66%  { background-position: 60% 40%, 30% 60%,   80% 30%,  10% 50%;  }
+    100% { background-position: 100% 100%, 0% 100%, 50% 0%,   90% 10%;  }
+  }
+  @keyframes particleFloat {
+    0%   { transform: translateY(0) translateX(0); }
+    50%  { transform: translateY(-12px) translateX(4px); }
+    100% { transform: translateY(0) translateX(0); }
+  }
+  /* Em mobile/reduced-motion, desliga as animações do fundo pra economizar bateria */
+  @media (prefers-reduced-motion: reduce) {
+    body::before, body::after { animation: none !important; }
+  }
+  @media (max-width: 768px) {
+    body::after { opacity: 0.35; }
+  }
+
+  /* ---- Ícones 3D genéricos (utility classes, use em spans/divs) ---- */
+  .icon-3d {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1;
+    color: #fff;
+    transform: perspective(500px) rotateY(-5deg) rotateX(5deg);
+    box-shadow:
+      2px 4px 8px rgba(0,0,0,0.3),
+      inset 0 1px 0 rgba(255,255,255,0.15);
+    transition: transform .3s ease, box-shadow .3s ease;
+  }
+  .icon-3d:hover {
+    transform: perspective(500px) rotateY(0deg) rotateX(0deg) scale(1.08);
+    box-shadow:
+      4px 8px 16px rgba(0,0,0,0.4),
+      inset 0 1px 0 rgba(255,255,255,0.22);
+  }
+  /* Variantes por cor */
+  .icon-3d-blue   { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+  .icon-3d-green  { background: linear-gradient(135deg, #22c55e, #16a34a); }
+  .icon-3d-orange { background: linear-gradient(135deg, #f59e0b, #d97706); }
+  .icon-3d-red    { background: linear-gradient(135deg, #ef4444, #dc2626); }
+  .icon-3d-purple { background: linear-gradient(135deg, #8b5cf6, #7c3aed); }
+  .icon-3d-cyan   { background: linear-gradient(135deg, #06b6d4, #0891b2); }
+  .icon-3d-pink   { background: linear-gradient(135deg, #ec4899, #db2777); }
+  .icon-3d-teal   { background: linear-gradient(135deg, #14b8a6, #0d9488); }
+  .icon-3d-zinc   { background: linear-gradient(135deg, #52525b, #3f3f46); }
+  /* Tamanhos */
+  .icon-3d-sm { width: 24px; height: 24px; font-size: 12px; border-radius: 6px; }
+  .icon-3d-lg { width: 40px; height: 40px; font-size: 20px; border-radius: 10px; }
+  .icon-3d-xl { width: 48px; height: 48px; font-size: 24px; border-radius: 12px; }
+
+  /* ---- Glassmorphism sutil nos cards (mantém bordas do redesign SaaS) ---- */
+  .card, .card2 {
+    background: rgba(24, 24, 27, 0.78) !important;
+    backdrop-filter: blur(12px) saturate(1.2);
+    -webkit-backdrop-filter: blur(12px) saturate(1.2);
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 14px !important;
+  }
+  .card:hover, .card2:hover {
+    background: rgba(24, 24, 27, 0.88) !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+  }
+  /* Em navegadores sem backdrop-filter, mantém fundo sólido pra não ficar transparente demais */
+  @supports not (backdrop-filter: blur(1px)) {
+    .card, .card2 { background: rgba(24, 24, 27, 0.95) !important; }
+  }
+
+  /* ---- Botão primário 3D com gradiente ---- */
+  .btn, button.btn-primary {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 20px;
+    font-weight: 600;
+    font-size: 14px;
+    box-shadow:
+      0 4px 12px rgba(59, 130, 246, 0.3),
+      inset 0 1px 0 rgba(255,255,255,0.15);
+    transition: transform .2s ease, box-shadow .2s ease, background .2s ease;
+  }
+  .btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow:
+      0 6px 20px rgba(59, 130, 246, 0.42),
+      inset 0 1px 0 rgba(255,255,255,0.22);
+  }
+  .btn:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow:
+      0 2px 8px rgba(59, 130, 246, 0.3),
+      inset 0 1px 0 rgba(255,255,255,0.1);
+  }
+  .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+  /* ---- Logo "AM" — gradiente 3D ---- */
+  .logo-ml, .w-9.h-9.rounded-lg.bg-\[var\(--green\)\] {
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6) !important;
+    border-radius: 12px !important;
+    box-shadow:
+      0 4px 12px rgba(59, 130, 246, 0.3),
+      inset 0 1px 0 rgba(255,255,255,0.15) !important;
+    transform: perspective(400px) rotateY(-5deg);
+    transition: transform .3s ease;
+  }
+  .logo-ml:hover, .w-9.h-9.rounded-lg.bg-\[var\(--green\)\]:hover {
+    transform: perspective(400px) rotateY(5deg) scale(1.05);
+  }
+
+  /* ---- Bottom nav mobile com ícone destacado em gradiente ---- */
+  @media (max-width: 768px) {
+    .mobile-bottom-nav button.active {
+      position: relative;
+    }
+    .mobile-bottom-nav button.active::before {
+      content: '';
+      position: absolute;
+      top: 4px; left: 50%;
+      transform: translateX(-50%);
+      width: 32px; height: 32px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, rgba(59,130,246,0.22), rgba(139,92,246,0.18));
+      box-shadow: 0 2px 8px rgba(59,130,246,0.25);
+      z-index: -1;
+    }
+  }
+
+  /* ---- Shimmer (loading) ---- */
+  @keyframes shimmer {
+    0%   { background-position: -200% 0; }
+    100% { background-position:  200% 0; }
+  }
+  .loading-shimmer {
+    background: linear-gradient(
+      90deg,
+      rgba(255,255,255,0)    0%,
+      rgba(255,255,255,0.04) 50%,
+      rgba(255,255,255,0)   100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s ease-in-out infinite;
+  }
+
+  /* ---- KPI — envelope visual 3D sutil (sem alterar JSX) ---- */
+  .kpi {
+    position: relative;
+    overflow: hidden;
+  }
+  .kpi::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, rgba(59,130,246,0.4), transparent);
+    opacity: 0;
+    transition: opacity .3s ease;
+  }
+  .kpi:hover::before { opacity: 1; }
+  .kpi.glow::before  { opacity: 0.7; }
+
+  /* ---- Chips com leve gradiente no hover ---- */
+  .chip:hover {
+    background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(99,102,241,0.1)) !important;
+    border-color: rgba(59,130,246,0.3) !important;
+  }
+
+  /* ---- Header com borda e leve brilho inferior ---- */
+  header {
+    position: relative;
+  }
+  header::after {
+    content: '';
+    position: absolute;
+    bottom: -1px; left: 10%; right: 10%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(59,130,246,0.35), transparent);
+    pointer-events: none;
+  }
+
+  /* ---- Inputs também ganham leve glassmorphism ---- */
+  .input, input, select, textarea {
+    background: rgba(9,9,11,0.6) !important;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
 </style>
 </head>
 <body>
