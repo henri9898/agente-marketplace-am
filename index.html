@@ -1270,9 +1270,36 @@ function _demoResponseFor(pathname, method){
   if ((method || 'GET').toUpperCase() !== 'GET') return null;
 
   // /api/tokens/status propositalmente NÃO interceptado — banner auth usa status real
+
+  // PRINCIPAL: dashboard da Visão Geral (useMLDashboard). Shape precisa casar
+  // com o que OverviewPage lê: data.user.*, data.items.total_active, data.orders.total/recent[]
+  if (pathname === '/api/ml/dashboard') {
+    return {
+      success: true, demo: true,
+      user: {
+        id: 2947005156,
+        nickname: 'AGENTE_MARKETPLACE',
+        email: 'demo@agentemarkt.com',
+        status: { site_status: 'active' },
+        seller_reputation: {
+          level_id: '5_green',
+          power_seller_status: 'platinum',
+          transactions: { total: 1247, ratings: { positive: 0.985, neutral: 0.010, negative: 0.005 } },
+        },
+      },
+      items: { total_active: 32 },
+      orders: {
+        total: 156,
+        recent: _demoPedidos.slice(0, 5).map(p => ({
+          id: p.id, total: p.valorTotal, status: p.status, date: p.dataCriacao,
+        })),
+      },
+    };
+  }
+
   if (pathname === '/api/ml/me') {
     return {
-      connected:true, demo:true, nickname:'AGENTE_MARKETPLACE_DEMO', user_id:2947005156, email:'demo@agentemarkt.com', site_id:'MLB', country_id:'BR',
+      connected:true, demo:true, nickname:'AGENTE_MARKETPLACE', user_id:2947005156, email:'demo@agentemarkt.com', site_id:'MLB', country_id:'BR',
       seller_reputation: {
         level_id:'5_green', power_seller_status:'platinum',
         transactions: { total:1247, ratings:{ positive:0.985, neutral:0.010, negative:0.005 } },
@@ -1291,11 +1318,21 @@ function _demoResponseFor(pathname, method){
     return { success:true, demo:true, total:156, orders:_demoPedidos };
   }
   if (pathname === '/api/ml/pedidos') {
-    return { success:true, demo:true, pedidos:_demoPedidos };
+    const valorTotal = _demoPedidos.reduce((s,p) => s + Number(p.valorTotal || 0), 0);
+    return {
+      success:true, demo:true, total: _demoPedidos.length, pedidos: _demoPedidos,
+      resumo: {
+        pagos:       _demoPedidos.filter(p => p.status === 'paid').length,
+        confirmados: _demoPedidos.filter(p => p.status === 'shipped').length,
+        entregues:   _demoPedidos.filter(p => p.status === 'delivered').length,
+        cancelados:  _demoPedidos.filter(p => p.status === 'cancelled').length,
+        valorTotal,
+      },
+    };
   }
   if (pathname === '/api/ml/pedidos/stats/resumo') {
     return { success:true, demo:true,
-      ultimos30dias:{ total:156, receitaTotal:28750.00, pagos:120, enviados:110, entregues:98, cancelados:3 },
+      ultimos30dias:{ total:156, pagos:23, enviados:128, entregues:98, cancelados:5, receitaTotal:28750.00 },
       hoje:{ total:8, receita:1890.00 },
     };
   }
@@ -1335,28 +1372,65 @@ function _demoResponseFor(pathname, method){
              templates:['venda_confirmada','produto_enviado','produto_entregue'] };
   }
   if (pathname === '/api/estoque/stats') {
-    return { success:true, demo:true, resumo:{ ativos:28, pausados:2, semEstoque:2, estoqueBaixo:3 } };
+    // O useEstoque espera apenas `success:true` + resto livre; os cards leem resumo
+    return { success:true, demo:true,
+      ativos:28, pausados:4, semEstoque:2, estoqueBaixo:3,
+      resumo:{ ativos:28, pausados:4, semEstoque:2, estoqueBaixo:3, alerta:'⚠️ 3 anúncios com estoque baixo' },
+    };
   }
   if (pathname === '/api/estoque/ml/todos') {
-    return { success:true, demo:true, items:_demoAnuncios.map(a => ({
-      id:a.id, title:a.titulo, price:a.price, available_quantity:a.available_quantity,
-      sold_quantity:a.sold_quantity, status:a.status,
-    })) };
+    // Shape do hook real: { success, itens: [...], total, resumo: {...} }
+    const itens = [
+      { id:'MLB001', titulo:'Pastilha Freio Gol G5',     estoque:45, preco:87.50,  status:'active', pausadoPorEstoque:false, alerta:null },
+      { id:'MLB002', titulo:'Amortecedor Civic',         estoque:18, preco:289.90, status:'active', pausadoPorEstoque:false, alerta:null },
+      { id:'MLB003', titulo:'Disco Freio Corolla',       estoque:25, preco:212.50, status:'active', pausadoPorEstoque:false, alerta:null },
+      { id:'MLB004', titulo:'Filtro Óleo HB20',          estoque:89, preco:42.90,  status:'active', pausadoPorEstoque:false, alerta:null },
+      { id:'MLB005', titulo:'Velas Ignição Onix',        estoque:34, preco:162.50, status:'active', pausadoPorEstoque:false, alerta:null },
+      { id:'MLB006', titulo:'Kit Embreagem Palio',       estoque:12, preco:459.90, status:'active', pausadoPorEstoque:false, alerta:null },
+      { id:'MLB007', titulo:'Bomba Água Celta',          estoque:3,  preco:78.90,  status:'active', pausadoPorEstoque:false, alerta:'⚠️ Estoque baixo!' },
+      { id:'MLB008', titulo:'Correia Dentada Uno',       estoque:56, preco:34.90,  status:'active', pausadoPorEstoque:false, alerta:null },
+      { id:'MLB009', titulo:'Pivô Suspensão Civic',      estoque:0,  preco:124.90, status:'paused', pausadoPorEstoque:true,  alerta:'🚨 Sem estoque' },
+      { id:'MLB010', titulo:'Farol HB20',                estoque:0,  preco:389.90, status:'paused', pausadoPorEstoque:true,  alerta:'🚨 Sem estoque' },
+    ];
+    return { success:true, demo:true, total:itens.length, itens,
+      resumo:{ ativos:28, pausados:4, semEstoque:2, estoqueBaixo:3, alerta:'⚠️ 3 anúncios com estoque baixo' },
+    };
   }
   if (pathname === '/api/webhooks/status') {
-    return { success:true, demo:true, total:347,
-      porTopic:{ questions:98, orders_v2:156, items:52, payments:23, shipments:18 },
-      ultimoRecebido:new Date(_demoAgora - 180000).toISOString(),
-      topicsAtivos:['items','questions','orders_v2','payments','shipments','messages','claims'],
-      historico:[],
+    // Shape real: { success, stats: {...}, vendasRecentes: [...], topicsAtivos: [...], callbackUrl }
+    return { success:true, demo:true,
+      callbackUrl: 'https://agentemarkt.com/webhooks',
+      stats: {
+        total: 347,
+        porTopic: { questions:98, orders_v2:156, items:52, payments:23, shipments:18 },
+        ultimoRecebido: new Date(_demoAgora - 180000).toISOString(),
+        historico: [],
+      },
+      vendasRecentes: _demoPedidos.filter(p => p.status === 'paid').map(p => ({
+        orderId: p.id, valor: p.valorTotal, data: p.dataCriacao,
+        items: p.itens.map(i => ({ titulo:i.titulo, quantidade:i.quantidade, preco:i.precoUnitario })),
+        comprador: p.comprador.nickname,
+      })),
+      topicsAtivos: ['items','questions','orders_v2','payments','shipments','messages','claims'],
     };
   }
   if (pathname === '/api/webhooks/vendas') {
-    return { success:true, demo:true, vendas:_demoPedidos.filter(p => p.status === 'paid').map(p => ({
-      orderId:p.id, valor:p.valorTotal, data:p.dataCriacao,
-      items:p.itens.map(i => ({ titulo:i.titulo, quantidade:i.quantidade, preco:i.precoUnitario })),
-      comprador:p.comprador.nickname,
-    })) };
+    const vendasPagas = _demoPedidos.filter(p => p.status === 'paid');
+    return { success:true, demo:true, total: vendasPagas.length,
+      vendas: vendasPagas.map(p => ({
+        orderId: p.id, valor: p.valorTotal, data: p.dataCriacao,
+        items: p.itens.map(i => ({ titulo:i.titulo, quantidade:i.quantidade, preco:i.precoUnitario })),
+        comprador: p.comprador.nickname,
+      })),
+      hoje: { count: 8, valor: 1890.00 },
+    };
+  }
+  if (pathname === '/api/rate-limiter/status') {
+    return { success:true, demo:true,
+      reqUltimoMinuto: 12, limite: 800, percentual: 2, pausado: false,
+      totalHoje: 247, bloqueios: 0,
+      monitores: { compatibilidade: '12h', sac: '30min', estoque: '2h', tokenRefresh: '5h' },
+    };
   }
   if (pathname === '/api/agente/status') {
     return { success:true, demo:true, publicadosHoje:3, limiteDiario:15, items:[] };
@@ -1459,6 +1533,11 @@ async function fipeAnos(tipo, codigoMarca, codigoModelo){
 // ============================================================
 const ML_TOKEN_KEY = 'agente_ml_oauth_tokens';
 const loadMLTokens = () => {
+  // Em modo demo, retorna token fake pros hooks não bailarem no early-return
+  // (o interceptor de fetch devolve payloads demo de qualquer jeito)
+  if (isDemoMode()) {
+    return { access_token: 'DEMO_TOKEN', user_id: '2947005156', expires_at: Date.now() + 21600*1000, demo: true };
+  }
   try { return JSON.parse(localStorage.getItem(ML_TOKEN_KEY) || 'null'); } catch(e){ return null; }
 };
 const saveMLTokens = (t) => {
