@@ -547,7 +547,9 @@ async function processarWebhookML(notification, headers) {
         const question = await qResp.json();
         if (question.status === 'UNANSWERED' && question.text) {
           const base = `http://127.0.0.1:${PORT}`;
-          const autoR = await fetch(`${base}/api/ml/sac/auto-responder`, {
+          const usarIA = !!process.env.ANTHROPIC_API_KEY;
+          const rotaResposta = usarIA ? '/api/ml/sac/ia-responder' : '/api/ml/sac/auto-responder';
+          const autoR = await fetch(`${base}${rotaResposta}`, {
             method:'POST',
             headers:{ 'Authorization':'Bearer '+mlToken, 'Content-Type':'application/json' },
             body: JSON.stringify({ questionId: question.id, pergunta: question.text, itemId: question.item_id }),
@@ -560,14 +562,16 @@ async function processarWebhookML(notification, headers) {
               body: JSON.stringify({ questionId: question.id, texto: autoD.respostaGerada }),
             });
             const sendD = await sendR.json();
-            console.log(`🔔💬 RT: "${(question.text||'').slice(0,50)}..." → ${autoD.categoriaDetectada} → ${sendD.success ? '✅' : '❌'}`);
+            const logTag = usarIA ? '🧠' : '💬';
+            const logCat = autoD.fonte || autoD.categoriaDetectada || 'ia';
+            console.log(`🔔${logTag} RT: "${(question.text||'').slice(0,50)}..." → ${logCat} → ${sendD.success ? '✅' : '❌'}`);
             sacStats.tentativas++;
             if (sendD.success) {
               sacStats.respondidas++;
               sacStats.historico.unshift({
                 ts: new Date().toISOString(), questionId: question.id,
                 pergunta: (question.text||'').slice(0,80),
-                categoria: autoD.categoriaDetectada, enviada: true, viaWebhook: true,
+                categoria: autoD.categoriaDetectada || autoD.fonte || 'ia', enviada: true, viaWebhook: true,
               });
               sacStats.historico = sacStats.historico.slice(0, 50);
             } else { sacStats.falhas++; }
@@ -2895,8 +2899,10 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           return send(res, 200, { success:true, total:0, mensagem:'Nenhuma pergunta pendente ✅' });
         }
         const resultados = [];
+        const usarIA = !!process.env.ANTHROPIC_API_KEY;
+        const rotaResposta = usarIA ? '/api/ml/sac/ia-responder' : '/api/ml/sac/auto-responder';
         for (const p of pendD.perguntas) {
-          const autoR = await fetch(`${base}/api/ml/sac/auto-responder`, {
+          const autoR = await fetch(`${base}${rotaResposta}`, {
             method:'POST',
             headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
             body: JSON.stringify({ questionId:p.id, pergunta:p.texto, itemId:p.itemId }),
@@ -2910,14 +2916,16 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
               body: JSON.stringify({ questionId:p.id, texto: autoD.respostaGerada }),
             });
             const sendD = await sendR.json();
+            const cat = autoD.categoriaDetectada || autoD.fonte || 'ia';
             resultados.push({
               questionId: p.id, pergunta: p.texto,
-              categoria:  autoD.categoriaDetectada,
+              categoria:  cat,
               resposta:   autoD.respostaGerada,
               enviada:    sendD.success,
               erro:       sendD.error || null,
             });
-            console.log(`💬 SAC: "${(p.texto||'').slice(0,50)}..." → ${autoD.categoriaDetectada} → ${sendD.success?'✅ Respondida':'❌ Erro'}`);
+            const logTag = usarIA ? '🧠 [ia-sac]' : '💬 SAC';
+            console.log(`${logTag}: "${(p.texto||'').slice(0,50)}..." → ${cat} → ${sendD.success?'✅ Respondida':'❌ Erro'}`);
             // Stats
             sacStats.tentativas++;
             if (sendD.success) {
@@ -2925,7 +2933,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
               sacStats.historico.unshift({
                 ts: new Date().toISOString(), questionId: p.id,
                 pergunta: (p.texto||'').slice(0,80),
-                categoria: autoD.categoriaDetectada, enviada: true,
+                categoria: cat, enviada: true,
               });
               sacStats.historico = sacStats.historico.slice(0, 50);
             } else {
@@ -2934,7 +2942,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           } else {
             resultados.push({
               questionId: p.id, pergunta: p.texto,
-              categoria:  autoD.categoriaDetectada,
+              categoria:  autoD.categoriaDetectada || autoD.fonte || 'ia',
               respostaSugerida: autoD.respostaGerada,
               preview: true,
             });
@@ -2950,6 +2958,167 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           detalhes:     resultados,
         });
       } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ============= SAC IA GENERATIVA (Claude API) =============
+    // Upgrade do SAC: gera respostas personalizadas via Claude API.
+    // Fallback: se Claude API falhar ou sem ANTHROPIC_API_KEY → usa template do auto-responder.
+    if (u.pathname === '/api/ml/sac/ia-responder' && req.method === 'POST') {
+      const token = getMlToken();
+      if (!token) return send(res, 401, { success:false, error:'sem token ML' });
+      try {
+        const { questionId, pergunta, itemId } = await readBody(req);
+        if (!pergunta) return send(res, 400, { success:false, error:'pergunta obrigatória' });
+
+        // 1. Dados completos do anúncio
+        let itemData = {};
+        if (itemId) {
+          try {
+            const itemResp = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            itemData = await itemResp.json();
+          } catch(_) {}
+        }
+
+        // 2. Compatibilidades
+        let compatibilidades = '';
+        if (itemId) {
+          try {
+            const compatResp = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const compatData = await compatResp.json();
+            if (compatData.products && compatData.products.length > 0) {
+              compatibilidades = compatData.products.slice(0, 15)
+                .map(p => p.catalog_product_name || p.id).join(', ');
+            }
+          } catch(_) {}
+        }
+
+        // 3. Descrição
+        let descricao = '';
+        if (itemId) {
+          try {
+            const descResp = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/description`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const descData = await descResp.json();
+            descricao = (descData.plain_text || descData.text || '').substring(0, 500);
+          } catch(_) {}
+        }
+
+        // 4. Prompt
+        const systemPrompt = `Você é um vendedor profissional de autopeças no Mercado Livre.
+Responda a pergunta do cliente de forma clara, cordial e profissional.
+
+REGRAS OBRIGATÓRIAS:
+- Máximo 350 caracteres (resposta CURTA e direta)
+- NUNCA incluir links, URLs, telefones, emails ou WhatsApp
+- NUNCA mencionar outros marketplaces ou lojas
+- NUNCA combinar venda fora do Mercado Livre
+- Tom profissional e acolhedor
+- Sempre convidar pra compra ("pode comprar com segurança!")
+- Se não souber a resposta, dizer "consulte a descrição do anúncio"
+- Responder em português do Brasil`;
+
+        const userPrompt = `DADOS DO ANÚNCIO:
+Título: ${itemData.title || 'N/A'}
+Preço: R$ ${itemData.price || 'N/A'}
+Estoque: ${itemData.available_quantity || 'N/A'} unidades
+Condição: ${itemData.condition === 'new' ? 'Novo' : 'Usado'}
+Compatibilidades: ${compatibilidades || 'Não informado'}
+Descrição: ${descricao || 'Não disponível'}
+
+PERGUNTA DO CLIENTE:
+"${pergunta}"
+
+Responda de forma curta (máximo 350 caracteres), profissional e convidando pra compra.`;
+
+        // 5. Claude API
+        let respostaIA = null;
+        let fonte = 'template-fallback';
+        if (process.env.ANTHROPIC_API_KEY) {
+          try {
+            const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': process.env.ANTHROPIC_API_KEY,
+                'anthropic-version': '2023-06-01'
+              },
+              body: JSON.stringify({
+                model: 'claude-sonnet-4-20250514',
+                max_tokens: 300,
+                system: systemPrompt,
+                messages: [{ role: 'user', content: userPrompt }]
+              })
+            });
+            if (claudeResp.ok) {
+              const claudeData = await claudeResp.json();
+              respostaIA = claudeData.content?.[0]?.text || null;
+              if (respostaIA) fonte = 'claude-api';
+            } else {
+              console.error('🧠 [ia-sac] Claude API HTTP', claudeResp.status);
+            }
+          } catch(e) {
+            console.error('🧠 [ia-sac] Erro Claude API:', e.message);
+          }
+        }
+
+        // 6. Fallback: template existente
+        if (!respostaIA) {
+          console.log('🧠 [ia-sac] Claude API indisponível — usando fallback template');
+          try {
+            const fallbackResp = await fetch(`http://127.0.0.1:${PORT}/api/ml/sac/auto-responder`, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ questionId, pergunta, itemId })
+            });
+            const fallbackData = await fallbackResp.json();
+            respostaIA = fallbackData.respostaGerada;
+          } catch(e) {
+            console.error('🧠 [ia-sac] Erro fallback template:', e.message);
+          }
+        }
+
+        // 7. Limpar resposta (regras ML)
+        if (typeof limparRespostaSAC === 'function' && respostaIA) {
+          respostaIA = limparRespostaSAC(respostaIA);
+        }
+        if (respostaIA && respostaIA.length > 2000) {
+          respostaIA = respostaIA.substring(0, 1997) + '...';
+        }
+
+        return send(res, 200, {
+          success: true,
+          questionId,
+          pergunta,
+          respostaGerada: respostaIA,
+          fonte,
+          itemTitle: itemData.title || '',
+          preview: true,
+        });
+      } catch (err) {
+        return send(res, 200, { success: false, error: err.message });
+      }
+    }
+
+    // Status da IA generativa
+    if (u.pathname === '/api/ml/sac/ia-status' && req.method === 'GET') {
+      const hasKey = !!process.env.ANTHROPIC_API_KEY;
+      return send(res, 200, {
+        success: true,
+        iaGenerativa: hasKey,
+        modelo: hasKey ? 'claude-sonnet-4-20250514' : null,
+        fallback: 'templates (10 categorias)',
+        custoEstimado: '~R$ 0,03 por resposta',
+        instrucoes: hasKey ? null : {
+          passo1: 'Obter API key em console.anthropic.com',
+          passo2: 'Adicionar no .env do servidor: ANTHROPIC_API_KEY=sk-ant-xxx',
+          passo3: 'Reiniciar o servidor: pm2 restart agente-am',
+        },
+      });
     }
 
     // Excluir pergunta (spam/concorrente)
