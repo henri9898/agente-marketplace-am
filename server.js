@@ -91,13 +91,51 @@ async function mlFetch(url, options = {}) {
   return fetch(url, options);
 }
 
-// Log periódico do rate limiter (a cada 5 min, só se houve atividade)
+// Log periódico do rate limiter (a cada 15 min, só se houve atividade)
 setInterval(() => {
   const st = mlRateLimiter.status();
   if (st.reqUltimoMinuto > 0 || st.bloqueios > 0) {
     console.log(`📊 [rate-limiter] ${st.reqUltimoMinuto}/${st.limite} req/min (${st.percentual}%) | hoje: ${st.totalHoje} | bloqueios: ${st.bloqueios}${st.pausado ? ' | PAUSADO' : ''}`);
   }
-}, 5 * 60 * 1000);
+}, 15 * 60 * 1000);
+
+// ============================================================
+// FETCH COM RETRY — VPS às vezes recebe resposta vazia/timeout da API ML
+// 3 tentativas · timeout 10s · backoff progressivo (2s, 4s, 6s)
+// Uso obrigatório no OAuth (callback + refresh) onde resposta vazia
+// causava "Unexpected end of JSON input"
+// ============================================================
+async function fetchComRetry(url, options = {}, tentativas = 3) {
+  for (let i = 0; i < tentativas; i++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000); // 10s
+
+      const resp = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timeout);
+
+      const text = await resp.text();
+      if (!text || text.trim() === '') {
+        console.log(`[retry] tentativa ${i+1}/${tentativas}: resposta vazia, tentando novamente...`);
+        await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+        continue;
+      }
+
+      try {
+        return { ok: resp.ok, status: resp.status, data: JSON.parse(text) };
+      } catch (e) {
+        console.log(`[retry] tentativa ${i+1}/${tentativas}: JSON inválido: ${text.substring(0, 100)}`);
+        await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+        continue;
+      }
+    } catch (e) {
+      console.log(`[retry] tentativa ${i+1}/${tentativas}: erro: ${e.message}`);
+      await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+      continue;
+    }
+  }
+  return { ok: false, status: 0, data: null, error: 'Todas as tentativas falharam' };
+}
 
 // ---------- usuários (persistência em disco, senha hasheada) ----------
 function loadUsersFile(){
@@ -213,7 +251,8 @@ async function refreshMLToken() {
   }
   try {
     console.log('[ml-refresh] 🔄 renovando token ML...');
-    const r = await mlFetch('https://api.mercadolibre.com/oauth/token', {
+    // fetchComRetry evita "Unexpected end of JSON input" em picos do VPS
+    const result = await fetchComRetry('https://api.mercadolibre.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
       body: new URLSearchParams({
@@ -223,9 +262,9 @@ async function refreshMLToken() {
         refresh_token: refresh,
       }),
     });
-    const data = await r.json().catch(() => ({}));
-    if (!data.access_token) {
-      console.error('[ml-refresh] ❌ falhou:', data.error_description || data.error || data.message || 'sem access_token');
+    const data = result.data || {};
+    if (!result.ok || !data.access_token) {
+      console.error('[ml-refresh] ❌ falhou:', result.error || data.error_description || data.error || data.message || 'sem access_token');
       return null;
     }
     const saved = persistMLTokens(data);
@@ -355,10 +394,10 @@ async function rodarMonitorCompat() {
     console.error('🚗 [compat-monitor] erro:', err.message);
   }
 }
-// A cada 6h
-setInterval(rodarMonitorCompat, 6 * 60 * 60 * 1000);
-// Primeira verificação 30s depois do boot (dá tempo do token estar pronto)
-setTimeout(rodarMonitorCompat, 30_000);
+// A cada 12h (reduzido de 6h pra aliviar rate limit)
+setInterval(rodarMonitorCompat, 12 * 60 * 60 * 1000);
+// Primeira verificação 2min depois do boot (antes era 30s)
+setTimeout(rodarMonitorCompat, 2 * 60 * 1000);
 
 // ============================================================
 // SAC AUTOMÁTICO — stats, regras, monitor 10min
@@ -469,9 +508,10 @@ async function rodarMonitorSAC() {
     // silencioso (ML pode estar momentaneamente fora)
   }
 }
-setInterval(rodarMonitorSAC, 10 * 60 * 1000);
-// Primeira verificação 45s após boot
-setTimeout(rodarMonitorSAC, 45_000);
+// Frequência reduzida: 10min → 30min (evita consumo de requests e 429)
+setInterval(rodarMonitorSAC, 30 * 60 * 1000);
+// Primeira verificação 2min após boot (antes eram 45s)
+setTimeout(rodarMonitorSAC, 2 * 60 * 1000);
 
 // ============================================================
 // ESTOQUE — stats + monitor 30min (só alerta, não força sync sem mapa Bling↔ML)
@@ -503,9 +543,10 @@ async function rodarMonitorEstoque() {
     }
   } catch(err) { /* silencioso */ }
 }
-setInterval(rodarMonitorEstoque, 30 * 60 * 1000);
-// Primeira verificação 60s após boot
-setTimeout(rodarMonitorEstoque, 60_000);
+// Frequência reduzida: 30min → 2h (estoque muda raramente)
+setInterval(rodarMonitorEstoque, 2 * 60 * 60 * 1000);
+// Primeira verificação 2min após boot (antes era 60s)
+setTimeout(rodarMonitorEstoque, 2 * 60 * 1000);
 
 // ============================================================
 // WEBHOOKS ML — processamento assíncrono (chamado por /webhooks)
@@ -1426,9 +1467,11 @@ const server = http.createServer(async (req, res) => {
         return send(res, 500, 'ML_CLIENT_ID/ML_CLIENT_SECRET não configurados no .env do servidor', 'text/plain');
       }
       try {
-        const r = await mlFetch('https://api.mercadolibre.com/oauth/token', {
-          method:'POST',
-          headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
+        // fetchComRetry: 3 tentativas · timeout 10s · backoff progressivo
+        // Resolve "Unexpected end of JSON input" quando o VPS recebe resposta vazia do ML
+        const result = await fetchComRetry('https://api.mercadolibre.com/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/x-www-form-urlencoded', 'Accept':'application/json' },
           body: new URLSearchParams({
             grant_type:   'authorization_code',
             client_id:    clientId,
@@ -1437,13 +1480,13 @@ const server = http.createServer(async (req, res) => {
             redirect_uri: redirectUri,
           }),
         });
-        const data = await r.json();
-        if (!r.ok) {
-          const msg = encodeURIComponent(data.message || data.error || 'Falha ao trocar code por token');
-          console.error('[ml/callback] ❌', data);
+        if (!result.ok || !result.data?.access_token) {
+          const msg = encodeURIComponent(result.data?.message || result.data?.error || result.error || 'Falha ao trocar code por token');
+          console.error('[ml/callback] ❌', result.data || result.error);
           res.writeHead(302, { Location:`/?ml_error=${msg}` });
           return res.end();
         }
+        const data = result.data;
         saveEnv({
           ML_ACCESS_TOKEN:     data.access_token,
           ML_REFRESH_TOKEN:    data.refresh_token,
@@ -2615,6 +2658,49 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         },
         updated_at: tokens.updated_at || null,
       });
+    }
+
+    // POST /api/tokens/manual-connect — reconecta manualmente colando tokens obtidos externamente
+    // (emergência: quando o VPS não consegue trocar code por token e o usuário faz no PC dele)
+    if (u.pathname === '/api/tokens/manual-connect' && req.method === 'POST') {
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const { access_token, refresh_token, expires_in, user_id } = body || {};
+
+        if (!access_token) {
+          return send(res, 200, { success:false, error:'access_token obrigatório' });
+        }
+
+        const expSeconds = Number(expires_in) || 21600;
+        const expiresAt = new Date(Date.now() + expSeconds * 1000).toISOString();
+
+        // Persiste no tokens.json (e via saveTokens, que já aplica chmod 600)
+        const saved = saveTokens({
+          ml_access_token:     access_token,
+          ml_refresh_token:    refresh_token || loadTokens().ml_refresh_token || '',
+          ml_expires_in:       expSeconds,
+          ml_token_expires_at: expiresAt,
+          ml_user_id:          user_id != null ? String(user_id) : (loadTokens().ml_user_id || null),
+        });
+
+        // Espelha no .env pra compat com rotas legadas que leem de env
+        saveEnv({
+          ML_ACCESS_TOKEN:     access_token,
+          ML_REFRESH_TOKEN:    refresh_token || loadEnv().ML_REFRESH_TOKEN || '',
+          ML_USER_ID:          String(user_id || loadEnv().ML_USER_ID || ''),
+          ML_TOKEN_EXPIRES_AT: String(Date.now() + expSeconds * 1000),
+        });
+
+        console.log(`[tokens] ✅ Token salvo manualmente — user_id=${user_id || 'N/A'} · expira ${expiresAt}`);
+        return send(res, 200, {
+          success: true,
+          message: 'Token salvo com sucesso!',
+          expires_at: expiresAt,
+          user_id: saved?.ml_user_id || user_id || null,
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
     }
 
     // POST /api/tokens/refresh-ml — força refresh do ML (via server)
