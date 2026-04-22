@@ -71,24 +71,72 @@ const mlRateLimiter = {
 
 // Wrapper seguro pra fetch do ML — mesma interface de fetch(), mas bloqueia se estourar limite
 // Chamadas pra localhost, Bling, FIPE etc NÃO passam pelo rate limiter (só tráfego ML)
+// Wrapper que torna o fetch tolerante a respostas vazias / erros de rede.
+// Garante que callers que fazem `await r.json()` nunca crashem.
+// Retorna sempre um Response-like com { ok, status, statusText, headers, json(), text() }.
+function _fakeResponse({ ok, status, statusText, payload }) {
+  const jsonBody = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  return {
+    ok, status, statusText,
+    headers: { get: () => null },
+    json: async () => { try { return JSON.parse(jsonBody); } catch(_) { return payload || {}; } },
+    text: async () => jsonBody,
+  };
+}
+
+async function _safeFetch(url, options) {
+  try {
+    const resp = await fetch(url, options);
+    // Lê o body como texto primeiro pra detectar resposta vazia (comum no VPS quando ML retorna 429 seco)
+    const text = await resp.text().catch(() => '');
+    if (!text || !text.trim()) {
+      // Resposta vazia — ML ou infra intermediária não mandou body
+      const degraded = resp.status === 429
+        ? 'ml_rate_limited_upstream'
+        : 'ml_empty_response';
+      return _fakeResponse({
+        ok: false,
+        status: resp.status || 0,
+        statusText: resp.statusText || 'Empty response',
+        payload: { error: degraded, message: degraded, hint: 'ML não retornou body — possível rate-limit no IP do VPS' },
+      });
+    }
+    // Tenta parsear JSON; se não der, preserva texto
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch(_) { parsed = null; }
+    return _fakeResponse({
+      ok: resp.ok,
+      status: resp.status,
+      statusText: resp.statusText,
+      payload: parsed != null ? parsed : text,
+    });
+  } catch (err) {
+    // Erro de rede (DNS, timeout, reset, etc.)
+    return _fakeResponse({
+      ok: false,
+      status: 0,
+      statusText: err.message || 'network_error',
+      payload: { error: 'network_error', message: err.message || 'network_error' },
+    });
+  }
+}
+
 async function mlFetch(url, options = {}) {
   const u = String(url);
   if (u.includes('mercadolibre.com') || u.includes('mercadolivre.com')) {
     if (!mlRateLimiter.podeFazer()) {
       console.log(`🚫 [rate-limiter] Bloqueado: ${u.slice(0, 80)}...`);
-      // Resposta fake compatível com interface do fetch (ok/status/json)
-      return {
+      // Rate limiter INTERNO estourado — não chega nem a bater no ML
+      return _fakeResponse({
         ok: false,
         status: 429,
         statusText: 'Too Many Requests (rate-limiter interno)',
-        headers: { get: () => null },
-        json:  async () => ({ error: 'Rate limit interno — aguarde', message: 'rate_limit_local' }),
-        text:  async () => '{"error":"Rate limit interno — aguarde"}',
-      };
+        payload: { error: 'Rate limit interno — aguarde', message: 'rate_limit_local' },
+      });
     }
     mlRateLimiter.registrar();
   }
-  return fetch(url, options);
+  return _safeFetch(url, options);
 }
 
 // Log periódico do rate limiter (a cada 15 min, só se houve atividade)
@@ -1751,7 +1799,26 @@ const server = http.createServer(async (req, res) => {
           headers: { 'Authorization': 'Bearer ' + token }
         });
         const data = await r.json().catch(() => ({}));
-        if (!r.ok || data.error) return send(res, 200, { connected:false, error: data.message || data.error || 'token inválido' });
+        if (!r.ok || data.error) {
+          // Distingue: (1) ML rate-limitou o IP do VPS  (2) token inválido  (3) rede
+          const code = data.message || data.error || '';
+          const cause =
+            /rate_limit_local/i.test(code)          ? 'rate_limit_local'
+          : /ml_rate_limited_upstream/i.test(code)  ? 'ml_rate_limited_upstream'
+          : /ml_empty_response/i.test(code)         ? 'ml_empty_response'
+          : /network_error/i.test(code)             ? 'network_error'
+          : r.status === 429                         ? 'ml_rate_limited_upstream'
+          : (r.status === 401 || r.status === 403)   ? 'token_invalido'
+          : 'ml_error';
+          const mensagem =
+            cause === 'ml_rate_limited_upstream' ? 'ML rate-limitou este IP do servidor (HTTP 429) — tente de novo em alguns minutos'
+          : cause === 'ml_empty_response'        ? 'ML respondeu vazio — possível bloqueio de rede no VPS'
+          : cause === 'rate_limit_local'         ? 'Rate limiter interno ativado — aguarde'
+          : cause === 'network_error'            ? 'Erro de rede ao falar com o ML'
+          : cause === 'token_invalido'           ? 'Token inválido — reconecte'
+          : (data.message || data.error || 'Erro ao consultar ML');
+          return send(res, 200, { connected:false, error: mensagem, cause, status: r.status });
+        }
         return send(res, 200, {
           connected: true,
           nickname:  data.nickname,
@@ -1762,7 +1829,7 @@ const server = http.createServer(async (req, res) => {
           country_id: data.country_id,
         });
       } catch(err) {
-        return send(res, 200, { connected:false, error: err.message });
+        return send(res, 200, { connected:false, error: err.message, cause: 'exception' });
       }
     }
 
