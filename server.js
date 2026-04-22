@@ -1,3 +1,37 @@
+// ============================================================
+// BOOT: carrega .env pra process.env (ANTHROPIC_API_KEY, ADMIN_SECRET,
+// ML_CLIENT_ID/SECRET, BLING_*, etc.). Tenta dotenv primeiro; se não
+// estiver instalado, faz parse manual — sem dependência externa.
+// ============================================================
+try { require('dotenv').config(); } catch(e) {
+  try {
+    const _fs   = require('fs');
+    const _path = require('path');
+    const _envPath = _path.join(__dirname, '.env');
+    if (_fs.existsSync(_envPath)) {
+      const _envContent = _fs.readFileSync(_envPath, 'utf8');
+      let _count = 0;
+      _envContent.split(/\r?\n/).forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return;
+        const eq = trimmed.indexOf('=');
+        if (eq <= 0) return;
+        const key = trimmed.slice(0, eq).trim();
+        let val = trimmed.slice(eq + 1).trim();
+        // Remove aspas nas pontas (simples ou duplas)
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        if (key && !(key in process.env)) { // não sobrescreve vars já setadas pelo sistema
+          process.env[key] = val;
+          _count++;
+        }
+      });
+      console.log('[boot] ✅ .env carregado (' + _count + ' variáveis)');
+    }
+  } catch(e2) { /* silencioso — se não der, cai nos defaults hardcoded */ }
+}
+
 /**
  * Agente ML — servidor local
  * Serve o dashboard estático E atua como proxy OAuth2 para a API do Mercado Livre.
@@ -4555,10 +4589,10 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         success: true,
         ...mlRateLimiter.status(),
         monitores: {
-          compatibilidade: '6h',
-          sac:             '10min',
-          estoque:         '30min',
-          tokenRefresh:    '5h',
+          compatibilidade: '12h',
+          sac:             '30min',
+          estoque:         '2h',
+          tokenRefresh:    '1h',
         },
       });
     }
