@@ -8992,6 +8992,194 @@ function LogisticaSectorPage(){
 }
 
 // ===== SETOR: 💬 ATENDIMENTO =====
+// ===== MENSAGENS PÓS-VENDA — configuração + histórico + envio manual =====
+function MensagensPosVendaPage(){
+  const [config, setConfig]       = useState(null);
+  const [historico, setHistorico] = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [err, setErr]             = useState(null);
+
+  // envio manual
+  const [manualOrder, setManualOrder] = useState('');
+  const [manualTipo, setManualTipo]   = useState('venda_confirmada');
+  const [enviando, setEnviando]       = useState(false);
+  const [resultado, setResultado]     = useState(null);
+
+  const tokens = loadMLTokens();
+  const authHeader = tokens?.access_token ? { 'Authorization': 'Bearer ' + tokens.access_token } : {};
+
+  const refresh = useCallback(async () => {
+    if (!tokens?.access_token) { setErr('Conecte sua conta ML primeiro'); return; }
+    setLoading(true); setErr(null);
+    try {
+      const [cR, hR] = await Promise.all([
+        fetch('/api/ml/mensagem/config',    { headers: authHeader }),
+        fetch('/api/ml/mensagem/historico', { headers: authHeader }),
+      ]);
+      const cfg = await cR.json();
+      const hist = await hR.json();
+      if (cfg.success) setConfig(cfg.autoEnviar);
+      if (hist.success) setHistorico(hist.mensagens || []);
+    } catch(e) { setErr(e.message); }
+    setLoading(false);
+  }, [tokens?.access_token]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    const id = setInterval(refresh, 30000); // atualiza a cada 30s
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  async function toggleConfig(campo, valor){
+    if (!tokens?.access_token) return;
+    const novo = { ...(config || {}), [campo]: valor };
+    setConfig(novo); // otimista
+    try {
+      const r = await fetch('/api/ml/mensagem/config', {
+        method: 'POST',
+        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [campo]: valor }),
+      });
+      const d = await r.json();
+      if (d.success) setConfig(d.config);
+    } catch(e) { /* silencioso — próxima atualização corrige */ }
+  }
+
+  async function enviarManual(){
+    if (!manualOrder.trim()) { setResultado({ success:false, error:'Informe o orderId' }); return; }
+    if (!tokens?.access_token) { setResultado({ success:false, error:'sem token' }); return; }
+    setEnviando(true); setResultado(null);
+    try {
+      const r = await fetch('/api/ml/mensagem/enviar', {
+        method: 'POST',
+        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: manualOrder.trim(), tipo: manualTipo }),
+      });
+      const d = await r.json();
+      setResultado(d);
+      if (d.success) { setManualOrder(''); await refresh(); }
+    } catch(e) { setResultado({ success:false, error: e.message }); }
+    setEnviando(false);
+  }
+
+  const tipoLabel = {
+    venda_confirmada: { icon:'🛒', label:'Venda confirmada', desc:'"Obrigado pela compra!" quando pedido fica pago' },
+    produto_enviado:  { icon:'📦', label:'Produto enviado',  desc:'"Seu pedido foi enviado!" quando shipment = shipped' },
+    produto_entregue: { icon:'🎉', label:'Produto entregue', desc:'"Recebeu? Avalie!" quando shipment = delivered' },
+  };
+
+  const tempoAtras = (iso) => {
+    if (!iso) return '';
+    const ms = Date.now() - new Date(iso).getTime();
+    const min = Math.floor(ms / 60000);
+    if (min < 1) return 'agora';
+    if (min < 60) return `há ${min}min`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `há ${h}h`;
+    const d = Math.floor(h / 24);
+    return `há ${d}d`;
+  };
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">✉️ Mensagens Pós-Venda</h1>
+          <p className="sub text-sm">Mensagens automáticas acionadas por webhooks (orders_v2 + shipments)</p>
+        </div>
+        <button className="btn-ghost" onClick={refresh} disabled={loading}>
+          {loading ? '🔄 ...' : '🔄 Atualizar'}
+        </button>
+      </div>
+
+      <MLTokenExpiredBanner/>
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+
+      {/* Configuração */}
+      <div className="card p-5 mb-4">
+        <h3 className="font-bold mb-3">⚙️ Configuração — auto-envio</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {['venda_confirmada','produto_enviado','produto_entregue'].map(k => {
+            const info = tipoLabel[k];
+            const ativo = config ? !!config[k] : true;
+            return (
+              <label key={k} className="card p-3 cursor-pointer" style={{background:'rgba(255,255,255,.02)', borderColor: ativo ? 'rgba(0,167,255,.4)' : 'var(--line)'}}>
+                <div className="flex items-start gap-2">
+                  <input type="checkbox" checked={ativo} onChange={e => toggleConfig(k, e.target.checked)} className="mt-1"/>
+                  <div className="flex-1">
+                    <div className="font-bold text-sm">{info.icon} {info.label}</div>
+                    <div className="sub text-xs mt-1">{info.desc}</div>
+                  </div>
+                </div>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Histórico */}
+      <div className="card p-5 mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold">📜 Histórico ({historico.length})</h3>
+          <span className="sub text-xs">últimas 50 mensagens</span>
+        </div>
+        {historico.length === 0 ? (
+          <div className="sub text-xs italic">Nenhuma mensagem enviada ainda — aguardando webhooks de vendas.</div>
+        ) : (
+          <div style={{maxHeight: 320, overflowY:'auto'}}>
+            {historico.slice(0, 50).map((m, i) => {
+              const info = tipoLabel[m.tipo] || { icon:'✉️', label: m.tipo };
+              return (
+                <div key={i} className="flex items-center justify-between py-2 border-b border-[var(--line)] text-sm">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span>{m.sucesso ? '✅' : '❌'}</span>
+                      <span className="font-bold">{info.icon} {m.tipo}</span>
+                      <span className="sub text-xs">→ {m.comprador}</span>
+                    </div>
+                    <div className="sub text-xs mt-1 truncate">{m.item} · pedido <span className="mono">{m.orderId}</span>{m.erro ? ' · ' + m.erro : ''}</div>
+                  </div>
+                  <div className="sub text-xs whitespace-nowrap ml-2">{tempoAtras(m.enviada)}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Envio manual */}
+      <div className="card p-5 mb-4">
+        <h3 className="font-bold mb-3">📨 Envio Manual</h3>
+        <div className="flex flex-wrap gap-2 items-end">
+          <div className="flex-1 min-w-[200px]">
+            <label className="sub text-xs block mb-1">Pedido (orderId)</label>
+            <input type="text" value={manualOrder} onChange={e => setManualOrder(e.target.value)}
+                   placeholder="Ex: 2000009999999999" className="input mono" style={{width:'100%'}}/>
+          </div>
+          <div>
+            <label className="sub text-xs block mb-1">Tipo</label>
+            <select value={manualTipo} onChange={e => setManualTipo(e.target.value)} className="input">
+              <option value="venda_confirmada">🛒 venda_confirmada</option>
+              <option value="produto_enviado">📦 produto_enviado</option>
+              <option value="produto_entregue">🎉 produto_entregue</option>
+            </select>
+          </div>
+          <button className="btn" onClick={enviarManual} disabled={enviando || !manualOrder.trim()}>
+            {enviando ? '📨 ...' : '📨 Enviar Mensagem'}
+          </button>
+        </div>
+        {resultado && (
+          <div className={`mt-3 text-xs ${resultado.success ? 'ok' : 'err'}`}>
+            {resultado.success
+              ? <>✅ Enviada! <span className="sub">(tipo {resultado.tipo}, pedido <span className="mono">{resultado.orderId}</span>)</span></>
+              : <>❌ {resultado.error || 'Falha ao enviar'}</>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AtendimentoSectorPage(){
   const [sub, setSub] = useSubTab('atendimento', 'perguntas');
   const sac = useSAC();
@@ -9007,10 +9195,7 @@ function AtendimentoSectorPage(){
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'perguntas' && <SACPanel sac={sac} inline/>}
-        {sub === 'mensagens' && <ComingSoonCard
-          icon="💬" title="Mensagens pós-venda"
-          description="Mensagens automáticas após compra, envio e entrega. Templates configuráveis."
-          features={['Pós-compra', 'Pós-envio', 'Pós-entrega', 'Templates']}/>}
+        {sub === 'mensagens' && <MensagensPosVendaPage/>}
         {sub === 'avaliacoes' && <ComingSoonCard
           icon="⭐" title="Gestão de Avaliações"
           description="Avaliações recebidas, respostas automáticas com IA, alertas de negativas."

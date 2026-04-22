@@ -516,6 +516,24 @@ global.vendasRecentes = global.vendasRecentes || [];
 global.publicacoesHoje = global.publicacoesHoje || { count:0, items:[], data: new Date().toDateString() };
 
 // ============================================================
+// MENSAGENS PÓS-VENDA — templates + histórico + configuração
+// ============================================================
+global.mensagensPosVenda = global.mensagensPosVenda || [];
+global.msgAutoConfig     = global.msgAutoConfig     || { venda_confirmada:true, produto_enviado:true, produto_entregue:true };
+global.msgEnviadas       = global.msgEnviadas       || new Set(); // deduplica por "orderId:tipo"
+
+const mensagensPosVenda = {
+  venda_confirmada: (comprador, item) =>
+    `Olá ${comprador}! 😊\n\nObrigado pela sua compra de "${item}"!\n\nEstamos preparando seu pedido com todo cuidado. Enviaremos em até 24h úteis após a confirmação do pagamento.\n\nQualquer dúvida, estamos à disposição!\n\nEquipe Agente Marketplace`,
+
+  produto_enviado: (comprador, item, rastreio) =>
+    `Olá ${comprador}! 📦\n\nSeu pedido "${item}" acabou de ser ENVIADO!\n\n${rastreio ? '📍 Rastreamento: ' + rastreio + '\n\n' : ''}Acompanhe a entrega pelo app do Mercado Livre.\n\nBoa compra!\nEquipe Agente Marketplace`,
+
+  produto_entregue: (comprador, item) =>
+    `Olá ${comprador}! 🎉\n\nSeu pedido "${item}" foi entregue!\n\nEsperamos que esteja tudo perfeito! Se puder, avalie sua compra — sua opinião é muito importante pra nós.\n\n⭐ Avalie pelo app do Mercado Livre\n\nObrigado pela confiança!\nEquipe Agente Marketplace`
+};
+
+// ============================================================
 // CATÁLOGO SIMULADO DE AUTOPEÇAS — placeholder até Bling conectar
 // ============================================================
 const catalogoSimulado = [
@@ -711,6 +729,21 @@ async function processarWebhookML(notification, headers) {
             comprador: order.buyer?.nickname || 'N/A',
           });
           if (global.vendasRecentes.length > 50) global.vendasRecentes = global.vendasRecentes.slice(0, 50);
+
+          // Mensagem pós-venda automática: "obrigado pela compra"
+          if (global.msgAutoConfig.venda_confirmada !== false) {
+            const dedupKey = `${order.id}:venda_confirmada`;
+            if (!global.msgEnviadas.has(dedupKey)) {
+              global.msgEnviadas.add(dedupKey);
+              try {
+                await fetch(`http://127.0.0.1:${PORT}/api/ml/mensagem/enviar`, {
+                  method: 'POST',
+                  headers: { 'Authorization': 'Bearer ' + mlToken, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ orderId: order.id, tipo: 'venda_confirmada' }),
+                });
+              } catch(e) { console.error('✉️ [pós-venda] erro auto venda_confirmada:', e.message); }
+            }
+          }
         } else {
           console.log(`🔔🛒 Pedido #${order.id} status=${order.status}`);
         }
@@ -744,6 +777,34 @@ async function processarWebhookML(notification, headers) {
           headers:{ 'Authorization':'Bearer '+mlToken, 'x-format-new':'true' }});
         const shipment = await sR.json();
         console.log(`🔔🚚 Envio ${shipment.id}: ${shipment.status}/${shipment.substatus || '-'}`);
+
+        // Mensagem pós-venda automática para shipped / delivered
+        const tipoMsg = shipment.status === 'shipped' ? 'produto_enviado'
+                      : shipment.status === 'delivered' ? 'produto_entregue'
+                      : null;
+        if (tipoMsg && global.msgAutoConfig[tipoMsg] !== false) {
+          try {
+            const orderSearch = await mlFetch(
+              `https://api.mercadolibre.com/orders/search?seller=${user_id}&shipping.id=${shipment.id}`,
+              { headers:{ 'Authorization':'Bearer '+mlToken } }
+            );
+            const orderData = await orderSearch.json();
+            const orderId = orderData?.results?.[0]?.id;
+            if (orderId) {
+              const dedupKey = `${orderId}:${tipoMsg}`;
+              if (!global.msgEnviadas.has(dedupKey)) {
+                global.msgEnviadas.add(dedupKey);
+                await fetch(`http://127.0.0.1:${PORT}/api/ml/mensagem/enviar`, {
+                  method: 'POST',
+                  headers: { 'Authorization': 'Bearer ' + mlToken, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ orderId, tipo: tipoMsg }),
+                });
+              }
+            } else {
+              console.log(`✉️ [pós-venda] ${tipoMsg}: não achei orderId para shipment ${shipment.id}`);
+            }
+          } catch(e) { console.error(`✉️ [pós-venda] erro auto ${tipoMsg}:`, e.message); }
+        }
         break;
       }
 
@@ -3940,6 +4001,130 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           },
         });
       } catch(err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // ============================================================
+    // MENSAGENS PÓS-VENDA — envio, histórico e configuração
+    // ============================================================
+
+    // POST /api/ml/mensagem/enviar — envia mensagem pós-venda (venda_confirmada | produto_enviado | produto_entregue)
+    if (u.pathname === '/api/ml/mensagem/enviar' && req.method === 'POST') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const { orderId, tipo } = await readBody(req).catch(() => ({}));
+        if (!orderId || !tipo) return send(res, 200, { success:false, error:'orderId e tipo são obrigatórios' });
+
+        const template = mensagensPosVenda[tipo];
+        if (!template) return send(res, 200, { success:false, error:'Tipo inválido' });
+
+        const orderResp = await mlFetch(`https://api.mercadolibre.com/orders/${orderId}`, {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const order = await orderResp.json();
+        if (!orderResp.ok || !order.id) {
+          return send(res, 200, { success:false, error: order.message || 'Pedido não encontrado' });
+        }
+
+        const meResp = await mlFetch('https://api.mercadolibre.com/users/me', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const me = await meResp.json();
+        if (!meResp.ok || !me.id) {
+          return send(res, 200, { success:false, error:'Token inválido' });
+        }
+
+        const comprador = order.buyer?.first_name || order.buyer?.nickname || 'Cliente';
+        const item = order.order_items?.[0]?.item?.title || 'seu produto';
+        const packId = order.pack_id || order.id;
+
+        // Rastreio só para produto_enviado
+        let rastreio = '';
+        if (tipo === 'produto_enviado' && order.shipping?.id) {
+          try {
+            const shipResp = await mlFetch(`https://api.mercadolibre.com/shipments/${order.shipping.id}`, {
+              headers: { 'Authorization': 'Bearer ' + token, 'x-format-new': 'true' }
+            });
+            const ship = await shipResp.json();
+            rastreio = ship.tracking_number || '';
+          } catch(e) {}
+        }
+
+        const texto = template(comprador, item, rastreio);
+
+        const msgResp = await mlFetch(
+          `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${me.id}`,
+          {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: texto })
+          }
+        );
+        const msgData = await msgResp.json().catch(() => ({}));
+
+        if (msgResp.ok) {
+          console.log(`✉️ [pós-venda] ${tipo}: pedido ${orderId} → ${comprador} ✅`);
+          global.mensagensPosVenda.unshift({
+            orderId, tipo, comprador, item,
+            enviada: new Date().toISOString(),
+            sucesso: true,
+          });
+          if (global.mensagensPosVenda.length > 50) {
+            global.mensagensPosVenda = global.mensagensPosVenda.slice(0, 50);
+          }
+          return send(res, 200, { success:true, mensagem: texto, tipo, orderId });
+        } else {
+          console.error(`✉️ [pós-venda] ❌ ${tipo}: ${msgData.message || JSON.stringify(msgData)}`);
+          global.mensagensPosVenda.unshift({
+            orderId, tipo, comprador, item,
+            enviada: new Date().toISOString(),
+            sucesso: false,
+            erro: msgData.message || 'Erro ao enviar',
+          });
+          if (global.mensagensPosVenda.length > 50) {
+            global.mensagensPosVenda = global.mensagensPosVenda.slice(0, 50);
+          }
+          return send(res, 200, { success:false, error: msgData.message || 'Erro ao enviar', details: msgData });
+        }
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // GET /api/ml/mensagem/historico — últimas 50 mensagens enviadas
+    if (u.pathname === '/api/ml/mensagem/historico' && req.method === 'GET') {
+      return send(res, 200, {
+        success: true,
+        mensagens: global.mensagensPosVenda || [],
+        total: (global.mensagensPosVenda || []).length,
+      });
+    }
+
+    // GET /api/ml/mensagem/config — status das mensagens automáticas
+    if (u.pathname === '/api/ml/mensagem/config' && req.method === 'GET') {
+      return send(res, 200, {
+        success: true,
+        autoEnviar: {
+          venda_confirmada: global.msgAutoConfig?.venda_confirmada ?? true,
+          produto_enviado:  global.msgAutoConfig?.produto_enviado  ?? true,
+          produto_entregue: global.msgAutoConfig?.produto_entregue ?? true,
+        },
+        templates: Object.keys(mensagensPosVenda),
+      });
+    }
+
+    // POST /api/ml/mensagem/config — atualiza flags de auto-envio
+    if (u.pathname === '/api/ml/mensagem/config' && req.method === 'POST') {
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        if (!global.msgAutoConfig) global.msgAutoConfig = {};
+        if (body.venda_confirmada !== undefined) global.msgAutoConfig.venda_confirmada = !!body.venda_confirmada;
+        if (body.produto_enviado  !== undefined) global.msgAutoConfig.produto_enviado  = !!body.produto_enviado;
+        if (body.produto_entregue !== undefined) global.msgAutoConfig.produto_entregue = !!body.produto_entregue;
+        return send(res, 200, { success:true, config: global.msgAutoConfig });
+      } catch(e) {
+        return send(res, 200, { success:false, error: e.message });
+      }
     }
 
     // ============================================================
