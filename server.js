@@ -786,6 +786,49 @@ global.ajustesPreco = global.ajustesPreco || [];
 // Fila de publicação com retry (últimas 50 tentativas)
 global.filaPublicacao = global.filaPublicacao || [];
 
+// ============================================================
+// ERROS DE INTEGRAÇÃO — painel centralizado
+// ============================================================
+global.errosIntegracao = global.errosIntegracao || [];
+function registrarErro(origem, mensagem, detalhes = null) {
+  global.errosIntegracao.unshift({
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    origem,  // 'publicacao' | 'sac' | 'estoque' | 'pedido' | 'webhook' | 'auth'
+    mensagem: String(mensagem || ''),
+    detalhes,
+    data: new Date().toISOString(),
+    resolvido: false,
+  });
+  if (global.errosIntegracao.length > 200) {
+    global.errosIntegracao = global.errosIntegracao.slice(0, 200);
+  }
+  console.error(`❌ [erro-${origem}] ${mensagem}`);
+}
+
+// ============================================================
+// TEMPLATES DE MENSAGEM EDITÁVEIS — persistidos em msg-templates.json
+// ============================================================
+const TEMPLATES_FILE = path.join(ROOT, 'msg-templates.json');
+global.msgTemplates = global.msgTemplates || null;
+(function loadTemplatesFromDisk(){
+  try {
+    if (fs.existsSync(TEMPLATES_FILE)) {
+      global.msgTemplates = JSON.parse(fs.readFileSync(TEMPLATES_FILE, 'utf8'));
+      console.log('[boot] ✅ Templates de mensagem carregados');
+    }
+  } catch (e) { /* cai nos defaults */ }
+})();
+
+// ============================================================
+// CONFIG DE ESTOQUE — reserva de segurança, alerta etc.
+// ============================================================
+global.estoqueConfig = global.estoqueConfig || {
+  reservaSeguranca:    0,  // unidades reservadas (não vão pro ML)
+  alertaBaixo:         3,  // alerta quando estoque <= X
+  pausarQuandoZero:    true,
+  reativarQuandoVoltar:true,
+};
+
 const mensagensPosVenda = {
   venda_confirmada: (comprador, item) =>
     `Olá ${comprador}! 😊\n\nObrigado pela sua compra de "${item}"!\n\nEstamos preparando seu pedido com todo cuidado. Enviaremos em até 24h úteis após a confirmação do pagamento.\n\nQualquer dúvida, estamos à disposição!\n\nEquipe Agente Marketplace`,
@@ -814,6 +857,12 @@ const catalogoSimulado = [
     imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
     compatibilidade: ['Volkswagen Gol G5 2008-2012','Volkswagen Gol G6 2012-2016','Volkswagen Voyage 2008-2016','Volkswagen Saveiro 2010-2016'],
     peso_g: 450,
+    ean: '7890000000001',
+    modelo: 'PF-GOL-G5',
+    inmetro: 'REG 012345/2024',
+    altura_cm: 5,
+    largura_cm: 12,
+    comprimento_cm: 15,
     ativo: true,
   },
   {
@@ -829,6 +878,12 @@ const catalogoSimulado = [
     imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
     compatibilidade: ['Honda Civic 2012','Honda Civic 2013','Honda Civic 2014','Honda Civic 2015','Honda Civic 2016'],
     peso_g: 1200,
+    ean: '7890000000002',
+    modelo: 'AM-CIVIC-12',
+    inmetro: 'REG 023456/2024',
+    altura_cm: 45,
+    largura_cm: 12,
+    comprimento_cm: 12,
     ativo: true,
   },
   {
@@ -844,6 +899,12 @@ const catalogoSimulado = [
     imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
     compatibilidade: ['Toyota Corolla 2009-2014','Toyota Corolla 2015-2019'],
     peso_g: 2800,
+    ean: '7890000000003',
+    modelo: 'DF-COROLLA-09',
+    inmetro: 'REG 034567/2024',
+    altura_cm: 30,
+    largura_cm: 30,
+    comprimento_cm: 6,
     ativo: true,
   },
   {
@@ -3890,12 +3951,16 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
 
         const { score, precoVenda } = scoreProdutoSimulado(produto);
 
+        // GAP 8 — aplica reserva de segurança
+        const reserva = (global.estoqueConfig?.reservaSeguranca) || 0;
+        const estoqueParaML = Math.max(0, (produto.estoque || 0) - reserva);
+
         const payload = {
           title: produto.titulo.substring(0, 60),
           category_id: produto.categoria_ml,
           price: +precoVenda.toFixed(2),
           currency_id: 'BRL',
-          available_quantity: Math.min(produto.estoque, 50),
+          available_quantity: Math.min(estoqueParaML, 50),
           buying_mode: 'buy_it_now',
           condition: produto.condicao,
           listing_type_id: 'gold_special',
@@ -3908,6 +3973,44 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
             { id: 'ITEM_CONDITION', value_id: '2230284' },
           ],
         };
+
+        // GAP 2 — Inmetro pra autopeças
+        if (produto.inmetro) {
+          payload.attributes.push({ id: 'INMETRO_CERTIFICATION', value_name: String(produto.inmetro) });
+        }
+
+        // GAP 1 — auto-preenchimento de atributos obrigatórios da categoria
+        if (produto.categoria_ml && token) {
+          try {
+            const attrResp = await mlFetch(
+              `https://api.mercadolibre.com/categories/${produto.categoria_ml}/attributes`,
+              { headers: { 'Authorization': 'Bearer ' + token } }
+            );
+            if (attrResp.ok) {
+              const attrs = await attrResp.json().catch(() => []);
+              const obrigatorios = (Array.isArray(attrs) ? attrs : []).filter(a => a.tags?.required);
+              for (const attr of obrigatorios) {
+                if (payload.attributes.some(a => a.id === attr.id)) continue; // já temos
+                if (attr.id === 'GTIN' && produto.ean) {
+                  payload.attributes.push({ id: 'GTIN', value_name: String(produto.ean) });
+                } else if (attr.id === 'SELLER_SKU' && produto.sku) {
+                  payload.attributes.push({ id: 'SELLER_SKU', value_name: String(produto.sku) });
+                } else if (attr.id === 'PACKAGE_WEIGHT' && produto.peso_g) {
+                  payload.attributes.push({ id: 'PACKAGE_WEIGHT', value_name: String(produto.peso_g) + ' g' });
+                } else if (attr.id === 'ALPHANUMERIC_MODEL') {
+                  payload.attributes.push({ id: 'ALPHANUMERIC_MODEL', value_name: String(produto.modelo || produto.sku || '') });
+                } else if (attr.id === 'MANUFACTURER') {
+                  payload.attributes.push({ id: 'MANUFACTURER', value_name: String(produto.marca || '') });
+                } else if (Array.isArray(attr.values) && attr.values.length > 0) {
+                  // Fallback: usa o primeiro value disponível pra não falhar
+                  payload.attributes.push({ id: attr.id, value_id: attr.values[0].id });
+                }
+              }
+            }
+          } catch (e) {
+            console.log('[agente] ⚠️ Atributos da categoria não puderam ser lidos:', e.message);
+          }
+        }
 
         if (modoTeste) {
           console.log(`🤖 [agente] MODO TESTE: ${produto.titulo} → R$ ${precoVenda.toFixed(2)} (não publicado)`);
@@ -4093,6 +4196,16 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           avisos.push('Imagem placeholder detectada — substitua por foto real');
         if (!produto.compatibilidade || produto.compatibilidade.length === 0)
           avisos.push('Sem compatibilidade — recomendado pra autopeças');
+
+        // GAP 2 — Inmetro obrigatório para autopeças (categorias comuns)
+        const categoriasAutopeças = ['MLB180634','MLB449571','MLB180635','MLB455239','MLB455227',
+          'MLB1747','MLB6312','MLB6316','MLB6320','MLB6308','MLB6328'];
+        const ehAutopeca = produto.categoria_ml && categoriasAutopeças.some(c =>
+          produto.categoria_ml?.startsWith(c.substring(0, 6))
+        );
+        if (ehAutopeca && !produto.inmetro) {
+          avisos.push('⚠️ Autopeças exigem certificação Inmetro — adicione o registro');
+        }
 
         // Atributos obrigatórios da categoria (só se token disponível)
         if (produto.categoria_ml && token) {
@@ -5160,6 +5273,8 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
 
         const template = mensagensPosVenda[tipo];
         if (!template) return send(res, 200, { success:false, error:'Tipo inválido' });
+        // Template editável tem precedência — usa o do global.msgTemplates se existir
+        const templateEditavel = global.msgTemplates && global.msgTemplates[tipo];
 
         const orderResp = await mlFetch(`https://api.mercadolibre.com/orders/${orderId}`, {
           headers: { 'Authorization': 'Bearer ' + token }
@@ -5193,7 +5308,13 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           } catch(e) {}
         }
 
-        const texto = template(comprador, item, rastreio);
+        // Se tem template editável, substitui placeholders; senão usa função hardcoded
+        const texto = templateEditavel
+          ? String(templateEditavel)
+              .replace(/\{comprador\}/g, comprador)
+              .replace(/\{item\}/g, item)
+              .replace(/\{rastreio\}/g, rastreio ? '📍 Rastreamento: ' + rastreio + '\n\n' : '')
+          : template(comprador, item, rastreio);
 
         const msgResp = await mlFetch(
           `https://api.mercadolibre.com/messages/packs/${packId}/sellers/${me.id}`,
@@ -5267,6 +5388,293 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         return send(res, 200, { success:true, config: global.msgAutoConfig });
       } catch(e) {
         return send(res, 200, { success:false, error: e.message });
+      }
+    }
+
+    // ============================================================
+    // GAP 1 — ATRIBUTOS OBRIGATÓRIOS DA CATEGORIA ML
+    // ============================================================
+    if (u.pathname.startsWith('/api/ml/categoria/') && u.pathname.endsWith('/atributos') && req.method === 'GET') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const categoryId = u.pathname.split('/')[4];
+        const catResp = await mlFetch(
+          `https://api.mercadolibre.com/categories/${categoryId}/attributes`,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        if (!catResp.ok) {
+          return send(res, 200, { success:false, error:'Categoria não encontrada' });
+        }
+        const attrs = await catResp.json().catch(() => []);
+        const obrigatorios = (Array.isArray(attrs) ? attrs : []).filter(a => a.tags?.required || a.tags?.catalog_required);
+        const recomendados = (Array.isArray(attrs) ? attrs : []).filter(a => !a.tags?.required && !a.tags?.catalog_required && a.tags?.recommended);
+        const opcionais    = (Array.isArray(attrs) ? attrs : []).filter(a => !a.tags?.required && !a.tags?.catalog_required && !a.tags?.recommended);
+
+        return send(res, 200, {
+          success: true,
+          categoryId,
+          total: Array.isArray(attrs) ? attrs.length : 0,
+          obrigatorios: obrigatorios.map(a => ({
+            id: a.id,
+            nome: a.name,
+            tipo: a.value_type,
+            valores: a.values?.slice(0, 20)?.map(v => ({ id: v.id, nome: v.name })) || [],
+            unidade: a.units?.map(u => u.id) || null,
+          })),
+          recomendados: recomendados.map(a => ({ id: a.id, nome: a.name, tipo: a.value_type })),
+          totalObrigatorios: obrigatorios.length,
+          totalRecomendados: recomendados.length,
+          totalOpcionais:    opcionais.length,
+        });
+      } catch (error) {
+        registrarErro('publicacao', 'Falha buscando atributos da categoria', { error: error.message });
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // ============================================================
+    // GAP 3 — EDIÇÃO EM MASSA (preço / estoque / título / status)
+    // ============================================================
+    if (u.pathname === '/api/ml/anuncios/editar-massa' && req.method === 'PUT') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const alteracoes = Array.isArray(body.alteracoes) ? body.alteracoes : [];
+        if (alteracoes.length === 0) {
+          return send(res, 200, { success:false, error:'Nenhuma alteração informada' });
+        }
+
+        const resultados = [];
+        for (const alt of alteracoes.slice(0, 50)) {
+          try {
+            const mlBody = {};
+            if (alt.preco   != null)   mlBody.price              = Number(alt.preco);
+            if (alt.estoque !== undefined) mlBody.available_quantity = Number(alt.estoque);
+            if (alt.titulo)            mlBody.title              = String(alt.titulo).substring(0, 60);
+            if (alt.status)            mlBody.status             = alt.status;
+
+            const updateResp = await mlFetch(`https://api.mercadolibre.com/items/${alt.itemId}`, {
+              method: 'PUT',
+              headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+              body: JSON.stringify(mlBody),
+            });
+            const upData = await updateResp.json().catch(() => ({}));
+            resultados.push({
+              itemId: alt.itemId,
+              success: updateResp.ok,
+              alteracoes: Object.keys(mlBody),
+              error: updateResp.ok ? null : (upData.message || 'erro'),
+            });
+            if (!updateResp.ok) registrarErro('publicacao', `Falha edição massa ${alt.itemId}`, upData);
+            await new Promise(r => setTimeout(r, 500));
+          } catch (e) {
+            resultados.push({ itemId: alt.itemId, success:false, error: e.message });
+            registrarErro('publicacao', `Exceção edição massa ${alt.itemId}`, { error: e.message });
+          }
+        }
+
+        console.log(`📝 [massa] ${resultados.filter(r => r.success).length}/${resultados.length} alterados`);
+        return send(res, 200, {
+          success: true,
+          total:   resultados.length,
+          sucesso: resultados.filter(r => r.success).length,
+          falhas:  resultados.filter(r => !r.success).length,
+          resultados,
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // ============================================================
+    // GAP 4 — ETIQUETAS EM LOTE (PDF único com todos os envios pendentes)
+    // ============================================================
+    if (u.pathname === '/api/ml/envios/etiquetas-lote' && req.method === 'GET') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const base = `http://127.0.0.1:${PORT}`;
+        const pedidosResp = await fetch(`${base}/api/ml/pedidos?status=paid`, {
+          headers: { 'Authorization': 'Bearer ' + token },
+        });
+        const pedidosData = await pedidosResp.json().catch(() => ({}));
+        const shipmentIds = (pedidosData.pedidos || [])
+          .filter(p => p.envio?.id)
+          .map(p => p.envio.id);
+
+        if (shipmentIds.length === 0) {
+          return send(res, 200, { success:false, error:'Nenhum envio pendente pra gerar etiqueta' });
+        }
+
+        const ids = shipmentIds.join(',');
+        const labelResp = await mlFetch(
+          `https://api.mercadolibre.com/shipment_labels?shipment_ids=${ids}&response_type=pdf`,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        if (labelResp.ok) {
+          // _safeFetch retorna fakeResponse — pego o raw via text()+base64? Não dá.
+          // Melhor: bypass do _safeFetch fazendo fetch direto (só aqui, pra PDF binário)
+          const rawResp = await fetch(
+            `https://api.mercadolibre.com/shipment_labels?shipment_ids=${ids}&response_type=pdf`,
+            { headers: { 'Authorization': 'Bearer ' + token } }
+          );
+          if (!rawResp.ok) {
+            return send(res, 200, { success:false, error:'Erro ao gerar etiquetas em lote' });
+          }
+          const buffer = await rawResp.arrayBuffer();
+          res.writeHead(200, {
+            'Content-Type':        'application/pdf',
+            'Content-Disposition': 'inline; filename="etiquetas-lote.pdf"',
+            'Access-Control-Allow-Origin': '*',
+          });
+          console.log(`🏷️ [etiquetas] Lote gerado: ${shipmentIds.length} etiquetas`);
+          return res.end(Buffer.from(buffer));
+        }
+        return send(res, 200, { success:false, error:'Erro ao gerar etiquetas em lote' });
+      } catch (error) {
+        registrarErro('pedido', 'Falha etiquetas em lote', { error: error.message });
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // ============================================================
+    // GAP 5 — PREÇO POR TIPO DE LISTAGEM (Clássico vs Premium)
+    // ============================================================
+    if (u.pathname === '/api/ml/preco/calcular-por-listagem' && req.method === 'POST') {
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const custo = Number(body.custo) || 0;
+        const margemDesejada = Number(body.margemDesejada) || 20;
+        if (custo <= 0) return send(res, 200, { success:false, error:'custo inválido' });
+
+        const comissoes = {
+          classico: { taxa: 0.13, nome: 'Clássico', frete_gratis: false },
+          premium:  { taxa: 0.18, nome: 'Premium',  frete_gratis: true  },
+        };
+        const resultados = {};
+        for (const [tipo, config] of Object.entries(comissoes)) {
+          const denominador = 1 - config.taxa - (margemDesejada / 100);
+          if (denominador <= 0) continue;
+          const precoVenda = custo / denominador;
+          const comissaoReais = precoVenda * config.taxa;
+          const lucro = precoVenda - custo - comissaoReais;
+          const margemReal = (lucro / precoVenda) * 100;
+          resultados[tipo] = {
+            nome: config.nome,
+            precoVenda:      parseFloat(precoVenda.toFixed(2)),
+            comissao:        parseFloat(comissaoReais.toFixed(2)),
+            comissaoPercent: (config.taxa * 100).toFixed(1) + '%',
+            lucro:           parseFloat(lucro.toFixed(2)),
+            margemReal:      parseFloat(margemReal.toFixed(1)),
+            freteGratis:     config.frete_gratis,
+          };
+        }
+        const c = resultados.classico, p = resultados.premium;
+        return send(res, 200, {
+          success: true,
+          custo, margemDesejada,
+          classico: c, premium: p,
+          diferencaPreco: p && c ? parseFloat((p.precoVenda - c.precoVenda).toFixed(2)) : null,
+          recomendacao: p && p.precoVenda >= 79
+            ? '✅ Premium recomendado (frete grátis ativo)'
+            : '⚠️ Clássico pode ser melhor (produto barato)',
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // ============================================================
+    // GAP 6 — TEMPLATES EDITÁVEIS (GET lista · PUT salva)
+    // ============================================================
+    if (u.pathname === '/api/ml/mensagem/templates' && req.method === 'GET') {
+      // Defaults a partir das funções hardcoded (dá pro usuário ver/editar)
+      if (!global.msgTemplates) {
+        global.msgTemplates = {
+          venda_confirmada: 'Olá {comprador}! 😊\n\nObrigado pela sua compra de "{item}"!\n\nEstamos preparando seu pedido com todo cuidado. Enviaremos em até 24h úteis.\n\nQualquer dúvida, estamos à disposição!\n\nEquipe Agente Marketplace',
+          produto_enviado:  'Olá {comprador}! 📦\n\nSeu pedido "{item}" acabou de ser ENVIADO!\n\n{rastreio}Acompanhe a entrega pelo app do Mercado Livre.\n\nBoa compra!\nEquipe Agente Marketplace',
+          produto_entregue: 'Olá {comprador}! 🎉\n\nSeu pedido "{item}" foi entregue!\n\nEsperamos que esteja tudo perfeito! Se puder, avalie sua compra — sua opinião é muito importante pra nós.\n\n⭐ Avalie pelo app do Mercado Livre\n\nObrigado pela confiança!\nEquipe Agente Marketplace',
+        };
+      }
+      return send(res, 200, { success:true, templates: global.msgTemplates, placeholders:['{comprador}','{item}','{rastreio}'] });
+    }
+    if (u.pathname === '/api/ml/mensagem/templates' && req.method === 'PUT') {
+      try {
+        const adminSecret = process.env.ADMIN_SECRET || loadEnv().ADMIN_SECRET || 'agente-marketplace-2026';
+        const providedSecret = req.headers['x-admin-secret'] || req.headers['X-Admin-Secret'];
+        if (providedSecret !== adminSecret) {
+          return send(res, 403, { success:false, error:'Acesso negado — X-Admin-Secret inválido' });
+        }
+        const body = await readBody(req).catch(() => ({}));
+        if (!global.msgTemplates) global.msgTemplates = {};
+        if (body.venda_confirmada) global.msgTemplates.venda_confirmada = String(body.venda_confirmada);
+        if (body.produto_enviado)  global.msgTemplates.produto_enviado  = String(body.produto_enviado);
+        if (body.produto_entregue) global.msgTemplates.produto_entregue = String(body.produto_entregue);
+
+        try {
+          fs.writeFileSync(TEMPLATES_FILE, JSON.stringify(global.msgTemplates, null, 2));
+          try { fs.chmodSync(TEMPLATES_FILE, 0o600); } catch(_){}
+        } catch (e) { /* não bloqueia — fica só em memória */ }
+
+        console.log('✉️ [templates] Atualizados com sucesso');
+        return send(res, 200, { success:true, templates: global.msgTemplates });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // ============================================================
+    // GAP 7 — ERROS DE INTEGRAÇÃO (listar / resolver)
+    // ============================================================
+    if (u.pathname === '/api/erros' && req.method === 'GET') {
+      const erros = global.errosIntegracao || [];
+      const naoResolvidos = erros.filter(e => !e.resolvido);
+      return send(res, 200, {
+        success: true,
+        total: erros.length,
+        naoResolvidos: naoResolvidos.length,
+        erros: erros.slice(0, 50),
+        porOrigem: {
+          publicacao: erros.filter(e => e.origem === 'publicacao').length,
+          sac:        erros.filter(e => e.origem === 'sac').length,
+          estoque:    erros.filter(e => e.origem === 'estoque').length,
+          pedido:     erros.filter(e => e.origem === 'pedido').length,
+          webhook:    erros.filter(e => e.origem === 'webhook').length,
+          auth:       erros.filter(e => e.origem === 'auth').length,
+        },
+      });
+    }
+    if (u.pathname.startsWith('/api/erros/') && u.pathname.endsWith('/resolver') && req.method === 'POST') {
+      const idStr = u.pathname.split('/')[3];
+      const id = parseInt(idStr, 10);
+      const erro = (global.errosIntegracao || []).find(e => e.id === id);
+      if (erro) {
+        erro.resolvido = true;
+        erro.resolvidoEm = new Date().toISOString();
+        return send(res, 200, { success:true });
+      }
+      return send(res, 200, { success:false, error:'Erro não encontrado' });
+    }
+
+    // ============================================================
+    // GAP 8 — CONFIG DE ESTOQUE (reserva de segurança + alertas)
+    // ============================================================
+    if (u.pathname === '/api/estoque/config' && req.method === 'GET') {
+      return send(res, 200, { success:true, config: global.estoqueConfig });
+    }
+    if (u.pathname === '/api/estoque/config' && req.method === 'POST') {
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        if (body.reservaSeguranca     !== undefined) global.estoqueConfig.reservaSeguranca    = Math.max(0, parseInt(body.reservaSeguranca, 10) || 0);
+        if (body.alertaBaixo          !== undefined) global.estoqueConfig.alertaBaixo         = Math.max(0, parseInt(body.alertaBaixo, 10) || 0);
+        if (body.pausarQuandoZero     !== undefined) global.estoqueConfig.pausarQuandoZero    = !!body.pausarQuandoZero;
+        if (body.reativarQuandoVoltar !== undefined) global.estoqueConfig.reativarQuandoVoltar = !!body.reativarQuandoVoltar;
+        console.log(`📦 [estoque] Config: reserva=${global.estoqueConfig.reservaSeguranca}, alerta=${global.estoqueConfig.alertaBaixo}`);
+        return send(res, 200, { success:true, config: global.estoqueConfig });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
       }
     }
 

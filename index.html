@@ -9429,6 +9429,8 @@ function EtiquetasPage(){
   const etiquetaHref = (shipmentId) =>
     `/api/ml/envios/${shipmentId}/etiqueta?access_token=${encodeURIComponent(tokens?.access_token || '')}`;
 
+  const loteHref = `/api/ml/envios/etiquetas-lote?access_token=${encodeURIComponent(tokens?.access_token || '')}`;
+
   return (
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
@@ -9436,9 +9438,17 @@ function EtiquetasPage(){
           <h1 className="text-2xl font-extrabold">🏷️ Etiquetas de Envio</h1>
           <p className="sub text-sm">Clique em "Gerar PDF" pra abrir a etiqueta pronta pra impressão.</p>
         </div>
-        <button className="btn-ghost" onClick={refresh} disabled={loading}>
-          {loading ? '🔄 ...' : '🔄 Atualizar'}
-        </button>
+        <div className="flex gap-2 flex-wrap">
+          {pedidos.length > 0 && (
+            <a className="btn" href={loteHref} target="_blank" rel="noreferrer"
+               style={{padding:'8px 14px'}}>
+              🏷️ Gerar Todas ({pedidos.length} PDF)
+            </a>
+          )}
+          <button className="btn-ghost" onClick={refresh} disabled={loading}>
+            {loading ? '🔄 ...' : '🔄 Atualizar'}
+          </button>
+        </div>
       </div>
 
       <MLTokenExpiredBanner/>
@@ -10138,6 +10148,93 @@ function MensagensPosVendaPage(){
           </div>
         )}
       </div>
+
+      <TemplatesEditor/>
+    </div>
+  );
+}
+
+// ===== Editor de templates de mensagem pós-venda =====
+function TemplatesEditor(){
+  const [templates, setTemplates]       = useState(null);
+  const [loading, setLoading]           = useState(false);
+  const [saving, setSaving]             = useState(false);
+  const [msg, setMsg]                   = useState(null);
+  const [local, setLocal]               = useState({ venda_confirmada:'', produto_enviado:'', produto_entregue:'' });
+
+  const refresh = useCallback(async () => {
+    setLoading(true); setMsg(null);
+    try {
+      const r = await fetch('/api/ml/mensagem/templates');
+      const d = await r.json();
+      if (d.success) {
+        setTemplates(d.templates);
+        setLocal({
+          venda_confirmada: d.templates.venda_confirmada || '',
+          produto_enviado:  d.templates.produto_enviado  || '',
+          produto_entregue: d.templates.produto_entregue || '',
+        });
+      }
+    } catch(e) { setMsg({ ok:false, text: e.message }); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function salvar(){
+    setSaving(true); setMsg(null);
+    try {
+      const r = await fetch('/api/ml/mensagem/templates', {
+        method: 'PUT',
+        headers: { 'Content-Type':'application/json', 'X-Admin-Secret': getAdminSecret() },
+        body: JSON.stringify(local),
+      });
+      const d = await r.json();
+      if (d.success) {
+        setTemplates(d.templates);
+        setMsg({ ok:true, text:'Templates salvos!' });
+      } else {
+        setMsg({ ok:false, text: d.error || 'Falha ao salvar' });
+      }
+    } catch(e) { setMsg({ ok:false, text: e.message }); }
+    setSaving(false);
+  }
+
+  const info = {
+    venda_confirmada: { icon:'🛒', label:'Venda confirmada' },
+    produto_enviado:  { icon:'📦', label:'Produto enviado' },
+    produto_entregue: { icon:'🎉', label:'Produto entregue' },
+  };
+
+  return (
+    <div className="card p-5 mb-4">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h3 className="font-bold">📝 Editar Templates</h3>
+        <div className="sub text-xs">Placeholders: <span className="mono">{'{comprador}'}</span> · <span className="mono">{'{item}'}</span> · <span className="mono">{'{rastreio}'}</span></div>
+      </div>
+      {loading && !templates && <div className="ok mb-3 text-xs">⏳ Carregando…</div>}
+
+      {['venda_confirmada','produto_enviado','produto_entregue'].map(k => (
+        <div key={k} className="mb-3">
+          <label className="sub text-xs block mb-1">{info[k].icon} {info[k].label}</label>
+          <textarea
+            value={local[k]}
+            onChange={e => setLocal(s => ({ ...s, [k]: e.target.value }))}
+            rows={6}
+            className="input mono"
+            style={{width:'100%', fontFamily:'inherit', fontSize:12, lineHeight:1.5, whiteSpace:'pre-wrap'}}
+          />
+        </div>
+      ))}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button className="btn" onClick={salvar} disabled={saving || loading}>
+          {saving ? '💾 ...' : '💾 Salvar Templates'}
+        </button>
+        <button className="btn-ghost text-xs" onClick={refresh} disabled={loading}>🔄 Recarregar</button>
+        {msg && <span className={`text-xs ${msg.ok ? 'ok' : 'err'}`}>{msg.ok ? '✅' : '❌'} {msg.text}</span>}
+      </div>
+      <p className="sub text-xs mt-2">⚠️ Requer X-Admin-Secret configurado em <b>Config → Setup</b>.</p>
     </div>
   );
 }
@@ -10661,6 +10758,110 @@ function SetupPage(){
   );
 }
 
+// ===== Painel centralizado de erros de integração =====
+function ErrosPage(){
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr]         = useState(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch('/api/erros');
+      const d = await r.json();
+      if (d.success === false) setErr(d.error || 'Falha');
+      else setData(d);
+    } catch(e) { setErr(e.message); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  async function resolver(id){
+    try {
+      await fetch(`/api/erros/${id}/resolver`, { method: 'POST' });
+      await refresh();
+    } catch(_) {}
+  }
+
+  const tempoAtras = (iso) => {
+    if (!iso) return '';
+    const ms = Date.now() - new Date(iso).getTime();
+    const min = Math.floor(ms / 60000);
+    if (min < 1) return 'agora';
+    if (min < 60) return `há ${min}min`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `há ${h}h`;
+    return `há ${Math.floor(h / 24)}d`;
+  };
+
+  const po = data?.porOrigem || {};
+  const erros = data?.erros || [];
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold">⚠️ Erros de Integração</h1>
+          <p className="sub text-sm">
+            {data ? <>{data.naoResolvidos} não resolvidos · {data.total} totais</> : 'carregando…'}
+          </p>
+        </div>
+        <button className="btn-ghost" onClick={refresh} disabled={loading}>
+          {loading ? '🔄 ...' : '🔄 Atualizar'}
+        </button>
+      </div>
+
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+
+      {data && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+            <KPI label="Publicação" value={po.publicacao || 0} sub="—"/>
+            <KPI label="SAC"         value={po.sac || 0}         sub="—"/>
+            <KPI label="Estoque"     value={po.estoque || 0}     sub="—"/>
+            <KPI label="Pedido"      value={po.pedido || 0}      sub="—"/>
+            <KPI label="Webhook"     value={po.webhook || 0}     sub="—"/>
+            <KPI label="Auth"        value={po.auth || 0}        sub="—"/>
+          </div>
+
+          <div className="card p-5">
+            <h3 className="font-bold mb-3">📋 Últimos 50 erros</h3>
+            {erros.length === 0 ? (
+              <div className="sub text-xs italic">Nenhum erro registrado — parabéns! 🎉</div>
+            ) : (
+              <div style={{maxHeight: 500, overflowY:'auto'}}>
+                {erros.map(e => (
+                  <div key={e.id} className="card p-3 mb-2"
+                       style={{background:'rgba(255,255,255,.02)', borderColor: e.resolvido ? 'var(--line)' : 'rgba(220,38,38,.35)'}}>
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="mono">[{e.origem}]</span>
+                          <span className="font-bold truncate">{e.mensagem}</span>
+                        </div>
+                        {e.detalhes && <div className="sub text-xs mt-1 mono" style={{whiteSpace:'pre-wrap', wordBreak:'break-all'}}>{JSON.stringify(e.detalhes).slice(0, 200)}</div>}
+                        <div className="sub text-xs mt-1">{tempoAtras(e.data)}{e.resolvido ? ' · ✅ resolvido' : ''}</div>
+                      </div>
+                      {!e.resolvido && (
+                        <button className="btn-ghost text-xs" onClick={() => resolver(e.id)}>✓ Resolver</button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ConfigSectorPage({ user, notif, agent, initialSub }){
   const [sub, setSub] = useSubTab('config', 'integracoes', initialSub);
   const wh = useWebhooks();
@@ -10669,13 +10870,14 @@ function ConfigSectorPage({ user, notif, agent, initialSub }){
     { id:'integracoes', label:'🔌 Integrações' },
     { id:'setup',       label:'🔧 Setup' },
     { id:'webhooks',    label:'🔔 Webhooks' },
+    { id:'erros',       label:'⚠️ Erros' },
     { id:'conta',       label:'👤 Conta' },
     { id:'seguranca',   label:'🛡️ Segurança' },
   ];
   return (
     <div>
       <h1 className="text-2xl font-extrabold mb-1">⚙️ Configurações</h1>
-      <p className="sub text-sm mb-4">Integrações, setup, webhooks, conta e segurança</p>
+      <p className="sub text-sm mb-4">Integrações, setup, webhooks, erros, conta e segurança</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'integracoes' && <IntegracoesPage agent={agent} notif={notif}/>}
@@ -10687,6 +10889,7 @@ function ConfigSectorPage({ user, notif, agent, initialSub }){
             {whInstruOpen && <WebhooksInstrucoesModal onClose={() => setWhInstruOpen(false)}/>}
           </div>
         )}
+        {sub === 'erros' && <ErrosPage/>}
         {sub === 'conta' && <ContaConfigPage user={user} notif={notif}/>}
         {sub === 'seguranca' && <SegurancaPage/>}
       </CardErrorBoundary>
