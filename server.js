@@ -513,6 +513,117 @@ setTimeout(rodarMonitorEstoque, 60_000);
 // ============================================================
 global.webhookStats   = global.webhookStats   || { total:0, porTopic:{}, historico:[], ultimoRecebido:null };
 global.vendasRecentes = global.vendasRecentes || [];
+global.publicacoesHoje = global.publicacoesHoje || { count:0, items:[], data: new Date().toDateString() };
+
+// ============================================================
+// CATÁLOGO SIMULADO DE AUTOPEÇAS — placeholder até Bling conectar
+// ============================================================
+const catalogoSimulado = [
+  {
+    id: 'SIM001',
+    sku: 'PAST-FREIO-GOL-G5',
+    titulo: 'Pastilha de Freio Dianteira Gol G5 G6 Voyage Saveiro',
+    descricao: 'Pastilha de freio dianteira de alta performance. Fabricada com materiais de primeira linha, garante frenagem segura e silenciosa. Compatível com Gol G5, G6, Voyage e Saveiro.',
+    preco_custo: 35.00,
+    estoque: 50,
+    marca: 'Frasle',
+    categoria_ml: 'MLB180634',
+    condicao: 'new',
+    imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
+    compatibilidade: ['Volkswagen Gol G5 2008-2012','Volkswagen Gol G6 2012-2016','Volkswagen Voyage 2008-2016','Volkswagen Saveiro 2010-2016'],
+    peso_g: 450,
+    ativo: true,
+  },
+  {
+    id: 'SIM002',
+    sku: 'AMORT-TRAS-CIVIC',
+    titulo: 'Amortecedor Traseiro Honda Civic 2012 a 2016',
+    descricao: 'Amortecedor traseiro para Honda Civic. Qualidade premium com garantia de fábrica. Instalação simples, encaixe perfeito.',
+    preco_custo: 120.00,
+    estoque: 25,
+    marca: 'Monroe',
+    categoria_ml: 'MLB449571',
+    condicao: 'new',
+    imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
+    compatibilidade: ['Honda Civic 2012','Honda Civic 2013','Honda Civic 2014','Honda Civic 2015','Honda Civic 2016'],
+    peso_g: 1200,
+    ativo: true,
+  },
+  {
+    id: 'SIM003',
+    sku: 'DISCO-FREIO-COROLLA',
+    titulo: 'Disco de Freio Dianteiro Toyota Corolla 2009 a 2019',
+    descricao: 'Disco de freio dianteiro ventilado. Alta durabilidade e resistência ao calor. Instalação direta sem adaptações.',
+    preco_custo: 85.00,
+    estoque: 30,
+    marca: 'Fremax',
+    categoria_ml: 'MLB180635',
+    condicao: 'new',
+    imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
+    compatibilidade: ['Toyota Corolla 2009-2014','Toyota Corolla 2015-2019'],
+    peso_g: 2800,
+    ativo: true,
+  },
+  {
+    id: 'SIM004',
+    sku: 'FILTRO-OLEO-HB20',
+    titulo: 'Filtro de Óleo Hyundai HB20 1.0 1.6 2012 a 2022',
+    descricao: 'Filtro de óleo de alta filtragem. Retém impurezas e prolonga a vida útil do motor. Troca fácil e rápida.',
+    preco_custo: 18.00,
+    estoque: 100,
+    marca: 'Tecfil',
+    categoria_ml: 'MLB455239',
+    condicao: 'new',
+    imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
+    compatibilidade: ['Hyundai HB20 1.0 2012-2022','Hyundai HB20 1.6 2012-2022','Hyundai HB20S 2013-2022'],
+    peso_g: 250,
+    ativo: true,
+  },
+  {
+    id: 'SIM005',
+    sku: 'VELA-IGN-ONIX',
+    titulo: 'Jogo de Velas de Ignição Chevrolet Onix Prisma 1.0 1.4',
+    descricao: 'Jogo com 4 velas de ignição iridium. Melhor desempenho e economia de combustível. Durabilidade de até 60.000 km.',
+    preco_custo: 65.00,
+    estoque: 40,
+    marca: 'NGK',
+    categoria_ml: 'MLB455227',
+    condicao: 'new',
+    imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
+    compatibilidade: ['Chevrolet Onix 1.0 2012-2019','Chevrolet Onix 1.4 2012-2019','Chevrolet Prisma 1.0 2013-2019','Chevrolet Prisma 1.4 2013-2019'],
+    peso_g: 200,
+    ativo: true,
+  },
+];
+
+// Score 0-100 pra decidir se vale publicar
+function scoreProdutoSimulado(p) {
+  let score = 0;
+  const precoVenda = p.preco_custo * 2.5;
+  const margem = ((precoVenda - p.preco_custo) / precoVenda) * 100;
+  if (margem >= 40) score += 30;
+  else if (margem >= 25) score += 20;
+  else if (margem >= 15) score += 10;
+  if (p.estoque >= 50) score += 20;
+  else if (p.estoque >= 20) score += 15;
+  else if (p.estoque >= 5) score += 10;
+  const nc = p.compatibilidade?.length || 0;
+  if (nc >= 5) score += 20;
+  else if (nc >= 3) score += 15;
+  else if (nc >= 1) score += 10;
+  const marcasTop = ['Frasle','Monroe','Fremax','Tecfil','NGK','Bosch','Continental','Nakata'];
+  if (marcasTop.includes(p.marca)) score += 15; else score += 5;
+  if (p.imagens && p.imagens.length > 0) score += 15;
+  return { score: Math.min(score, 100), precoVenda, margem };
+}
+
+// Rotaciona contador diário à meia-noite
+function resetPublicacoesSeNovoDia() {
+  const hoje = new Date().toDateString();
+  if (global.publicacoesHoje.data !== hoje) {
+    global.publicacoesHoje = { count:0, items:[], data: hoje };
+  }
+}
 
 async function processarWebhookML(notification, headers) {
   if (!notification || typeof notification !== 'object') return;
@@ -3330,6 +3441,207 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           passo2: 'Adicionar no .env do servidor: ANTHROPIC_API_KEY=sk-ant-xxx',
           passo3: 'Reiniciar o servidor: pm2 restart agente-am',
         },
+      });
+    }
+
+    // ============= AGENTE AUTÔNOMO — publicação automática =============
+
+    // Catálogo disponível pra publicar
+    if (u.pathname === '/api/agente/catalogo' && req.method === 'GET') {
+      const fonte = process.env.BLING_CLIENT_ID ? 'bling' : 'simulado';
+      const produtos = catalogoSimulado
+        .filter(p => p.ativo && p.estoque > 0)
+        .map(p => {
+          const { score, precoVenda, margem } = scoreProdutoSimulado(p);
+          return { ...p, score, precoVenda, margem: +margem.toFixed(1) };
+        });
+      return send(res, 200, {
+        success: true,
+        fonte,
+        total: produtos.length,
+        produtos,
+      });
+    }
+
+    // Score de um produto
+    if (u.pathname.startsWith('/api/agente/score/') && req.method === 'GET') {
+      const produtoId = u.pathname.replace('/api/agente/score/', '');
+      const produto = catalogoSimulado.find(p => p.id === produtoId);
+      if (!produto) return send(res, 200, { success:false, error:'Produto não encontrado' });
+      const { score, precoVenda, margem } = scoreProdutoSimulado(produto);
+      return send(res, 200, {
+        success: true,
+        produto: produto.titulo,
+        score,
+        detalhes: {
+          margem:          margem.toFixed(1) + '%',
+          estoque:         produto.estoque,
+          compatibilidades: produto.compatibilidade?.length || 0,
+          marca:           produto.marca,
+          precoVendaEstimado: +precoVenda.toFixed(2),
+        },
+        recomendacao: score >= 70 ? '🟢 PUBLICAR' : score >= 40 ? '🟡 REVISAR' : '🔴 NÃO PUBLICAR',
+      });
+    }
+
+    // PUBLICAR UM PRODUTO (preview/real)
+    if (u.pathname === '/api/agente/publicar' && req.method === 'POST') {
+      const token = getMlToken();
+      try {
+        const { produtoId, modoTeste = true } = await readBody(req);
+        const produto = catalogoSimulado.find(p => p.id === produtoId);
+        if (!produto) return send(res, 200, { success:false, error:'Produto não encontrado' });
+
+        const { score, precoVenda } = scoreProdutoSimulado(produto);
+
+        const payload = {
+          title: produto.titulo.substring(0, 60),
+          category_id: produto.categoria_ml,
+          price: +precoVenda.toFixed(2),
+          currency_id: 'BRL',
+          available_quantity: Math.min(produto.estoque, 50),
+          buying_mode: 'buy_it_now',
+          condition: produto.condicao,
+          listing_type_id: 'gold_special',
+          description: { plain_text: produto.descricao },
+          pictures: produto.imagens.map(url => ({ source: url })),
+          shipping: { mode: 'me2', local_pick_up: false, free_shipping: precoVenda >= 79 },
+          seller_custom_field: produto.sku,
+          attributes: [
+            { id: 'BRAND', value_name: produto.marca },
+            { id: 'ITEM_CONDITION', value_id: '2230284' },
+          ],
+        };
+
+        if (modoTeste) {
+          console.log(`🤖 [agente] MODO TESTE: ${produto.titulo} → R$ ${precoVenda.toFixed(2)} (não publicado)`);
+          return send(res, 200, {
+            success: true,
+            modoTeste: true,
+            mensagem: 'Preview da publicação (não publicado no ML)',
+            payload,
+            score,
+            produto: {
+              titulo: produto.titulo,
+              preco:  precoVenda,
+              estoque: produto.estoque,
+              sku:    produto.sku,
+            },
+          });
+        }
+
+        if (!token) return send(res, 200, { success:false, error:'sem token ML — necessário pra publicar de verdade' });
+
+        const pubResp = await mlFetch('https://api.mercadolibre.com/items', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const pubData = await pubResp.json().catch(() => ({}));
+
+        if (pubResp.ok) {
+          console.log(`🤖 [agente] ✅ PUBLICADO: ${produto.titulo} → ${pubData.id} (R$ ${precoVenda.toFixed(2)})`);
+          resetPublicacoesSeNovoDia();
+          global.publicacoesHoje.count++;
+          global.publicacoesHoje.items.push({
+            mlbId: pubData.id,
+            titulo: produto.titulo,
+            preco: precoVenda,
+            hora: new Date().toISOString(),
+          });
+          return send(res, 200, {
+            success: true,
+            modoTeste: false,
+            mlbId: pubData.id,
+            permalink: pubData.permalink,
+            titulo: produto.titulo,
+            preco: precoVenda,
+            score,
+            mensagem: `✅ Publicado com sucesso! ID: ${pubData.id}`,
+          });
+        }
+        console.error(`🤖 [agente] ❌ ERRO ao publicar: ${pubData.message || JSON.stringify(pubData.cause)}`);
+        return send(res, 200, { success: false, error: pubData.message, cause: pubData.cause, details: pubData });
+      } catch (err) {
+        return send(res, 200, { success: false, error: err.message });
+      }
+    }
+
+    // PUBLICAR LOTE
+    if (u.pathname === '/api/agente/publicar-lote' && req.method === 'POST') {
+      const token = getMlToken();
+      try {
+        const { limiteDiario = 10, scoreMinimo = 60, modoTeste = true } = await readBody(req);
+        resetPublicacoesSeNovoDia();
+        const restante = limiteDiario - global.publicacoesHoje.count;
+        if (restante <= 0) {
+          return send(res, 200, {
+            success: true,
+            mensagem: `Limite diário atingido (${limiteDiario}/${limiteDiario}). Volta amanhã!`,
+            publicacoesHoje: global.publicacoesHoje,
+          });
+        }
+
+        const comScore = catalogoSimulado
+          .filter(p => p.ativo && p.estoque > 0)
+          .map(p => {
+            const { score, precoVenda } = scoreProdutoSimulado(p);
+            return { ...p, score, precoVenda };
+          })
+          .filter(p => p.score >= scoreMinimo)
+          .sort((a, b) => b.score - a.score);
+
+        const aPublicar = comScore.slice(0, restante);
+        const resultados = [];
+        const base = `http://127.0.0.1:${PORT}`;
+
+        for (const p of aPublicar) {
+          try {
+            const pubResp = await fetch(`${base}/api/agente/publicar`, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + (token || ''), 'Content-Type': 'application/json' },
+              body: JSON.stringify({ produtoId: p.id, modoTeste }),
+            });
+            const pubData = await pubResp.json();
+            resultados.push({
+              produto: p.titulo,
+              score: p.score,
+              preco: p.precoVenda,
+              ...pubData,
+            });
+            await new Promise(r => setTimeout(r, 2000));
+          } catch (e) {
+            resultados.push({ produto: p.titulo, success: false, error: e.message });
+          }
+        }
+
+        console.log(`🤖 [agente] Lote: ${resultados.filter(r => r.success).length}/${aPublicar.length} publicados (${modoTeste ? 'TESTE' : 'REAL'})`);
+
+        return send(res, 200, {
+          success: true,
+          modoTeste,
+          totalDisponivel: comScore.length,
+          tentativas: aPublicar.length,
+          publicados: resultados.filter(r => r.success).length,
+          limiteRestante: Math.max(limiteDiario - global.publicacoesHoje.count, 0),
+          resultados,
+        });
+      } catch (err) {
+        return send(res, 200, { success: false, error: err.message });
+      }
+    }
+
+    // Status do agente
+    if (u.pathname === '/api/agente/status' && req.method === 'GET') {
+      resetPublicacoesSeNovoDia();
+      return send(res, 200, {
+        success: true,
+        fonte:           process.env.BLING_CLIENT_ID ? 'bling' : 'simulado',
+        iaGenerativa:   !!process.env.ANTHROPIC_API_KEY,
+        publicacoesHoje: global.publicacoesHoje,
+        catalogoTotal:   catalogoSimulado.filter(p => p.ativo).length,
+        comEstoque:      catalogoSimulado.filter(p => p.ativo && p.estoque > 0).length,
+        rateLimiter:     mlRateLimiter.status(),
       });
     }
 

@@ -7144,6 +7144,7 @@ function AgentEmergency({ agent }) {
 }
 
 function AgentePage({ agent }) {
+  const auto = useAgente();
   return (
     <div>
       <div className="flex items-end justify-between mb-5 flex-wrap gap-3">
@@ -7159,9 +7160,235 @@ function AgentePage({ agent }) {
         <AgentQueue  agent={agent}/>
       </div>
       <div className="mt-4">
+        <CardErrorBoundary label="Publicação Autônoma">
+          <AgenteAutonomoPanel auto={auto}/>
+        </CardErrorBoundary>
+      </div>
+      <div className="mt-4">
         <AgentLogs agent={agent}/>
       </div>
       <AgentEmergency agent={agent}/>
+    </div>
+  );
+}
+
+// ===== Hook: publicação autônoma =====
+function useAgente(){
+  const [status, setStatus]       = useState(null);
+  const [catalogo, setCatalogo]   = useState(null);
+  const [busy, setBusy]           = useState(false);
+  const [logs, setLogs]           = useState([]);
+  const [modoTeste, setModoTeste] = useState(true);
+  const [limiteDiario, setLimite] = useState(10);
+  const [scoreMinimo, setScoreMin] = useState(60);
+
+  const push = useCallback((linha) => {
+    const ts = new Date().toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+    setLogs(prev => [{ ts, linha, id: Date.now()+Math.random() }, ...prev].slice(0, 50));
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const ml = loadMLTokens();
+    const h = ml?.access_token ? { 'Authorization':'Bearer '+ml.access_token } : {};
+    try {
+      const [sR, cR] = await Promise.all([
+        fetch('/api/agente/status', { headers: h }),
+        fetch('/api/agente/catalogo', { headers: h }),
+      ]);
+      const sJ = await sR.json().catch(()=>null);
+      const cJ = await cR.json().catch(()=>null);
+      if (sJ?.success) setStatus(sJ);
+      if (cJ?.success) setCatalogo(cJ);
+    } catch(_){}
+  }, []);
+
+  const publicarUm = useCallback(async (produtoId, teste) => {
+    const ml = loadMLTokens();
+    setBusy(true);
+    const p = catalogo?.produtos?.find(x => x.id === produtoId);
+    const tipo = teste ? 'TESTE' : 'REAL';
+    if (p) push(`🤖 [${tipo}] Publicando: ${p.titulo} (score ${p.score})`);
+    try {
+      const r = await fetch('/api/agente/publicar', {
+        method:'POST',
+        headers:{ 'Authorization':'Bearer '+(ml?.access_token||''), 'Content-Type':'application/json' },
+        body: JSON.stringify({ produtoId, modoTeste: !!teste }),
+      });
+      const d = await r.json().catch(()=>({ success:false }));
+      if (d.success) {
+        push(teste
+          ? `✅ Preview gerado → R$ ${Number(d.produto?.preco||0).toFixed(2)}`
+          : `✅ PUBLICADO no ML → ${d.mlbId} (R$ ${Number(d.preco||0).toFixed(2)})`);
+      } else {
+        push(`❌ Falhou: ${d.error || 'erro desconhecido'}`);
+      }
+      await refresh();
+      return d;
+    } catch(e){
+      push(`❌ ${e.message}`);
+      return { success:false, error:e.message };
+    } finally { setBusy(false); }
+  }, [catalogo, push, refresh]);
+
+  const publicarLote = useCallback(async () => {
+    const ml = loadMLTokens();
+    setBusy(true);
+    push(`🤖 Iniciando lote: limite=${limiteDiario}, score mín=${scoreMinimo}, modo=${modoTeste ? 'TESTE' : 'REAL'}`);
+    try {
+      const r = await fetch('/api/agente/publicar-lote', {
+        method:'POST',
+        headers:{ 'Authorization':'Bearer '+(ml?.access_token||''), 'Content-Type':'application/json' },
+        body: JSON.stringify({ limiteDiario, scoreMinimo, modoTeste }),
+      });
+      const d = await r.json().catch(()=>({ success:false }));
+      if (d.success) {
+        push(`🤖 Lote: ${d.publicados}/${d.tentativas} publicados · restante hoje: ${d.limiteRestante}`);
+        (d.resultados || []).forEach(rr => {
+          if (rr.success) push(`  ✅ ${rr.produto} — R$ ${Number(rr.preco||0).toFixed(2)}`);
+          else            push(`  ❌ ${rr.produto} — ${rr.error || 'falha'}`);
+        });
+      } else {
+        push(`❌ Lote falhou: ${d.error || d.mensagem}`);
+      }
+      await refresh();
+      return d;
+    } catch(e){
+      push(`❌ ${e.message}`);
+      return { success:false, error:e.message };
+    } finally { setBusy(false); }
+  }, [limiteDiario, scoreMinimo, modoTeste, push, refresh]);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return {
+    status, catalogo, busy, logs,
+    modoTeste, setModoTeste, limiteDiario, setLimite, scoreMinimo, setScoreMin,
+    refresh, publicarUm, publicarLote,
+  };
+}
+
+// ===== Painel: publicação autônoma =====
+function AgenteAutonomoPanel({ auto }){
+  const a = auto;
+  const st = a.status;
+  const cat = a.catalogo;
+  const brl = (v) => `R$ ${Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2})}`;
+  const emoji = (s) => s >= 70 ? '🟢' : s >= 40 ? '🟡' : '🔴';
+
+  return (
+    <div className="card p-4">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <div>
+          <h3 className="font-bold text-base">🤖 Publicação Autônoma</h3>
+          <p className="sub text-xs">Ranqueia catálogo por score e publica no ML (modo teste por padrão)</p>
+        </div>
+        <button className="chip" onClick={a.refresh} disabled={a.busy}>{a.busy ? '⏳' : '🔄'} Atualizar</button>
+      </div>
+
+      {/* Status rápido */}
+      {st && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+          <div className="card2 p-2">
+            <div className="sub text-[10px]">Fonte</div>
+            <div className="font-bold text-xs">{st.fonte === 'bling' ? '🔌 Bling' : '🧪 Simulado'}</div>
+          </div>
+          <div className="card2 p-2">
+            <div className="sub text-[10px]">IA Generativa</div>
+            <div className="font-bold text-xs">{st.iaGenerativa ? '🟢 Ativa' : '⚠️ Templates'}</div>
+          </div>
+          <div className="card2 p-2">
+            <div className="sub text-[10px]">Catálogo</div>
+            <div className="font-bold text-xs">{st.comEstoque}/{st.catalogoTotal} c/ estoque</div>
+          </div>
+          <div className="card2 p-2">
+            <div className="sub text-[10px]">Publicados hoje</div>
+            <div className="font-bold text-xs">{st.publicacoesHoje?.count || 0}/{a.limiteDiario}</div>
+          </div>
+          {st.rateLimiter && (
+            <div className="card2 p-2 col-span-2 md:col-span-4">
+              <div className="sub text-[10px]">Rate Limiter ML</div>
+              <div className="font-bold text-xs">
+                {st.rateLimiter.reqUltimoMinuto}/{st.rateLimiter.limite} req/min ({st.rateLimiter.percentual}%) · bloqueios: {st.rateLimiter.bloqueios}
+                {st.rateLimiter.pausado && ' · ⚠️ PAUSADO'}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Controles */}
+      <div className="card2 p-3 mb-3">
+        <div className="flex flex-wrap gap-3 items-center">
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={a.modoTeste} onChange={e => a.setModoTeste(e.target.checked)}/>
+            <span>Modo Teste (não publica de verdade)</span>
+          </label>
+          <label className="flex items-center gap-1 text-xs">
+            Limite/dia:
+            <input className="input mono" style={{width:70, padding:'4px 8px'}} type="number" min="1" max="50"
+                   value={a.limiteDiario} onChange={e => a.setLimite(parseInt(e.target.value||'10',10))}/>
+          </label>
+          <label className="flex items-center gap-1 text-xs">
+            Score mín:
+            <input className="input mono" style={{width:70, padding:'4px 8px'}} type="number" min="0" max="100"
+                   value={a.scoreMinimo} onChange={e => a.setScoreMin(parseInt(e.target.value||'60',10))}/>
+          </label>
+          <button className="btn" onClick={a.publicarLote} disabled={a.busy}>
+            {a.busy ? '⏳ Processando...' : (a.modoTeste ? '👁️ Preview Lote' : '🚀 Publicar Lote')}
+          </button>
+        </div>
+      </div>
+
+      {/* Lista de produtos */}
+      <div className="mb-3">
+        <div className="font-semibold text-sm mb-2">📦 Catálogo ({cat?.total || 0} produtos)</div>
+        {!cat && <div className="sub text-xs">⏳ Carregando...</div>}
+        {cat && cat.produtos?.length === 0 && <div className="sub text-xs">Nenhum produto com estoque.</div>}
+        <div className="space-y-2">
+          {(cat?.produtos || []).map(p => (
+            <div key={p.id} className="card2 p-2">
+              <div className="flex items-start gap-2 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-xs truncate">{p.titulo}</div>
+                  <div className="sub text-[11px] mt-1">
+                    Custo: {brl(p.preco_custo)} → Venda: {brl(p.precoVenda)} · Margem: {Number(p.margem).toFixed(1)}%
+                  </div>
+                  <div className="sub text-[11px]">
+                    Estoque: {p.estoque} · Compat: {p.compatibilidade?.length || 0} · Marca: {p.marca}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="chip" style={{fontSize:11}}>{emoji(p.score)} Score {p.score}</div>
+                </div>
+              </div>
+              <div className="flex gap-2 mt-2 flex-wrap">
+                <button className="chip" onClick={() => a.publicarUm(p.id, true)} disabled={a.busy}>👁️ Preview</button>
+                <button className="chip" onClick={() => a.publicarUm(p.id, false)} disabled={a.busy || a.modoTeste}
+                        title={a.modoTeste ? 'Desligue Modo Teste pra publicar de verdade' : ''}>
+                  🚀 Publicar
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Terminal / log */}
+      <div className="card2 p-3">
+        <div className="font-semibold text-sm mb-2">🖥️ Terminal</div>
+        {a.logs.length === 0 && <div className="sub text-xs">Nenhuma ação ainda.</div>}
+        <div className="space-y-1" style={{maxHeight:220, overflowY:'auto'}}>
+          {a.logs.map(l => (
+            <div key={l.id} className="mono text-[11px]" style={{lineHeight:1.4}}>
+              <span className="sub">[{l.ts}]</span> {l.linha}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
