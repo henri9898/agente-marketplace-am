@@ -4601,6 +4601,67 @@ function EstoqueCompactCard({ estoque, onExpand }){
   );
 }
 
+// Card compacto de despacho — SLA dos envios pagos pendentes
+function DespachoCompactCard({ onGoToEnvios }){
+  const [sla, setSla] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const tokens = loadMLTokens();
+
+  const refresh = useCallback(async () => {
+    if (!tokens?.access_token) { setSla(null); return; }
+    setLoading(true);
+    try {
+      const r = await fetch('/api/ml/pedidos/urgentes', {
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      });
+      const d = await r.json();
+      if (d.success) setSla(d);
+    } catch(_){}
+    setLoading(false);
+  }, [tokens?.access_token]);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 60_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const urgentes = sla?.alertas || 0;
+  const atencao  = sla?.atencao || 0;
+  const total    = sla?.total   || 0;
+
+  const cor = urgentes > 0 ? '#ef4444' : atencao > 0 ? '#eab308' : '#22c55e';
+  const titulo = urgentes > 0 ? `🚨 ${urgentes} com prazo < 6h!`
+               : atencao > 0  ? `⚠️ ${atencao} com prazo < 12h`
+               : total > 0    ? `✅ ${total} envio(s) dentro do prazo`
+               :                '✅ Nenhum envio pendente';
+
+  return (
+    <div className="card p-5" style={{borderColor: cor + '55'}}>
+      <div className="flex items-start gap-3">
+        <div className="text-2xl">🚚</div>
+        <div className="flex-1 min-w-0">
+          <div className="font-bold text-sm">Despacho</div>
+          <div className="text-xs mt-1" style={{color:cor}}>
+            {loading && !sla ? '⏳ Carregando…' : titulo}
+          </div>
+          <div className="sub text-[11px] mt-1">
+            {urgentes > 0 ? 'Envie agora para não levar reputação negativa'
+             : atencao > 0 ? 'Planeje o despacho antes do vencimento'
+             : total > 0   ? 'Tudo no prazo — parabéns!'
+             : 'Quando novas vendas chegarem, aparecem aqui'}
+          </div>
+        </div>
+      </div>
+      {total > 0 && (
+        <button className="btn-ghost mt-3 w-full" style={{padding:'6px 10px', fontSize:12}} onClick={onGoToEnvios}>
+          Ver Envios →
+        </button>
+      )}
+    </div>
+  );
+}
+
 function WebhooksCompactCard({ wh, onOpenInstrucoes }){
   const total = wh.status?.stats?.total || 0;
   const configurado = total > 0;
@@ -5170,7 +5231,7 @@ function useCompatStatus(){
   return { stats, pend, busy, msg, refresh, forcar };
 }
 
-function OverviewPage({onGoToProducts, onGoToIntegrations}){
+function OverviewPage({onGoToProducts, onGoToIntegrations, onGoToLogistica}){
   const ml = useMLDashboard();
   const hasReal = !!ml.data && ml.data.success;
   const compat  = useCompatStatus();
@@ -5379,16 +5440,21 @@ function OverviewPage({onGoToProducts, onGoToIntegrations}){
           </CardErrorBoundary>
         </div>
 
-        {/* Linha 2 — Webhooks (1/3) + Vendas recentes (2/3) */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+        {/* Linha 2 — Webhooks + Despacho (2 cards) */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <CardErrorBoundary label="🔔 Webhooks">
             <WebhooksCompactCard wh={wh} onOpenInstrucoes={() => setWhOpen(true)}/>
           </CardErrorBoundary>
-          <div className="md:col-span-2">
-            <CardErrorBoundary label="🛒 Vendas em tempo real">
-              <VendasRecentesCard wh={wh}/>
-            </CardErrorBoundary>
-          </div>
+          <CardErrorBoundary label="🚚 Despacho">
+            <DespachoCompactCard onGoToEnvios={() => onGoToLogistica && onGoToLogistica()}/>
+          </CardErrorBoundary>
+        </div>
+
+        {/* Linha 3 — Vendas recentes em largura total */}
+        <div className="mb-4">
+          <CardErrorBoundary label="🛒 Vendas em tempo real">
+            <VendasRecentesCard wh={wh}/>
+          </CardErrorBoundary>
         </div>
       </div>
 
@@ -9200,6 +9266,7 @@ function EnviosPage(){
   const [loading, setLoading] = useState(true);
   const [err, setErr]         = useState(null);
   const [busyId, setBusyId]   = useState(null);
+  const [sla, setSla]         = useState(null); // { total, urgentes, alertas, atencao }
   const tokens = loadMLTokens();
 
   const refresh = useCallback(async () => {
@@ -9212,6 +9279,11 @@ function EnviosPage(){
       const data = await r.json();
       if (data.success === false) setErr(data.error || 'Falha ao carregar');
       else setPedidos(data.pedidos || []);
+
+      // Busca SLAs em paralelo (não bloqueia renderização principal)
+      fetch('/api/ml/pedidos/urgentes', {
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      }).then(r => r.json()).then(d => { if (d.success) setSla(d); }).catch(() => {});
     } catch(e) { setErr(e.message); }
     setLoading(false);
   }, [tokens?.access_token]);
@@ -9237,6 +9309,21 @@ function EnviosPage(){
 
   const pendentes = pedidos.filter(p => p.status === 'paid' && p.envio?.id);
 
+  // Mapa orderId → info de SLA pra decorar cada card
+  const slaPorPedido = {};
+  (sla?.urgentes || []).forEach(u => { if (u.id != null) slaPorPedido[u.id] = u; });
+
+  const slaBorda = (h) => h == null ? 'var(--line)'
+    : h < 6  ? 'rgba(220,38,38,.5)'
+    : h < 12 ? 'rgba(234,179,8,.5)'
+    :          'rgba(34,197,94,.4)';
+  const slaLabel = (h) => h == null ? null
+    : h < 6  ? `🚨 URGENTE! Envie em ${h.toFixed(1)}h`
+    : h < 12 ? `⚠️ Prazo: ${h.toFixed(1)}h restantes`
+    :          `✅ Prazo: ${h.toFixed(1)}h`;
+  const slaCor = (h) => h == null ? 'var(--sub)'
+    : h < 6  ? '#ef4444' : h < 12 ? '#eab308' : '#22c55e';
+
   return (
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
@@ -9255,32 +9342,62 @@ function EnviosPage(){
       {err && <div className="err mb-4 text-xs">{err}</div>}
       {loading && !pedidos.length && <div className="ok mb-4">⏳ Carregando envios…</div>}
 
+      {/* Resumo SLA */}
+      {sla && (sla.total > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+          <div className="card p-4" style={{borderColor:'rgba(220,38,38,.5)'}}>
+            <div className="sub text-xs uppercase">🚨 Urgente (&lt; 6h)</div>
+            <div className="text-2xl font-bold mt-1" style={{color:'#ef4444'}}>{sla.alertas || 0}</div>
+            <div className="sub text-xs mt-1">despachar agora</div>
+          </div>
+          <div className="card p-4" style={{borderColor:'rgba(234,179,8,.5)'}}>
+            <div className="sub text-xs uppercase">⚠️ Atenção (&lt; 12h)</div>
+            <div className="text-2xl font-bold mt-1" style={{color:'#eab308'}}>{sla.atencao || 0}</div>
+            <div className="sub text-xs mt-1">planejar despacho</div>
+          </div>
+          <div className="card p-4" style={{borderColor:'rgba(34,197,94,.4)'}}>
+            <div className="sub text-xs uppercase">✅ OK (&gt; 12h)</div>
+            <div className="text-2xl font-bold mt-1" style={{color:'#22c55e'}}>{Math.max(0, (sla.total||0) - (sla.alertas||0) - (sla.atencao||0))}</div>
+            <div className="sub text-xs mt-1">dentro do prazo</div>
+          </div>
+        </div>
+      )}
+
       {pendentes.length === 0 && !loading ? (
         <div className="card p-8 text-center sub">
           📦 Todos os pedidos pagos já foram processados. Quando novas vendas chegarem, aparecerão aqui.
         </div>
       ) : (
-        pendentes.map(p => (
-          <div key={p.id} className="card p-4 mb-3">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div className="flex-1 min-w-0">
-                <div className="font-bold">🛒 Pedido <span className="mono">#{p.id}</span></div>
-                <div className="sub text-xs mt-1 truncate">{(p.itens || []).map(i => i.titulo).join(', ') || '—'}</div>
-                <div className="sub text-xs mt-1">👤 {p.comprador?.nickname || 'N/A'} · R$ {Number(p.valorTotal || 0).toFixed(2)}</div>
-              </div>
-              <div className="flex gap-2 flex-wrap">
-                {p.envio?.id && (
-                  <a className="btn-ghost text-xs" href={etiquetaHref(p.envio.id)} target="_blank" rel="noreferrer">🏷️ Etiqueta</a>
-                )}
-                {p.envio?.id && (
-                  <button className="btn-ghost text-xs" onClick={() => despachar(p.envio.id)} disabled={busyId === p.envio.id}>
-                    {busyId === p.envio.id ? '🚚 ...' : '🚚 Despachar'}
-                  </button>
-                )}
+        pendentes.map(p => {
+          const info = slaPorPedido[p.id];
+          const horas = info?.prazoHoras;
+          return (
+            <div key={p.id} className="card p-4 mb-3" style={{borderColor: slaBorda(horas)}}>
+              {horas != null && (
+                <div className="text-xs font-bold mb-2" style={{color: slaCor(horas)}}>
+                  {slaLabel(horas)}
+                </div>
+              )}
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold">🛒 Pedido <span className="mono">#{p.id}</span></div>
+                  <div className="sub text-xs mt-1 truncate">{(p.itens || []).map(i => i.titulo).join(', ') || '—'}</div>
+                  <div className="sub text-xs mt-1">👤 {p.comprador?.nickname || 'N/A'} · R$ {Number(p.valorTotal || 0).toFixed(2)}</div>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  {p.envio?.id && (
+                    <a className="btn-ghost text-xs" href={etiquetaHref(p.envio.id)} target="_blank" rel="noreferrer">🏷️ Etiqueta</a>
+                  )}
+                  {p.envio?.id && (
+                    <button className="btn-ghost text-xs" onClick={() => despachar(p.envio.id)} disabled={busyId === p.envio.id}>
+                      {busyId === p.envio.id ? '🚚 ...' : '🚚 Despachar'}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        ))
+          );
+        })
       )}
     </div>
   );
@@ -10054,6 +10171,9 @@ function PerformancePage(){
   const [err, setErr]         = useState(null);
   const [pausando, setPausando] = useState(false);
   const [ultPausa, setUltPausa] = useState(null);
+  const [escalarBusyId, setEscalarBusyId] = useState(null);
+  const [escalarResult, setEscalarResult] = useState(null);
+  const [escalarUltimoId, setEscalarUltimoId] = useState(null);
 
   const refresh = useCallback(async () => {
     const tokens = loadMLTokens();
@@ -10093,7 +10213,27 @@ function PerformancePage(){
   const resumo = perf?.resumo;
   const cls    = perf?.classificacao;
 
-  const renderItem = (a) => (
+  async function escalarAnuncio(itemId, modoTeste = true){
+    const tokens = loadMLTokens();
+    if (!tokens?.access_token) { setErr('Conecte sua conta ML primeiro'); return; }
+    if (!modoTeste && !window.confirm('Criar variações REAIS deste anúncio no Mercado Livre? (publica novas páginas com títulos variados)')) return;
+    setEscalarBusyId(itemId);
+    setEscalarUltimoId(itemId);
+    setEscalarResult(null);
+    try {
+      const r = await fetch('/api/ml/performance/escalar', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemId, modoTeste }),
+      });
+      const d = await r.json();
+      setEscalarResult(d);
+      if (d.success && !modoTeste) await refresh();
+    } catch(e) { setEscalarResult({ success:false, error: e.message }); }
+    setEscalarBusyId(null);
+  }
+
+  const renderItem = (a, opts = {}) => (
     <div key={a.id} className="card p-3 mb-2" style={{background:'rgba(255,255,255,.02)'}}>
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex-1 min-w-0">
@@ -10107,6 +10247,11 @@ function PerformancePage(){
           <div><span className="sub">CTR</span> <b>{a.ctr}%</b></div>
           <div><span className="sub">score</span> <b style={{color:'var(--green)'}}>{a.perfScore}</b></div>
           <div><span className="sub">{a.diasAtivo}d</span></div>
+          {opts.escalar && (
+            <button className="btn-ghost text-xs ml-2" onClick={() => escalarAnuncio(a.id, true)} disabled={escalarBusyId === a.id}>
+              {escalarBusyId === a.id ? '🚀 ...' : '🚀 Escalar'}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -10161,7 +10306,36 @@ function PerformancePage(){
             </div>
             {cls.top.length === 0
               ? <div className="sub text-xs italic">Nenhum anúncio no topo ainda — publique mais ou aguarde vendas.</div>
-              : cls.top.map(renderItem)}
+              : cls.top.map(a => renderItem(a, { escalar: true }))}
+            {escalarResult && (
+              <div className="card p-3 mt-3" style={{background:'rgba(0,167,255,.06)'}}>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="font-bold text-sm">
+                    {escalarResult.modoTeste ? '🧪 Preview de variações' : '🚀 Variações publicadas'}
+                  </h4>
+                  <button className="btn-ghost text-xs" onClick={() => setEscalarResult(null)}>fechar</button>
+                </div>
+                {escalarResult.success === false && <div className="err text-xs">{escalarResult.error}</div>}
+                {escalarResult.original && (
+                  <div className="sub text-xs mb-2">Original: <span className="mono">{escalarResult.original}</span></div>
+                )}
+                {Array.isArray(escalarResult.variacoes) && escalarResult.variacoes.map((v, i) => (
+                  <div key={i} className="text-xs py-1 border-b border-[var(--line)]">📢 {v}</div>
+                ))}
+                {Array.isArray(escalarResult.detalhes) && escalarResult.detalhes.map((d, i) => (
+                  <div key={i} className="text-xs py-1 border-b border-[var(--line)]">
+                    {d.success ? '✅' : '❌'} {d.titulo} {d.mlbId && <span className="mono sub">· {d.mlbId}</span>}
+                    {d.error && <span className="err ml-2">— {d.error}</span>}
+                  </div>
+                ))}
+                {escalarResult.modoTeste && escalarResult.success && escalarUltimoId && (
+                  <button className="btn mt-3 text-xs" style={{borderColor:'rgba(220,38,38,.4)', color:'#dc2626'}}
+                          onClick={() => escalarAnuncio(escalarUltimoId, false)}>
+                    🚀 Publicar essas variações DE VERDADE
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="card p-5 mb-4" style={{borderColor:'rgba(234,179,8,.35)'}}>
@@ -10703,7 +10877,11 @@ function Dashboard({user, onLogout}){
 
         {/* Setor 📊 Visão Geral */}
         {tab==='overview' && (
-          <OverviewPage onGoToProducts={() => setTab('comercial')} onGoToIntegrations={() => setTab('config')}/>
+          <OverviewPage
+            onGoToProducts={() => setTab('comercial')}
+            onGoToIntegrations={() => setTab('config')}
+            onGoToLogistica={() => setTab('logistica')}
+          />
         )}
 
         {/* Setor 🛍️ Comercial — legado: products → Catálogo, listings → Anúncios */}

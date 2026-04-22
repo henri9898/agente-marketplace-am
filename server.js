@@ -749,6 +749,9 @@ global.msgEnviadas       = global.msgEnviadas       || new Set(); // deduplica p
 // Histórico de ajustes de preço (acompanhamento de concorrência)
 global.ajustesPreco = global.ajustesPreco || [];
 
+// Fila de publicação com retry (últimas 50 tentativas)
+global.filaPublicacao = global.filaPublicacao || [];
+
 const mensagensPosVenda = {
   venda_confirmada: (comprador, item) =>
     `Olá ${comprador}! 😊\n\nObrigado pela sua compra de "${item}"!\n\nEstamos preparando seu pedido com todo cuidado. Enviaremos em até 24h úteis após a confirmação do pagamento.\n\nQualquer dúvida, estamos à disposição!\n\nEquipe Agente Marketplace`,
@@ -3889,6 +3892,25 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           });
         }
 
+        // Validação pré-publicação (só em modo real) — se tem erro crítico, não publica
+        try {
+          const valResp = await fetch(`http://127.0.0.1:${PORT}/api/agente/validar`, {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + (token || ''), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ produtoId }),
+          });
+          const valData = await valResp.json().catch(() => ({}));
+          if (valData && Array.isArray(valData.erros) && valData.erros.length > 0) {
+            console.log(`🤖 [agente] ❌ VALIDAÇÃO FALHOU (${valData.erros.length} erros) — não publicado`);
+            return send(res, 200, {
+              success: false,
+              error: 'Validação falhou — corrija os erros antes de publicar',
+              erros: valData.erros,
+              avisos: valData.avisos || [],
+            });
+          }
+        } catch (_) { /* se validador fora, segue publicação pra não travar fluxo */ }
+
         if (!token) return send(res, 200, { success:false, error:'sem token ML — necessário pra publicar de verdade' });
 
         const pubResp = await mlFetch('https://api.mercadolibre.com/items', {
@@ -4002,6 +4024,325 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         comEstoque:      catalogoSimulado.filter(p => p.ativo && p.estoque > 0).length,
         rateLimiter:     mlRateLimiter.status(),
       });
+    }
+
+    // ============================================================
+    // VALIDAÇÃO PRÉ-PUBLICAÇÃO — checa erros críticos + avisos + atributos ML
+    // ============================================================
+    if (u.pathname === '/api/agente/validar' && req.method === 'POST') {
+      try {
+        const token = getBearer() || getMlToken() || '';
+        const { produtoId } = await readBody(req).catch(() => ({}));
+        const produto = catalogoSimulado.find(p => p.id === produtoId);
+        if (!produto) return send(res, 200, { success:false, error:'Produto não encontrado' });
+
+        const erros  = [];
+        const avisos = [];
+
+        if (!produto.titulo || produto.titulo.length < 10)
+          erros.push('Título muito curto (mínimo 10 caracteres)');
+        if (produto.titulo && produto.titulo.length > 60)
+          erros.push('Título muito longo (máximo 60 caracteres ML)');
+        if (!produto.preco_custo || produto.preco_custo <= 0)
+          erros.push('Preço de custo inválido');
+        if (!produto.estoque || produto.estoque <= 0)
+          erros.push('Sem estoque');
+        if (!produto.categoria_ml)
+          erros.push('Categoria ML não definida');
+        if (!produto.descricao || produto.descricao.length < 20)
+          erros.push('Descrição muito curta (mínimo 20 caracteres)');
+        if (!produto.marca)
+          avisos.push('Marca não informada — ML pode rejeitar');
+        if (!produto.imagens || produto.imagens.length === 0)
+          erros.push('Sem imagens — ML exige pelo menos 1');
+        if (produto.imagens && produto.imagens.some(img => /placeholder/i.test(String(img))))
+          avisos.push('Imagem placeholder detectada — substitua por foto real');
+        if (!produto.compatibilidade || produto.compatibilidade.length === 0)
+          avisos.push('Sem compatibilidade — recomendado pra autopeças');
+
+        // Atributos obrigatórios da categoria (só se token disponível)
+        if (produto.categoria_ml && token) {
+          try {
+            const catResp = await mlFetch(
+              `https://api.mercadolibre.com/categories/${produto.categoria_ml}/attributes`,
+              { headers: { 'Authorization': 'Bearer ' + token } }
+            );
+            const attrs = await catResp.json().catch(() => []);
+            if (Array.isArray(attrs)) {
+              const obrigatorios = attrs.filter(a => a.tags?.required || a.tags?.catalog_required);
+              for (const attr of obrigatorios) {
+                if (attr.id !== 'BRAND' && attr.id !== 'ITEM_CONDITION') {
+                  avisos.push(`Atributo obrigatório "${attr.name}" (${attr.id}) pode ser exigido pelo ML`);
+                }
+              }
+            }
+          } catch (_) { /* ignora — ML pode estar 429 */ }
+        }
+
+        const valido = erros.length === 0;
+        return send(res, 200, {
+          success: true,
+          valido,
+          erros,
+          avisos,
+          produto: produto.titulo,
+          score: valido ? 'Pronto pra publicar ✅' : 'Corrigir erros antes ❌',
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // ============================================================
+    // FILA DE PUBLICAÇÃO COM RETRY — até 3 tentativas com delay progressivo
+    // ============================================================
+    if (u.pathname === '/api/agente/publicar-com-retry' && req.method === 'POST') {
+      try {
+        const token = getBearer() || '';
+        const body = await readBody(req).catch(() => ({}));
+        const produtoId  = body.produtoId;
+        const modoTeste  = body.modoTeste !== false;
+        const maxRetries = Math.min(Number(body.maxRetries) || 3, 5);
+
+        let tentativa = 0;
+        let resultado = null;
+        const base = `http://127.0.0.1:${PORT}`;
+
+        while (tentativa < maxRetries) {
+          tentativa++;
+          console.log(`🤖 [agente] Tentativa ${tentativa}/${maxRetries}: ${produtoId}`);
+
+          const pubResp = await fetch(`${base}/api/agente/publicar`, {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ produtoId, modoTeste }),
+          });
+          resultado = await pubResp.json().catch(() => ({ success:false, error:'resposta inválida' }));
+
+          if (resultado && resultado.success) {
+            console.log(`🤖 [agente] ✅ Sucesso na tentativa ${tentativa}`);
+            break;
+          }
+          // Validação não deve tentar de novo — bloqueio intencional
+          if (resultado && Array.isArray(resultado.erros) && resultado.erros.length > 0) {
+            console.log(`🤖 [agente] ⛔ Validação bloqueou — não faz retry`);
+            break;
+          }
+          console.log(`🤖 [agente] ❌ Falha tentativa ${tentativa}: ${resultado?.error || 'erro'}`);
+
+          if (tentativa < maxRetries) {
+            const delay = 5000 * tentativa;
+            console.log(`🤖 [agente] Aguardando ${delay/1000}s antes de tentar novamente...`);
+            await new Promise(r => setTimeout(r, delay));
+          }
+        }
+
+        global.filaPublicacao.unshift({
+          produtoId,
+          tentativas: tentativa,
+          sucesso:    !!(resultado && resultado.success),
+          erro:       resultado?.error || null,
+          erros:      resultado?.erros || null,
+          mlbId:      resultado?.mlbId || null,
+          titulo:     resultado?.titulo || resultado?.produto?.titulo || null,
+          modoTeste,
+          data:       new Date().toISOString(),
+        });
+        if (global.filaPublicacao.length > 50) {
+          global.filaPublicacao = global.filaPublicacao.slice(0, 50);
+        }
+
+        return send(res, 200, { ...(resultado || {}), tentativas: tentativa, maxRetries });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    if (u.pathname === '/api/agente/fila' && req.method === 'GET') {
+      return send(res, 200, {
+        success: true,
+        fila: global.filaPublicacao || [],
+        total: (global.filaPublicacao || []).length,
+      });
+    }
+
+    // ============================================================
+    // PEDIDOS URGENTES — SLA de despacho próximo do vencimento
+    // ============================================================
+    if (u.pathname === '/api/ml/pedidos/urgentes' && req.method === 'GET') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const base = `http://127.0.0.1:${PORT}`;
+        const pedidosResp = await fetch(`${base}/api/ml/pedidos?status=paid`, {
+          headers: { 'Authorization': 'Bearer ' + token },
+        });
+        const pedidosData = await pedidosResp.json();
+        if (!pedidosData.success) return send(res, 200, pedidosData);
+
+        const urgentes = [];
+        for (const pedido of pedidosData.pedidos || []) {
+          if (!pedido.envio?.id) continue;
+          try {
+            const slaResp = await mlFetch(
+              `https://api.mercadolibre.com/shipments/${pedido.envio.id}/sla`,
+              { headers: { 'Authorization': 'Bearer ' + token } }
+            );
+            const sla = await slaResp.json().catch(() => ({}));
+            if (slaResp.ok && sla && sla.date) {
+              const prazoMs = new Date(sla.date).getTime() - Date.now();
+              const prazoHoras = Math.max(0, prazoMs / 3600000);
+              urgentes.push({
+                ...pedido,
+                prazoHoras:   parseFloat(prazoHoras.toFixed(1)),
+                prazoStatus:  prazoHoras < 6 ? '🚨 URGENTE' : prazoHoras < 12 ? '⚠️ Atenção' : '✅ OK',
+                slaData:      sla.date,
+              });
+            }
+          } catch (_) {}
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        urgentes.sort((a, b) => a.prazoHoras - b.prazoHoras);
+        return send(res, 200, {
+          success:  true,
+          total:    urgentes.length,
+          urgentes,
+          alertas:  urgentes.filter(u => u.prazoHoras < 6).length,
+          atencao:  urgentes.filter(u => u.prazoHoras >= 6 && u.prazoHoras < 12).length,
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // ============================================================
+    // ESCALAR ANÚNCIOS TOP — gera variações de título pra ocupar busca
+    // ============================================================
+    if (u.pathname === '/api/ml/performance/escalar' && req.method === 'POST') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const itemId    = body.itemId;
+        const modoTeste = body.modoTeste !== false;
+        if (!itemId) return send(res, 200, { success:false, error:'itemId obrigatório' });
+
+        const itemResp = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          headers: { 'Authorization': 'Bearer ' + token },
+        });
+        const item = await itemResp.json().catch(() => ({}));
+        if (!item.id) return send(res, 200, { success:false, error: item.message || 'Anúncio não encontrado' });
+
+        const tituloBase = String(item.title || '');
+        const variacoesRaw = [
+          ('Kit ' + tituloBase).substring(0, 60),
+          tituloBase.replace(/Dianteiro|Traseiro/i, (m) => (m.toLowerCase() === 'dianteiro' ? 'Diant.' : 'Tras.')).substring(0, 60),
+          (tituloBase + ' Premium').substring(0, 60),
+        ];
+        const variacoes = [...new Set(variacoesRaw.filter(v => v && v !== tituloBase))];
+
+        if (modoTeste) {
+          return send(res, 200, {
+            success: true,
+            modoTeste: true,
+            itemId,
+            original: tituloBase,
+            variacoes,
+            mensagem: 'Preview de variações (não publicado)',
+          });
+        }
+
+        const resultados = [];
+        for (const titulo of variacoes) {
+          try {
+            const payload = {
+              title: titulo,
+              category_id: item.category_id,
+              price: item.price,
+              currency_id: 'BRL',
+              available_quantity: Math.min(item.available_quantity || 1, 10),
+              buying_mode: 'buy_it_now',
+              condition: item.condition,
+              listing_type_id: item.listing_type_id,
+              description: { plain_text: item.description?.plain_text || item.title },
+              pictures: (item.pictures || []).map(p => ({ source: p.url || p.source })),
+              shipping: item.shipping,
+            };
+            const pubResp = await mlFetch('https://api.mercadolibre.com/items', {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            const pubData = await pubResp.json().catch(() => ({}));
+            resultados.push({
+              titulo,
+              success: pubResp.ok,
+              mlbId:   pubData.id || null,
+              error:   pubData.message || null,
+            });
+            console.log(`🤖 [escalar] ${pubResp.ok ? '✅' : '❌'} ${titulo.substring(0, 40)}...`);
+            await new Promise(r => setTimeout(r, 2000));
+          } catch (e) {
+            resultados.push({ titulo, success:false, error: e.message });
+          }
+        }
+        return send(res, 200, {
+          success:   true,
+          original:  tituloBase,
+          variacoes: resultados.filter(r => r.success).length,
+          detalhes:  resultados,
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
+    }
+
+    // ============================================================
+    // UPLOAD DE IMAGEM — recebe base64 e envia pro ML (opcionalmente vincula a item)
+    // ============================================================
+    if (u.pathname === '/api/ml/imagens/upload' && req.method === 'POST') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const imageBase64 = body.imageBase64;
+        const itemId     = body.itemId || null;
+        if (!imageBase64) return send(res, 200, { success:false, error:'Imagem base64 obrigatória' });
+
+        const uploadResp = await mlFetch('https://api.mercadolibre.com/pictures/items/upload', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: imageBase64 }),
+        });
+        const uploadData = await uploadResp.json().catch(() => ({}));
+
+        if (!uploadResp.ok || !uploadData.id) {
+          return send(res, 200, { success:false, error: uploadData.message || 'Erro no upload', details: uploadData });
+        }
+
+        // Vincula ao anúncio se informado
+        if (itemId) {
+          try {
+            const linkResp = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/pictures`, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: uploadData.id }),
+            });
+            if (linkResp.ok) {
+              console.log(`📷 Imagem ${uploadData.id} vinculada ao ${itemId}`);
+            }
+          } catch (_) {}
+        }
+        return send(res, 200, {
+          success: true,
+          pictureId: uploadData.id,
+          url: (uploadData.variations?.[0]?.url) || uploadData.secure_url || uploadData.url || null,
+          itemId: itemId || null,
+        });
+      } catch (error) {
+        return send(res, 200, { success:false, error: error.message });
+      }
     }
 
     // Excluir pergunta (spam/concorrente)
