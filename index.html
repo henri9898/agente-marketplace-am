@@ -8321,6 +8321,224 @@ function useSubTab(sectorKey, defaultTab, override){
   return [sub, setSub];
 }
 
+// ===== Hook: gestão de pedidos =====
+function usePedidos(){
+  const [pedidos, setPedidos]     = useState(null);
+  const [resumo, setResumo]       = useState(null);
+  const [stats, setStats]         = useState(null);
+  const [statusFiltro, setStatus] = useState(''); // '', paid, confirmed, cancelled
+  const [busy, setBusy]           = useState(false);
+  const [msg, setMsg]             = useState(null);
+
+  const refresh = useCallback(async () => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) { setPedidos(null); setStats(null); return; }
+    setBusy(true);
+    try {
+      const qs = statusFiltro ? `?status=${encodeURIComponent(statusFiltro)}` : '';
+      const [lR, sR] = await Promise.all([
+        fetch('/api/ml/pedidos'+qs, { headers:{ 'Authorization':'Bearer '+ml.access_token }}),
+        fetch('/api/ml/pedidos/stats/resumo', { headers:{ 'Authorization':'Bearer '+ml.access_token }}),
+      ]);
+      const lJ = await lR.json().catch(()=>null);
+      const sJ = await sR.json().catch(()=>null);
+      if (lJ?.success) { setPedidos(lJ.pedidos || []); setResumo(lJ.resumo || null); }
+      if (sJ?.success) setStats(sJ);
+    } catch(e){ setMsg('❌ '+e.message); }
+    finally { setBusy(false); }
+  }, [statusFiltro]);
+
+  const detalhes = useCallback(async (orderId) => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) return null;
+    const r = await fetch(`/api/ml/pedidos/${orderId}`, {
+      headers:{ 'Authorization':'Bearer '+ml.access_token }
+    });
+    return await r.json().catch(()=>({ success:false }));
+  }, []);
+
+  const despachar = useCallback(async (shipmentId) => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token) return { success:false, error:'sem token' };
+    const r = await fetch(`/api/ml/envios/${shipmentId}/despachar`, {
+      method:'POST', headers:{ 'Authorization':'Bearer '+ml.access_token }
+    });
+    const d = await r.json().catch(()=>({ success:false }));
+    if (d.success) setMsg('🚚 Marcado como pronto pra despachar!');
+    else setMsg('❌ '+(d.error || 'falha'));
+    return d;
+  }, []);
+
+  const etiquetaUrl = useCallback((shipmentId) => {
+    const ml = loadMLTokens();
+    if (!ml?.access_token || !shipmentId) return null;
+    return `/api/ml/envios/${shipmentId}/etiqueta?access_token=${encodeURIComponent(ml.access_token)}`;
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  return { pedidos, resumo, stats, statusFiltro, setStatus,
+           busy, msg, refresh, detalhes, despachar, etiquetaUrl };
+}
+
+// ===== Painel: lista de pedidos =====
+function PedidosPanel({ pedidos: pedidosHook }){
+  const ped = pedidosHook;
+  const [expandido, setExpandido] = useState(null);
+  const [det, setDet]             = useState({});
+
+  const brl = (v) => `R$ ${Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2})}`;
+  const dt  = (s) => s ? new Date(s).toLocaleString('pt-BR', { dateStyle:'short', timeStyle:'short' }) : '—';
+
+  const statusLabel = (s) => ({
+    paid: '💰 Pago', confirmed: '✅ Confirmado', cancelled: '❌ Cancelado',
+    invalid: '⚠️ Inválido', payment_required: '⏳ Aguardando pagto',
+    payment_in_process: '⏳ Processando',
+  }[s] || s || '—');
+
+  const statusCor = (s) => ({
+    paid: '#22c55e', confirmed: '#00a7ff', cancelled: '#ef4444',
+  }[s] || '#888');
+
+  const abrir = async (p) => {
+    if (expandido === p.id) { setExpandido(null); return; }
+    setExpandido(p.id);
+    if (!det[p.id]) {
+      const d = await ped.detalhes(p.id);
+      if (d?.success) setDet(prev => ({ ...prev, [p.id]: d.pedido }));
+    }
+  };
+
+  const filtros = [
+    { id:'',          label:'Todos' },
+    { id:'paid',      label:'💰 Pagos' },
+    { id:'confirmed', label:'✅ Confirmados' },
+    { id:'cancelled', label:'❌ Cancelados' },
+  ];
+
+  return (
+    <div>
+      {/* Stats rápidas */}
+      {ped.stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div className="card p-3">
+            <div className="sub text-[11px]">Hoje</div>
+            <div className="font-bold text-lg">{ped.stats.hoje?.total || 0}</div>
+            <div className="sub text-[11px]">{brl(ped.stats.hoje?.receita)}</div>
+          </div>
+          <div className="card p-3">
+            <div className="sub text-[11px]">30 dias · total</div>
+            <div className="font-bold text-lg">{ped.stats.ultimos30dias?.total || 0}</div>
+            <div className="sub text-[11px]">{brl(ped.stats.ultimos30dias?.receitaTotal)}</div>
+          </div>
+          <div className="card p-3">
+            <div className="sub text-[11px]">Pagos (30d)</div>
+            <div className="font-bold text-lg" style={{color:'#22c55e'}}>{ped.stats.ultimos30dias?.pagos || 0}</div>
+          </div>
+          <div className="card p-3">
+            <div className="sub text-[11px]">Enviados (30d)</div>
+            <div className="font-bold text-lg" style={{color:'#00a7ff'}}>{ped.stats.ultimos30dias?.enviados || 0}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Filtros */}
+      <div className="flex flex-wrap gap-2 mb-3">
+        {filtros.map(f => (
+          <button key={f.id}
+            className={'chip '+(ped.statusFiltro === f.id ? 'chip-active' : '')}
+            onClick={() => ped.setStatus(f.id)}>{f.label}</button>
+        ))}
+        <button className="chip ml-auto" onClick={ped.refresh} disabled={ped.busy}>
+          {ped.busy ? '⏳' : '🔄'} Atualizar
+        </button>
+      </div>
+
+      {ped.msg && <div className="card p-2 mb-3 text-xs">{ped.msg}</div>}
+
+      {/* Lista */}
+      {!ped.pedidos && <div className="sub text-sm">⏳ Carregando...</div>}
+      {ped.pedidos && ped.pedidos.length === 0 && (
+        <div className="card p-6 text-center">
+          <div className="text-3xl mb-2">📭</div>
+          <div className="sub text-sm">Nenhum pedido encontrado</div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {(ped.pedidos || []).map(p => {
+          const d = det[p.id];
+          const aberto = expandido === p.id;
+          return (
+            <div key={p.id} className="card p-3" style={{borderColor: statusCor(p.status)+'55'}}>
+              <div className="flex items-start gap-3 cursor-pointer" onClick={() => abrir(p)}>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="mono text-xs" style={{color:'var(--green)'}}>#{p.id}</span>
+                    <span className="chip" style={{fontSize:10, color: statusCor(p.status)}}>{statusLabel(p.status)}</span>
+                    {p.fraude && <span className="chip" style={{fontSize:10, color:'#ef4444'}}>⚠️ Fraude</span>}
+                  </div>
+                  <div className="text-sm font-semibold mt-1 truncate">
+                    {(p.itens || []).map(i => i.titulo).filter(Boolean).join(' · ') || '—'}
+                  </div>
+                  <div className="sub text-[11px] mt-1">
+                    {dt(p.dataCriacao)} · {p.comprador?.nickname || '—'} · {brl(p.valorTotal)}
+                  </div>
+                </div>
+                <div className="text-lg">{aberto ? '▲' : '▼'}</div>
+              </div>
+
+              {aberto && (
+                <div className="mt-3 pt-3" style={{borderTop:'1px solid rgba(255,255,255,.08)'}}>
+                  {!d && <div className="sub text-xs">⏳ Carregando detalhes...</div>}
+                  {d && (
+                    <div className="space-y-2 text-xs">
+                      <div>
+                        <div className="font-semibold mb-1">🛒 Itens</div>
+                        {(d.itens || []).map((i, idx) => (
+                          <div key={idx} className="sub">
+                            {i.quantidade}× {i.titulo} — {brl(i.precoUnitario)}
+                          </div>
+                        ))}
+                      </div>
+                      {d.envio && (
+                        <div>
+                          <div className="font-semibold mb-1">🚚 Envio</div>
+                          <div className="sub">Status: {d.envio.status || '—'} {d.envio.substatus ? `(${d.envio.substatus})` : ''}</div>
+                          <div className="sub">Método: {d.envio.metodo || '—'}</div>
+                          {d.envio.rastreamento && <div className="sub">Rastreio: <span className="mono">{d.envio.rastreamento}</span></div>}
+                          {d.envio.dataEnvio && <div className="sub">Despachado: {dt(d.envio.dataEnvio)}</div>}
+                          {d.envio.dataEntrega && <div className="sub" style={{color:'#22c55e'}}>Entregue: {dt(d.envio.dataEntrega)}</div>}
+                        </div>
+                      )}
+                      {d.sla && (
+                        <div>
+                          <div className="font-semibold mb-1">⏱️ SLA</div>
+                          <div className="sub">Prazo máx despacho: {d.sla.prazoMaximo ? dt(d.sla.prazoMaximo) : '—'}</div>
+                          {d.sla.servico && <div className="sub">Serviço: {d.sla.servico}</div>}
+                        </div>
+                      )}
+                      {p.envio?.id && (
+                        <div className="flex gap-2 pt-1 flex-wrap">
+                          <a className="chip" target="_blank" rel="noopener"
+                             href={`/api/ml/envios/${p.envio.id}/etiqueta`}>🏷️ Etiqueta PDF</a>
+                          <button className="chip" onClick={() => ped.despachar(p.envio.id)}>
+                            🚚 Marcar despachado
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ===== Placeholder de funcionalidade futura =====
 function ComingSoonCard({ icon, title, description, features }){
   return (
@@ -8518,6 +8736,7 @@ function FinanceiroSectorPage(){
 function LogisticaSectorPage(){
   const [sub, setSub] = useSubTab('logistica', 'estoque');
   const estoque = useEstoque();
+  const pedidos = usePedidos();
   const tabs = [
     { id:'estoque',    label:'📦 Estoque' },
     { id:'pedidos',    label:'🛒 Pedidos' },
@@ -8531,10 +8750,7 @@ function LogisticaSectorPage(){
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'estoque' && <EstoquePanel estoque={estoque} inline/>}
-        {sub === 'pedidos' && <ComingSoonCard
-          icon="🛒" title="Gestão de Pedidos"
-          description="Lista completa de pedidos com timeline: Vendido → Pago → Enviado → Entregue."
-          features={['Timeline por pedido', 'Filtros por status', 'Detalhes do comprador', 'Nota fiscal']}/>}
+        {sub === 'pedidos' && <PedidosPanel pedidos={pedidos}/>}
         {sub === 'envios' && <ComingSoonCard
           icon="🚚" title="Gestão de Envios"
           description="Envios pendentes, prazo de despacho, rastreamento em tempo real."

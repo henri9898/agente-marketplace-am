@@ -1648,6 +1648,218 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // ============= GESTÃO DE PEDIDOS (Orders + Shipping + SLA) =============
+    // Lista detalhada, stats, detalhes com envio/SLA, etiqueta PDF, ready_to_ship
+
+    // Stats — precisa vir ANTES do :orderId pra não ser capturado pelo match genérico
+    if (u.pathname === '/api/ml/pedidos/stats/resumo' && req.method === 'GET') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const me = await authedFetch('https://api.mercadolibre.com/users/me', token);
+        if (!me.ok || !me.data.id) return send(res, me.status || 401, { success:false, error: me.data.message || 'Token inválido' });
+
+        const desde = new Date();
+        desde.setDate(desde.getDate() - 30);
+        const desdeStr = desde.toISOString();
+
+        const data = await authedFetch(
+          `https://api.mercadolibre.com/orders/search?seller=${me.data.id}&order.date_created.from=${desdeStr}&sort=date_desc&limit=50`,
+          token
+        );
+        if (!data.ok) return send(res, data.status, { success:false, error: data.data.message || 'Falha' });
+        const pedidos = data.data.results || [];
+        const hoje = new Date().toDateString();
+        const pedidosHoje = pedidos.filter(p => new Date(p.date_created).toDateString() === hoje);
+
+        return send(res, 200, {
+          success: true,
+          ultimos30dias: {
+            total:        data.data.paging?.total || 0,
+            pagos:        pedidos.filter(p => p.status === 'paid').length,
+            enviados:     pedidos.filter(p => p.shipping?.status === 'shipped').length,
+            cancelados:   pedidos.filter(p => p.status === 'cancelled').length,
+            receitaTotal: pedidos.reduce((s, p) => s + (p.total_amount || 0), 0),
+          },
+          hoje: {
+            total:   pedidosHoje.length,
+            receita: pedidosHoje.reduce((s, p) => s + (p.total_amount || 0), 0),
+          },
+        });
+      } catch (err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Lista de pedidos recentes (?status=paid|confirmed|cancelled)
+    if (u.pathname === '/api/ml/pedidos' && req.method === 'GET') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const me = await authedFetch('https://api.mercadolibre.com/users/me', token);
+        if (!me.ok || !me.data.id) return send(res, me.status || 401, { success:false, error: me.data.message || 'Token inválido' });
+
+        const status = u.query.status || '';
+        let url = `https://api.mercadolibre.com/orders/search?seller=${me.data.id}&sort=date_desc&limit=50`;
+        if (status) url += `&order.status=${encodeURIComponent(status)}`;
+
+        const orders = await authedFetch(url, token);
+        if (!orders.ok) return send(res, orders.status, { success:false, error: orders.data.message || 'Falha ao buscar pedidos' });
+
+        const pedidos = (orders.data.results || []).map(order => ({
+          id:             order.id,
+          status:         order.status,
+          statusDetail:   order.status_detail,
+          dataCriacao:    order.date_created,
+          dataFechamento: order.date_closed,
+          valorTotal:     order.total_amount,
+          moeda:          order.currency_id,
+          comprador: {
+            id:       order.buyer?.id,
+            nickname: order.buyer?.nickname,
+          },
+          itens: (order.order_items || []).map(item => ({
+            titulo:         item.item?.title,
+            itemId:         item.item?.id,
+            quantidade:     item.quantity,
+            precoUnitario:  item.unit_price,
+            sku:            item.item?.seller_sku || item.item?.seller_custom_field,
+          })),
+          envio: {
+            id:     order.shipping?.id,
+            status: order.shipping?.status || null,
+          },
+          tags:   order.tags || [],
+          fraude: (order.tags || []).includes('fraud_risk_detected'),
+        }));
+
+        return send(res, 200, {
+          success: true,
+          total:   orders.data.paging?.total || 0,
+          pedidos,
+          resumo: {
+            pagos:       pedidos.filter(p => p.status === 'paid').length,
+            confirmados: pedidos.filter(p => p.status === 'confirmed').length,
+            cancelados:  pedidos.filter(p => p.status === 'cancelled').length,
+            valorTotal:  pedidos.reduce((s, p) => s + (p.valorTotal || 0), 0),
+          },
+        });
+      } catch (err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Detalhes de um pedido (com envio + SLA)
+    if (u.pathname.startsWith('/api/ml/pedidos/') && req.method === 'GET') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const orderId = u.pathname.replace('/api/ml/pedidos/', '');
+        if (!orderId || orderId.includes('/')) return send(res, 400, { success:false, error:'orderId inválido' });
+
+        const orderR = await authedFetch(`https://api.mercadolibre.com/orders/${orderId}`, token);
+        if (!orderR.ok) return send(res, orderR.status, { success:false, error: orderR.data.message || 'Pedido não encontrado' });
+        const order = orderR.data;
+
+        // Envio
+        let envio = null;
+        if (order.shipping?.id) {
+          try {
+            const shipResp = await mlFetch(`https://api.mercadolibre.com/shipments/${order.shipping.id}`, {
+              headers: { 'Authorization': 'Bearer ' + token, 'x-format-new': 'true' },
+            });
+            envio = await shipResp.json();
+          } catch(_){}
+        }
+
+        // SLA (prazo máximo de despacho)
+        let sla = null;
+        if (order.shipping?.id) {
+          try {
+            const slaResp = await mlFetch(`https://api.mercadolibre.com/shipments/${order.shipping.id}/sla`, {
+              headers: { 'Authorization': 'Bearer ' + token },
+            });
+            sla = await slaResp.json();
+          } catch(_){}
+        }
+
+        return send(res, 200, {
+          success: true,
+          pedido: {
+            id:          order.id,
+            status:      order.status,
+            dataCriacao: order.date_created,
+            valorTotal:  order.total_amount,
+            comprador: {
+              id:       order.buyer?.id,
+              nickname: order.buyer?.nickname,
+            },
+            itens: (order.order_items || []).map(item => ({
+              titulo:        item.item?.title,
+              itemId:        item.item?.id,
+              quantidade:    item.quantity,
+              precoUnitario: item.unit_price,
+            })),
+            envio: envio ? {
+              id:           envio.id,
+              status:       envio.status,
+              substatus:    envio.substatus,
+              tipo:         envio.logistic_type,
+              dataEnvio:    envio.date_first_printed,
+              dataEntrega:  envio.status_history?.date_delivered,
+              rastreamento: envio.tracking_number,
+              metodo:       envio.shipping_option?.name,
+            } : null,
+            sla: sla ? {
+              status:      sla.status,
+              prazoMaximo: sla.expected_date,
+              servico:     sla.service,
+            } : null,
+            tags:   order.tags || [],
+            fraude: (order.tags || []).includes('fraud_risk_detected'),
+          },
+        });
+      } catch (err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Etiqueta PDF
+    if (u.pathname.match(/^\/api\/ml\/envios\/[^/]+\/etiqueta$/) && req.method === 'GET') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const shipmentId = u.pathname.split('/')[4];
+        const labelResp = await mlFetch(
+          `https://api.mercadolibre.com/shipment_labels?shipment_ids=${shipmentId}&response_type=pdf`,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        if (labelResp.ok) {
+          const buffer = await labelResp.arrayBuffer();
+          res.writeHead(200, {
+            'Content-Type':        'application/pdf',
+            'Content-Disposition': `inline; filename="etiqueta-${shipmentId}.pdf"`,
+            'Access-Control-Allow-Origin': '*',
+          });
+          return res.end(Buffer.from(buffer));
+        }
+        return send(res, 200, { success:false, error:'Etiqueta não disponível' });
+      } catch (err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
+    // Marcar envio como pronto pra despachar
+    if (u.pathname.match(/^\/api\/ml\/envios\/[^/]+\/despachar$/) && req.method === 'POST') {
+      const token = getBearer();
+      if (!token) return send(res, 200, { success:false, error:'Token não fornecido' });
+      try {
+        const shipmentId = u.pathname.split('/')[4];
+        const response = await mlFetch(
+          `https://api.mercadolibre.com/shipments/${shipmentId}/process/ready_to_ship`,
+          { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (response.ok) {
+          console.log(`🚚 Envio ${shipmentId} marcado como PRONTO PRA DESPACHAR ✅`);
+          return send(res, 200, { success: true, message: 'Marcado como pronto pra despachar!' });
+        }
+        return send(res, 200, { success: false, error: data.message || 'Erro ao despachar', details: data });
+      } catch (err) { return send(res, 200, { success:false, error: err.message }); }
+    }
+
     // 3) GET /api/ml/visits/:itemId — visitas de um item (últimos 30d)
     if (u.pathname.startsWith('/api/ml/visits/') && req.method === 'GET') {
       const token = getBearer();
