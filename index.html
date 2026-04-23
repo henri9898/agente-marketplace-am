@@ -1896,6 +1896,167 @@ function AnimatedCard({ children, delay = 0, glow = false, style = {}, className
 }
 
 // ============================================================
+// NetworkGraph — grafo de rede neural animado em Canvas.
+// Usado no card do Agente pra simbolizar IA avançada.
+// 25 nós, pulso de dados viajando pelas conexões, GPU accelerated
+// via requestAnimationFrame; cleanup no unmount.
+// ============================================================
+function NetworkGraph({ size = 80, animated = true, color = '#3b82f6' }) {
+  const canvasRef = useRef(null);
+  const animRef   = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = size * dpr;
+    const h = size * dpr;
+    canvas.width = w;
+    canvas.height = h;
+
+    // Respeita prefers-reduced-motion
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const anim = animated && !reduceMotion;
+
+    const numNodes = 25;
+    const nodes = [];
+    // Nó central (maior, com glow)
+    nodes.push({ x: w/2, y: h/2, vx: 0, vy: 0, radius: 6 * dpr, central: true });
+    // Nós orbitais
+    for (let i = 1; i < numNodes; i++) {
+      const angle = (Math.PI * 2 / (numNodes - 1)) * i + Math.random() * 0.5;
+      const dist  = 20 * dpr + Math.random() * (w * 0.35);
+      nodes.push({
+        x: w/2 + Math.cos(angle) * dist,
+        y: h/2 + Math.sin(angle) * dist,
+        vx: (Math.random() - 0.5) * 0.3 * dpr,
+        vy: (Math.random() - 0.5) * 0.3 * dpr,
+        radius: (1.5 + Math.random() * 2.5) * dpr,
+        central: false,
+      });
+    }
+
+    // Conexões
+    const edges = [];
+    for (let i = 1; i < numNodes; i++) {
+      if (Math.random() > 0.4) edges.push([0, i]);
+    }
+    for (let i = 1; i < numNodes; i++) {
+      for (let j = i + 1; j < numNodes; j++) {
+        const dx = nodes[i].x - nodes[j].x;
+        const dy = nodes[i].y - nodes[j].y;
+        const d  = Math.sqrt(dx*dx + dy*dy);
+        if (d < w * 0.3 && Math.random() > 0.6) edges.push([i, j]);
+      }
+    }
+
+    const toHex2 = (n) => Math.max(0, Math.min(255, Math.floor(n))).toString(16).padStart(2, '0');
+    let frame = 0;
+    let running = true;
+
+    function draw() {
+      if (!running) return;
+      ctx.clearRect(0, 0, w, h);
+      frame++;
+
+      if (anim) {
+        for (let i = 1; i < nodes.length; i++) {
+          const n = nodes[i];
+          n.x += n.vx; n.y += n.vy;
+          if (n.x < 10 || n.x > w - 10) n.vx *= -1;
+          if (n.y < 10 || n.y > h - 10) n.vy *= -1;
+          n.vx += (w/2 - n.x) * 0.0002;
+          n.vy += (h/2 - n.y) * 0.0002;
+          n.vx *= 0.999; n.vy *= 0.999;
+        }
+      }
+
+      // Conexões
+      const maxDist = w * 0.45;
+      for (const [a, b] of edges) {
+        const na = nodes[a], nb = nodes[b];
+        const dx = na.x - nb.x, dy = na.y - nb.y;
+        const d  = Math.sqrt(dx*dx + dy*dy);
+        if (d < maxDist) {
+          const alpha = (1 - d / maxDist) * 0.4;
+          const pulse = Math.sin(frame * 0.02 + a + b) * 0.1 + 0.9;
+          ctx.beginPath();
+          ctx.moveTo(na.x, na.y);
+          ctx.lineTo(nb.x, nb.y);
+          ctx.strokeStyle = color + toHex2(alpha * pulse * 255);
+          ctx.lineWidth = (na.central || nb.central ? 1.5 : 0.8) * dpr;
+          ctx.stroke();
+        }
+      }
+
+      // Nós
+      for (const n of nodes) {
+        const glow = Math.sin(frame * 0.03 + n.x * 0.01) * 0.3 + 0.7;
+        if (n.central) {
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, n.radius * 3, 0, Math.PI * 2);
+          ctx.fillStyle = color + '15';
+          ctx.fill();
+        }
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+        if (n.central) {
+          const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.radius);
+          grad.addColorStop(0,   '#ffffff');
+          grad.addColorStop(0.5, color);
+          grad.addColorStop(1,   color + '80');
+          ctx.fillStyle = grad;
+        } else {
+          ctx.fillStyle = color + toHex2(glow * 200);
+        }
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 0.5 * dpr;
+        ctx.stroke();
+      }
+
+      // Pulso de dados viajando
+      if (anim && edges.length > 0) {
+        const pulseEdge = edges[frame % edges.length];
+        if (pulseEdge) {
+          const na = nodes[pulseEdge[0]], nb = nodes[pulseEdge[1]];
+          const t  = (Math.sin(frame * 0.05) + 1) / 2;
+          const px = na.x + (nb.x - na.x) * t;
+          const py = na.y + (nb.y - na.y) * t;
+          ctx.beginPath();
+          ctx.arc(px, py, 2 * dpr, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(px, py, 5 * dpr, 0, Math.PI * 2);
+          ctx.fillStyle = color + '30';
+          ctx.fill();
+        }
+      }
+
+      animRef.current = requestAnimationFrame(draw);
+    }
+    draw();
+
+    return () => {
+      running = false;
+      if (animRef.current) cancelAnimationFrame(animRef.current);
+    };
+  }, [size, animated, color]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ width: size, height: size, borderRadius: 16, display: 'block' }}
+      aria-hidden="true"
+    />
+  );
+}
+
+// ============================================================
 // MODO DEMO — dados simulados pra apresentação
 // Ativado por toggle no header OU quando ML rate-limita o VPS.
 // Intercepta fetch() pros endpoints de leitura e devolve payload fake.
@@ -7987,7 +8148,9 @@ function AgentStatusCard({ agent }) {
   if (status === 'idle') {
     return (
       <div className="agent-status as-idle">
-        <div className="status-icon">🤖</div>
+        <div className="status-icon" style={{width:64, height:64, display:'flex', alignItems:'center', justifyContent:'center'}}>
+          <NetworkGraph size={64} animated={true} color="#3b82f6"/>
+        </div>
         <div className="status-info">
           <div className="status-label" style={{color:'#4dc3ff'}}>● Agente IDLE</div>
           <div className="status-title">Pronto pra começar</div>
