@@ -1471,17 +1471,24 @@
   /* ---- #root acima do fundo animado ---- */
   #root { position: relative; z-index: 1; }
 
-  /* ---- Header responsivo: entre tablet e laptop estreito,
-          esconde o texto dos tabs e mostra só o Icon3D.
-          Blinda o lado direito (Demo/ML/Perfil) de ser cortado. ---- */
-  @media (min-width: 769px) and (max-width: 1280px) {
-    .desktop-header-tabs .tab > span { display: none !important; }
-    .desktop-header-tabs .tab { padding: 6px 8px !important; }
-    .desktop-header-tabs { gap: 4px !important; }
+  /* ---- Header responsivo: TODOS os 8 setores SEMPRE com ícone + texto.
+          Quando não cabe, a nav scrolla horizontalmente (sem barra visível).
+          O bloco da direita (Demo/ML/Perfil) NUNCA é cortado. ---- */
+  .desktop-header-tabs {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;           /* Firefox */
+    -ms-overflow-style: none;        /* IE/Edge antigos */
+    flex-wrap: nowrap;
   }
-  @media (min-width: 1281px) {
-    .desktop-header-tabs { gap: 6px !important; }
+  .desktop-header-tabs::-webkit-scrollbar {
+    display: none;                   /* WebKit/Chromium */
+    width: 0;
+    height: 0;
   }
+  /* Tabs nunca encolhem — sempre mostram ícone + texto completos */
+  .desktop-header-tabs .tab { flex-shrink: 0 !important; }
 
   /* ---- Keyframes do fundo animado (div real, não pseudo) ---- */
   @keyframes meshBG {
@@ -4613,7 +4620,8 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
             <div className="text-[10px] sub mono">painel de operação</div>
           </div>
         </div>
-        <nav className="desktop-header-tabs flex gap-1 ml-4" style={{minWidth:0, flex:'1 1 auto', overflow:'hidden'}}>
+        <nav className="desktop-header-tabs flex ml-4"
+             style={{minWidth:0, flex:'1 1 auto', overflowX:'auto', overflowY:'hidden', gap:2, flexWrap:'nowrap'}}>
           {tabs.map(([k, lbl, iconName, iconColor]) => (
             <div key={k}
                  className={`tab ${activeSector===k?'active':''} flex items-center gap-2`}
