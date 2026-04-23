@@ -4541,13 +4541,13 @@ function ProfileDropdown({ user, onLogout, onGoTo, onOpenNotifPanel }) {
             {/* SEÇÃO — SETORES (acesso rápido, útil sobretudo no mobile onde a bottom nav só tem 5) */}
             <div className="dropdown-section">
               <div className="dropdown-label">Setores</div>
-              <MenuItem icon="📊" label="Visão Geral"    onClick={() => go(() => onGoTo && onGoTo('overview'))}/>
-              <MenuItem icon="🛍️" label="Comercial"       onClick={() => go(() => onGoTo && onGoTo('comercial'))}/>
-              <MenuItem icon="💰" label="Financeiro"      onClick={() => go(() => onGoTo && onGoTo('financeiro'))}/>
-              <MenuItem icon="📦" label="Logística"       onClick={() => go(() => onGoTo && onGoTo('logistica'))}/>
-              <MenuItem icon="💬" label="Atendimento"     onClick={() => go(() => onGoTo && onGoTo('atendimento'))}/>
-              <MenuItem icon="📈" label="Marketing"       onClick={() => go(() => onGoTo && onGoTo('marketing'))}/>
-              <MenuItem icon="🤖" label="Agente IA"       onClick={() => go(() => onGoTo && onGoTo('agent'))}/>
+              <MenuItem icon={<Icon3D name="bar-chart"      color="blue"   size={18}/>} label="Visão Geral"    onClick={() => go(() => onGoTo && onGoTo('overview'))}/>
+              <MenuItem icon={<Icon3D name="store"          color="green"  size={18}/>} label="Comercial"       onClick={() => go(() => onGoTo && onGoTo('comercial'))}/>
+              <MenuItem icon={<Icon3D name="wallet"         color="orange" size={18}/>} label="Financeiro"      onClick={() => go(() => onGoTo && onGoTo('financeiro'))}/>
+              <MenuItem icon={<Icon3D name="truck"          color="cyan"   size={18}/>} label="Logística"       onClick={() => go(() => onGoTo && onGoTo('logistica'))}/>
+              <MenuItem icon={<Icon3D name="message-circle" color="purple" size={18}/>} label="Atendimento"     onClick={() => go(() => onGoTo && onGoTo('atendimento'))}/>
+              <MenuItem icon={<Icon3D name="trending-up"    color="pink"   size={18}/>} label="Marketing"       onClick={() => go(() => onGoTo && onGoTo('marketing'))}/>
+              <MenuItem icon={<Icon3D name="cpu"            color="teal"   size={18}/>} label="Agente IA"       onClick={() => go(() => onGoTo && onGoTo('agent'))}/>
             </div>
 
             <div className="dropdown-divider"/>
@@ -4555,10 +4555,10 @@ function ProfileDropdown({ user, onLogout, onGoTo, onOpenNotifPanel }) {
             {/* SEÇÃO 2 — CONTA */}
             <div className="dropdown-section">
               <div className="dropdown-label">Conta</div>
-              <MenuItem icon="👤" label="Minha Conta"            onClick={() => go(() => setModal('account'))}/>
-              <MenuItem icon="⚙️" label="Configurações"          onClick={() => go(() => onGoTo && onGoTo('config'))}/>
-              <MenuItem icon="🔔" label="Notificações"           onClick={() => go(() => onOpenNotifPanel && onOpenNotifPanel())}/>
-              <MenuItem icon="🔗" label="Integrações ML"         onClick={() => go(() => setModal('integ'))}/>
+              <MenuItem icon={<Icon3D name="users"    color="blue"   size={18}/>} label="Minha Conta"            onClick={() => go(() => setModal('account'))}/>
+              <MenuItem icon={<Icon3D name="settings" color="zinc"   size={18}/>} label="Configurações"          onClick={() => go(() => onGoTo && onGoTo('config'))}/>
+              <MenuItem icon={<Icon3D name="bell"     color="amber"  size={18}/>} label="Notificações"           onClick={() => go(() => onOpenNotifPanel && onOpenNotifPanel())}/>
+              <MenuItem icon={<Icon3D name="link"     color="blue"   size={18}/>} label="Integrações ML"         onClick={() => go(() => setModal('integ'))}/>
             </div>
 
             <div className="dropdown-divider"/>
@@ -4566,10 +4566,10 @@ function ProfileDropdown({ user, onLogout, onGoTo, onOpenNotifPanel }) {
             {/* SEÇÃO 3 — SUPORTE */}
             <div className="dropdown-section">
               <div className="dropdown-label">Suporte</div>
-              <MenuItem icon="💬" label="Central de Suporte"     onClick={() => go(() => setModal('support'))}/>
-              <MenuItem icon="📖" label="Documentação"           onClick={() => { close(); window.open('https://docs.agenteam.com.br','_blank','noopener'); }}/>
-              <MenuItem icon="💡" label="Sugerir melhoria"       onClick={() => go(() => setModal('feedback'))}/>
-              <MenuItem icon="🐛" label="Reportar problema"      onClick={() => go(() => setModal('bug'))}/>
+              <MenuItem icon={<Icon3D name="info"            color="blue"   size={18}/>} label="Central de Suporte"     onClick={() => go(() => setModal('support'))}/>
+              <MenuItem icon={<Icon3D name="file-text"       color="zinc"   size={18}/>} label="Documentação"           onClick={() => { close(); window.open('https://docs.agenteam.com.br','_blank','noopener'); }}/>
+              <MenuItem icon={<Icon3D name="zap"             color="purple" size={18}/>} label="Sugerir melhoria"       onClick={() => go(() => setModal('feedback'))}/>
+              <MenuItem icon={<Icon3D name="alert-triangle"  color="red"    size={18}/>} label="Reportar problema"      onClick={() => go(() => setModal('bug'))}/>
             </div>
 
             <div className="dropdown-divider"/>
@@ -4608,7 +4608,7 @@ function ProfileDropdown({ user, onLogout, onGoTo, onOpenNotifPanel }) {
                 )}
               </MenuItem>
 
-              <MenuItem icon="🚪" label="Sair" danger onClick={() => go(() => setModal('logout'))}/>
+              <MenuItem icon={<Icon3D name="x-circle" color="red" size={18}/>} label="Sair" danger onClick={() => go(() => setModal('logout'))}/>
             </div>
           </div>
         )}
@@ -9831,8 +9831,10 @@ function SubTabs({ tabs, activeTab, onTabChange }){
               marginBottom: -1,
               whiteSpace:'nowrap',
               transition:'.15s',
+              display:'inline-flex', alignItems:'center', gap:8,
             }}>
-            {t.label}
+            {t.iconName && <Icon3D name={t.iconName} color={t.iconColor || 'blue'} size={14}/>}
+            <span>{t.label}</span>
           </button>
         );
       })}
@@ -10533,10 +10535,10 @@ function ComercialSectorPage({ agent, onGoToAgent, initialSub }){
   const [sub, setSub] = useSubTab('comercial', 'catalogo', initialSub);
   const compat = useCompatStatus();
   const tabs = [
-    { id:'catalogo', label:'📦 Catálogo' },
-    { id:'anuncios', label:'📢 Anúncios' },
-    { id:'seo',      label:'📝 SEO' },
-    { id:'compat',   label:'🚗 Compatibilidade' },
+    { id:'catalogo', label:'Catálogo',        iconName:'package',   iconColor:'blue'  },
+    { id:'anuncios', label:'Anúncios',        iconName:'megaphone', iconColor:'green' },
+    { id:'seo',      label:'SEO',             iconName:'target',    iconColor:'teal'  },
+    { id:'compat',   label:'Compatibilidade', iconName:'car',       iconColor:'blue'  },
   ];
   return (
     <div>
@@ -10861,10 +10863,10 @@ function ConcorrenciaPage(){
 function FinanceiroSectorPage(){
   const [sub, setSub] = useSubTab('financeiro', 'calculadora');
   const tabs = [
-    { id:'calculadora',  label:'🧮 Calculadora' },
-    { id:'simulador',    label:'🔍 Simulador' },
-    { id:'concorrencia', label:'🎯 Concorrência' },
-    { id:'relatorios',   label:'📊 Relatórios' },
+    { id:'calculadora',  label:'Calculadora',  iconName:'percent',      iconColor:'blue'   },
+    { id:'simulador',    label:'Simulador',    iconName:'bar-chart',    iconColor:'purple' },
+    { id:'concorrencia', label:'Concorrência', iconName:'target',       iconColor:'red'    },
+    { id:'relatorios',   label:'Relatórios',   iconName:'trending-up',  iconColor:'green'  },
   ];
   return (
     <div>
@@ -10890,10 +10892,10 @@ function LogisticaSectorPage(){
   const estoque = useEstoque();
   const pedidos = usePedidos();
   const tabs = [
-    { id:'estoque',    label:'📦 Estoque' },
-    { id:'pedidos',    label:'🛒 Pedidos' },
-    { id:'envios',     label:'🚚 Envios' },
-    { id:'etiquetas',  label:'🏷️ Etiquetas' },
+    { id:'estoque',    label:'Estoque',   iconName:'box',           iconColor:'blue'   },
+    { id:'pedidos',    label:'Pedidos',   iconName:'shopping-cart', iconColor:'orange' },
+    { id:'envios',     label:'Envios',    iconName:'truck',         iconColor:'cyan'   },
+    { id:'etiquetas',  label:'Etiquetas', iconName:'tag',           iconColor:'teal'   },
   ];
   return (
     <div>
@@ -11196,9 +11198,9 @@ function AtendimentoSectorPage(){
   const [sub, setSub] = useSubTab('atendimento', 'perguntas');
   const sac = useSAC();
   const tabs = [
-    { id:'perguntas',  label:'❓ Perguntas' },
-    { id:'mensagens',  label:'💬 Mensagens' },
-    { id:'avaliacoes', label:'⭐ Avaliações' },
+    { id:'perguntas',  label:'Perguntas',  iconName:'message-circle', iconColor:'purple' },
+    { id:'mensagens',  label:'Mensagens',  iconName:'send',           iconColor:'blue'   },
+    { id:'avaliacoes', label:'Avaliações', iconName:'star',           iconColor:'gold'   },
   ];
   return (
     <div>
@@ -11449,9 +11451,9 @@ function PerformancePage(){
 function MarketingSectorPage({ agent, notif, onGoToAgent, initialSub }){
   const [sub, setSub] = useSubTab('marketing', 'ranking', initialSub);
   const tabs = [
-    { id:'ranking',      label:'🏆 Ranking' },
-    { id:'performance',  label:'📊 Performance' },
-    { id:'concorrencia', label:'🎯 Concorrência' },
+    { id:'ranking',      label:'Ranking',      iconName:'award',     iconColor:'gold' },
+    { id:'performance',  label:'Performance',  iconName:'bar-chart', iconColor:'blue' },
+    { id:'concorrencia', label:'Concorrência', iconName:'target',    iconColor:'red'  },
   ];
   return (
     <div>
@@ -11833,12 +11835,12 @@ function ConfigSectorPage({ user, notif, agent, initialSub }){
   const wh = useWebhooks();
   const [whInstruOpen, setWhInstruOpen] = useState(false);
   const tabs = [
-    { id:'integracoes', label:'🔌 Integrações' },
-    { id:'setup',       label:'🔧 Setup' },
-    { id:'webhooks',    label:'🔔 Webhooks' },
-    { id:'erros',       label:'⚠️ Erros' },
-    { id:'conta',       label:'👤 Conta' },
-    { id:'seguranca',   label:'🛡️ Segurança' },
+    { id:'integracoes', label:'Integrações', iconName:'link',            iconColor:'blue'   },
+    { id:'setup',       label:'Setup',       iconName:'wrench',          iconColor:'zinc'   },
+    { id:'webhooks',    label:'Webhooks',    iconName:'bell',            iconColor:'amber'  },
+    { id:'erros',       label:'Erros',       iconName:'alert-triangle',  iconColor:'red'    },
+    { id:'conta',       label:'Conta',       iconName:'users',           iconColor:'blue'   },
+    { id:'seguranca',   label:'Segurança',   iconName:'shield',          iconColor:'zinc'   },
   ];
   return (
     <div>
