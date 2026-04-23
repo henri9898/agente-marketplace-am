@@ -4612,38 +4612,55 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
   }[tab] || tab;
   return (
     <header className="border-b border-[var(--line)] sticky top-0 bg-[var(--bg)]/95 backdrop-blur z-40">
-      <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center gap-4" style={{overflow:'hidden'}}>
-        <div className="flex items-center gap-3" style={{flexShrink:0}}>
-          <div className="w-9 h-9 rounded-lg bg-[var(--green)] flex items-center justify-center text-white font-extrabold text-sm">AM</div>
-          <div className="hide-on-mobile">
-            <div className="text-[13px] font-bold tracking-wide">AGENTE MARKETPLACE</div>
-            <div className="text-[10px] sub mono">painel de operação</div>
+      <div className="max-w-[1400px] mx-auto">
+
+        {/* Linha 1: Logo (esquerda) + Controles (direita) */}
+        <div style={{
+          display:'flex', alignItems:'center', justifyContent:'space-between',
+          padding:'10px 16px',
+          borderBottom:'1px solid rgba(255,255,255,0.06)',
+          gap:12,
+        }}>
+          <div className="flex items-center gap-3" style={{flexShrink:0, minWidth:0}}>
+            <div className="w-9 h-9 rounded-lg bg-[var(--green)] flex items-center justify-center text-white font-extrabold text-sm" style={{flexShrink:0}}>AM</div>
+            <div className="hide-on-mobile" style={{minWidth:0}}>
+              <div className="text-[13px] font-bold tracking-wide" style={{whiteSpace:'nowrap'}}>AGENTE MARKETPLACE</div>
+              <div className="text-[10px] sub mono" style={{whiteSpace:'nowrap'}}>painel de operação</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2" style={{flexShrink:0}}>
+            <span onClick={() => setTab('overview')}><SACHeaderBadge/></span>
+            <DemoToggle/>
+            <MLStatusIndicator onClickConnect={() => setTab('integrations')}/>
+            <NotificationBell count={unreadCount} onClick={onBellClick}/>
+            <ProfileDropdown
+              user={user}
+              onLogout={onLogout}
+              onGoTo={setTab}
+              onOpenNotifPanel={onOpenNotifPanel}
+            />
           </div>
         </div>
-        <nav className="desktop-header-tabs flex ml-4"
-             style={{minWidth:0, flex:'1 1 auto', overflowX:'auto', overflowY:'hidden', gap:2, flexWrap:'nowrap'}}>
+
+        {/* Linha 2: 8 setores — Icon3D + texto SEMPRE. Scroll horizontal se estreito. */}
+        <nav className="desktop-header-tabs"
+             style={{
+               display:'flex', alignItems:'center', gap:4,
+               padding:'6px 16px',
+               overflowX:'auto', overflowY:'hidden',
+               flexWrap:'nowrap',
+             }}>
           {tabs.map(([k, lbl, iconName, iconColor]) => (
             <div key={k}
-                 className={`tab ${activeSector===k?'active':''} flex items-center gap-2`}
-                 style={{padding:'6px 10px', fontSize:12, whiteSpace:'nowrap', flexShrink:0}}
+                 className={`tab ${activeSector===k?'active':''} flex items-center`}
+                 style={{padding:'8px 14px', fontSize:13, whiteSpace:'nowrap', flexShrink:0, gap:8}}
                  onClick={()=>setTab(k)}>
-              <Icon3D name={iconName} color={iconColor} size={18}/>
+              <Icon3D name={iconName} color={iconColor} size={20}/>
               <span>{lbl}</span>
             </div>
           ))}
         </nav>
-        <div className="ml-auto flex items-center gap-2" style={{flexShrink:0}}>
-          <span onClick={() => setTab('overview')}><SACHeaderBadge/></span>
-          <DemoToggle/>
-          <MLStatusIndicator onClickConnect={() => setTab('integrations')}/>
-          <NotificationBell count={unreadCount} onClick={onBellClick}/>
-          <ProfileDropdown
-            user={user}
-            onLogout={onLogout}
-            onGoTo={setTab}
-            onOpenNotifPanel={onOpenNotifPanel}
-          />
-        </div>
+
       </div>
     </header>
   );
