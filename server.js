@@ -32,6 +32,73 @@ try { require('dotenv').config(); } catch(e) {
   } catch(e2) { /* silencioso — se não der, cai nos defaults hardcoded */ }
 }
 
+// ============================================================
+// CLOUDFLARE WORKERS PROXY — contorna bloqueio do ML contra o IP do VPS
+// ============================================================
+// O ML rate-limita/bloqueia o IP do VPS. Solução: as chamadas pra
+// api.mercadolibre.com passam por um Cloudflare Worker (IP limpo).
+// Ativado automaticamente quando ML_PROXY_URL está no .env.
+// Deploy do Worker: copiar o código abaixo em dash.cloudflare.com →
+// Workers → Create, configurar route ml-proxy.agentemarkt.com/*,
+// e setar ML_PROXY_URL=https://ml-proxy.agentemarkt.com no .env.
+//
+// ===== WORKER CODE (COPIAR NO CLOUDFLARE DASHBOARD) =====
+// const ALLOWED_ORIGINS = ['https://agentemarkt.com'];
+// const ML_API_BASE     = 'https://api.mercadolibre.com';
+// const PROXY_SECRET    = 'agente-ml-proxy-2026'; // alinhado com ML_PROXY_SECRET do server
+//
+// addEventListener('fetch', event => {
+//   event.respondWith(handleRequest(event.request));
+// });
+//
+// async function handleRequest(request) {
+//   if (request.method === 'OPTIONS') {
+//     return new Response(null, { headers: {
+//       'Access-Control-Allow-Origin':  '*',
+//       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH',
+//       'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Proxy-Secret',
+//       'Access-Control-Max-Age':       '86400',
+//     }});
+//   }
+//   if (request.headers.get('X-Proxy-Secret') !== PROXY_SECRET) {
+//     return new Response(JSON.stringify({error:'Unauthorized proxy access'}),
+//       { status: 403, headers: {'Content-Type':'application/json'} });
+//   }
+//   try {
+//     const u = new URL(request.url);
+//     const mlUrl = ML_API_BASE + (u.pathname.startsWith('/') ? u.pathname : '/' + u.pathname) + u.search;
+//     const headers = new Headers();
+//     for (const [k, v] of request.headers) {
+//       if (k.toLowerCase() !== 'x-proxy-secret' && k.toLowerCase() !== 'host') headers.set(k, v);
+//     }
+//     headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+//     headers.set('Accept', 'application/json');
+//     const mlResponse = await fetch(mlUrl, {
+//       method: request.method,
+//       headers: headers,
+//       body:    (request.method !== 'GET' && request.method !== 'HEAD') ? await request.text() : undefined,
+//     });
+//     const rh = new Headers(mlResponse.headers);
+//     rh.set('Access-Control-Allow-Origin', '*');
+//     rh.set('X-Proxy-Status', 'ok');
+//     return new Response(mlResponse.body, { status: mlResponse.status, headers: rh });
+//   } catch (error) {
+//     return new Response(JSON.stringify({error:'Proxy error', message:error.message}),
+//       { status: 502, headers: {'Content-Type':'application/json'} });
+//   }
+// }
+// ===== FIM DO WORKER CODE =====
+
+const ML_PROXY_URL    = process.env.ML_PROXY_URL    || '';
+const ML_PROXY_SECRET = process.env.ML_PROXY_SECRET || 'agente-ml-proxy-2026';
+const ML_USE_PROXY    = !!ML_PROXY_URL;
+
+if (ML_USE_PROXY) {
+  console.log(`[boot] 🌐 ML Proxy ativo: ${ML_PROXY_URL}`);
+} else {
+  console.log('[boot] ⚠️ ML Proxy não configurado — chamadas diretas pra api.mercadolibre.com');
+}
+
 /**
  * Agente ML — servidor local
  * Serve o dashboard estático E atua como proxy OAuth2 para a API do Mercado Livre.
@@ -171,10 +238,28 @@ function _cacheable(url, method) {
   return true;
 }
 
+// Se proxy Cloudflare está ativo E a URL é do ML, reescreve pra passar pelo Worker.
+// Retorna { url, options } com X-Proxy-Secret injetado. Logs de diagnóstico ficam aqui
+// em vez de no _safeFetch pra não poluir cada retry.
+function _applyMLProxy(url, options) {
+  if (!ML_USE_PROXY) return { url, options };
+  const u = String(url);
+  if (!u.startsWith('https://api.mercadolibre.com')) return { url, options };
+
+  const proxyUrl = u.replace('https://api.mercadolibre.com', ML_PROXY_URL);
+  const proxiedOptions = { ...options };
+  const hdrs = { ...(options && options.headers) };
+  hdrs['X-Proxy-Secret'] = ML_PROXY_SECRET;
+  proxiedOptions.headers = hdrs;
+  return { url: proxyUrl, options: proxiedOptions };
+}
+
 async function _rawFetch(url, options) {
   // Merge de headers: defaults de navegador primeiro, options por cima (pra Authorization etc sobrescrever)
   const merged = { ...options, headers: { ..._browserHeaders, ...(options && options.headers) } };
-  const resp = await fetch(url, merged);
+  // Aplica proxy se ativo (reescreve URL + injeta X-Proxy-Secret)
+  const routed = _applyMLProxy(url, merged);
+  const resp = await fetch(routed.url, routed.options);
   const text = await resp.text().catch(() => '');
   return { resp, text };
 }
@@ -223,7 +308,9 @@ async function _safeFetch(url, options = {}) {
             ...(options.headers || {}),
           },
         };
-        const r2 = await fetch(url, altOptions);
+        // Reaplica proxy no retry também
+        const routed2 = _applyMLProxy(url, altOptions);
+        const r2 = await fetch(routed2.url, routed2.options);
         const t2 = await r2.text().catch(() => '');
         if (t2 && t2.trim() && r2.status !== 429) {
           const parsed2 = tryParse(t2);
@@ -764,6 +851,26 @@ setTimeout(async () => {
     }
   } catch (e) { /* silencioso */ }
 }, 3 * 60 * 1000);
+
+// ============================================================
+// TESTE DE PROXY ML NO BOOT — só se configurado (5s após subir)
+// ============================================================
+if (ML_USE_PROXY) {
+  setTimeout(async () => {
+    try {
+      const resp = await fetch(ML_PROXY_URL + '/sites/MLB', {
+        headers: { 'X-Proxy-Secret': ML_PROXY_SECRET },
+      });
+      if (resp.ok) {
+        console.log('🌐 [boot] Proxy ML funcionando ✅');
+      } else {
+        console.log(`🌐 [boot] Proxy ML respondeu com status: ${resp.status}`);
+      }
+    } catch (e) {
+      console.log('🌐 [boot] Proxy ML indisponível:', e.message);
+    }
+  }, 5000);
+}
 
 // ============================================================
 // WEBHOOKS ML — processamento assíncrono (chamado por /webhooks)
@@ -5076,6 +5183,50 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
       });
     }
 
+    // ============================================================
+    // PROXY CLOUDFLARE — status e teste (contorna bloqueio ML no VPS)
+    // ============================================================
+    if (u.pathname === '/api/proxy/status' && req.method === 'GET') {
+      if (!ML_USE_PROXY) {
+        return send(res, 200, {
+          success: true,
+          proxyAtivo: false,
+          mensagem: 'Proxy não configurado — adicione ML_PROXY_URL no .env',
+          instrucoes: {
+            passo1: 'Criar Worker no Cloudflare Dashboard (dash.cloudflare.com → Workers → Create)',
+            passo2: 'Colar o código que está comentado no topo do server.js',
+            passo3: 'Configurar route: ml-proxy.agentemarkt.com/*',
+            passo4: 'Adicionar ML_PROXY_URL=https://ml-proxy.agentemarkt.com no .env do servidor',
+            passo5: 'Reiniciar o servidor',
+          },
+        });
+      }
+      try {
+        const testResp = await fetch(ML_PROXY_URL + '/sites/MLB', {
+          headers: {
+            'X-Proxy-Secret': ML_PROXY_SECRET,
+            'Accept': 'application/json',
+          },
+        });
+        const data = await testResp.json().catch(() => null);
+        return send(res, 200, {
+          success:      testResp.ok,
+          proxyAtivo:   true,
+          proxyUrl:     ML_PROXY_URL,
+          status:       testResp.status,
+          mlRespondeu:  !!data,
+          teste: data ? 'ML respondeu via proxy ✅' : 'ML não respondeu',
+        });
+      } catch (error) {
+        return send(res, 200, {
+          success: false,
+          proxyAtivo: true,
+          proxyUrl: ML_PROXY_URL,
+          error: error.message,
+        });
+      }
+    }
+
     // ============= WEBHOOKS ML — stats, vendas, missed_feeds =============
     if (u.pathname === '/api/webhooks/status' && req.method === 'GET') {
       return send(res, 200, {
@@ -5261,6 +5412,11 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           },
           cache: mlCache.stats(),
           rateLimiter: mlRateLimiter.status(),
+          proxy: {
+            ativo:  ML_USE_PROXY,
+            url:    ML_PROXY_URL || null,
+            secret: ML_USE_PROXY ? '***configurado***' : null,
+          },
           admin: {
             // nunca expõe o secret — só indica se o default tá sendo usado
             usando_secret_default: !process.env.ADMIN_SECRET && !currentEnv.ADMIN_SECRET,
