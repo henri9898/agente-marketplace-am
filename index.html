@@ -1803,6 +1803,7 @@ const ICON3D_COLORS = {
   teal:   ['#14b8a6', '#0d9488'],
   zinc:   ['#52525b', '#3f3f46'],
   gold:   ['#eab308', '#ca8a04'],
+  amber:  ['#f59e0b', '#b45309'],
 };
 
 const ICON3D_PATHS = {
@@ -1826,6 +1827,41 @@ const ICON3D_PATHS = {
   'alert-triangle':  '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
   'rocket':          '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
   'star':            '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+
+  // ---- Expansão: +30 ícones pra substituir emojis visuais do sistema ----
+  'box':             '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  'tag':             '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
+  'clock':           '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  'refresh':         '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>',
+  'filter':          '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
+  'layers':          '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
+  'target':          '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+  'activity':        '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
+  'gauge':           '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+  'send':            '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+  'inbox':           '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  'wrench':          '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+  'eye':             '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
+  'users':           '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  'calendar':        '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
+  'award':           '<circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/>',
+  'percent':         '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+  'clipboard':       '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
+  'cpu':             '<rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>',
+  'wifi':            '<path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.859a10 10 0 0 1 14 0"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/>',
+  'globe':           '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  'lock':            '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  'link':            '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  'image':           '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+  'home':            '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+  'play':            '<polygon points="6 3 20 12 6 21 6 3"/>',
+  'pause':           '<rect width="4" height="16" x="6" y="4"/><rect width="4" height="16" x="14" y="4"/>',
+  'check':           '<polyline points="20 6 9 17 4 12"/>',
+  'x-circle':        '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  'info':            '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  'archive':         '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+  'printer':         '<polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect width="12" height="8" x="6" y="14"/>',
+  'car':             '<path d="M14 16H9m10 0h3v-3.15a1 1 0 0 0-.84-.99L16 11l-2.7-3.6a1 1 0 0 0-.8-.4H5.24a2 2 0 0 0-1.8 1.1l-.8 1.63A6 6 0 0 0 2 12.42V16h2"/><circle cx="6.5" cy="16.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/>',
 };
 
 function Icon3D({ name, color = 'blue', size = 32, style = {} }) {
@@ -6777,7 +6813,10 @@ function PricingPage(){
 
   return (
     <div>
-      <h1 className="text-2xl font-extrabold mb-1">💰 Precificação Inteligente — Nível Top Seller</h1>
+      <h1 className="text-2xl font-extrabold mb-1 flex items-center gap-3">
+        <Icon3D name="wallet" color="orange" size={28}/>
+        <span>Precificação Inteligente — Nível Top Seller</span>
+      </h1>
       <p className="sub text-sm mb-6">Calcula lucro líquido por SKU com todos os custos (comissão, taxa fixa, frete, imposto, embalagem) + comparativo FIPE</p>
 
       {/* ===== TOP SELLER — Calculadora + Simulador ===== */}
@@ -10094,7 +10133,10 @@ function RelatoriosPage(){
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold">📊 Relatórios Financeiros</h1>
+          <h1 className="text-2xl font-extrabold flex items-center gap-3">
+            <Icon3D name="bar-chart" color="blue" size={28}/>
+            <span>Relatórios Financeiros</span>
+          </h1>
           <p className="sub text-sm">Resumo de vendas, receita e indicadores chave (últimos 30 dias)</p>
         </div>
         <button className="btn-ghost" onClick={refresh} disabled={loading}>
@@ -10212,7 +10254,10 @@ function EnviosPage(){
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold">🚚 Envios Pendentes</h1>
+          <h1 className="text-2xl font-extrabold flex items-center gap-3">
+            <Icon3D name="truck" color="cyan" size={28}/>
+            <span>Envios Pendentes</span>
+          </h1>
           <p className="sub text-sm">
             {pendentes.length > 0 ? `⚠️ ${pendentes.length} envio(s) aguardando despacho` : '✅ Nenhum envio pendente'}
           </p>
@@ -10319,7 +10364,10 @@ function EtiquetasPage(){
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold">🏷️ Etiquetas de Envio</h1>
+          <h1 className="text-2xl font-extrabold flex items-center gap-3">
+            <Icon3D name="tag" color="teal" size={28}/>
+            <span>Etiquetas de Envio</span>
+          </h1>
           <p className="sub text-sm">Clique em "Gerar PDF" pra abrir a etiqueta pronta pra impressão.</p>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -10395,7 +10443,10 @@ function AvaliacoesPage(){
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold">⭐ Avaliações e Reputação</h1>
+          <h1 className="text-2xl font-extrabold flex items-center gap-3">
+            <Icon3D name="star" color="gold" size={28}/>
+            <span>Avaliações e Reputação</span>
+          </h1>
           <p className="sub text-sm">Reputação ML e distribuição das últimas avaliações</p>
         </div>
         <button className="btn-ghost" onClick={refresh} disabled={loading}>
@@ -10441,7 +10492,10 @@ function SegurancaPage(){
   ];
   return (
     <div>
-      <h1 className="text-2xl font-extrabold mb-1">🛡️ Segurança</h1>
+      <h1 className="text-2xl font-extrabold mb-1 flex items-center gap-3">
+        <Icon3D name="shield" color="blue" size={28}/>
+        <span>Segurança</span>
+      </h1>
       <p className="sub text-sm mb-4">Status das proteções do sistema</p>
 
       <div className="card p-5 mb-4">
@@ -10486,7 +10540,10 @@ function ComercialSectorPage({ agent, onGoToAgent, initialSub }){
   ];
   return (
     <div>
-      <h1 className="text-2xl font-extrabold mb-1">🛍️ Comercial</h1>
+      <h1 className="text-2xl font-extrabold mb-1 flex items-center gap-3">
+        <Icon3D name="store" color="green" size={28}/>
+        <span>Comercial</span>
+      </h1>
       <p className="sub text-sm mb-4">Catálogo, anúncios, SEO e compatibilidade de autopeças</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
@@ -10680,7 +10737,10 @@ function ConcorrenciaPage(){
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold">🔍 Ajuste de Preço — Concorrência</h1>
+          <h1 className="text-2xl font-extrabold flex items-center gap-3">
+            <Icon3D name="target" color="red" size={28}/>
+            <span>Ajuste de Preço — Concorrência</span>
+          </h1>
           <p className="sub text-sm">Analisa os top 5 concorrentes por anúncio e sugere/aplica ajustes mantendo margem mínima</p>
         </div>
       </div>
@@ -10808,7 +10868,10 @@ function FinanceiroSectorPage(){
   ];
   return (
     <div>
-      <h1 className="text-2xl font-extrabold mb-1">💰 Financeiro</h1>
+      <h1 className="text-2xl font-extrabold mb-1 flex items-center gap-3">
+        <Icon3D name="wallet" color="orange" size={28}/>
+        <span>Financeiro</span>
+      </h1>
       <p className="sub text-sm mb-4">Precificação inteligente, simulador de venda, ajuste por concorrência e relatórios</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
@@ -10834,7 +10897,10 @@ function LogisticaSectorPage(){
   ];
   return (
     <div>
-      <h1 className="text-2xl font-extrabold mb-1">📦 Logística</h1>
+      <h1 className="text-2xl font-extrabold mb-1 flex items-center gap-3">
+        <Icon3D name="truck" color="cyan" size={28}/>
+        <span>Logística</span>
+      </h1>
       <p className="sub text-sm mb-4">Estoque, pedidos, envios e etiquetas</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
@@ -10940,7 +11006,10 @@ function MensagensPosVendaPage(){
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold">✉️ Mensagens Pós-Venda</h1>
+          <h1 className="text-2xl font-extrabold flex items-center gap-3">
+            <Icon3D name="send" color="blue" size={28}/>
+            <span>Mensagens Pós-Venda</span>
+          </h1>
           <p className="sub text-sm">Mensagens automáticas acionadas por webhooks (orders_v2 + shipments)</p>
         </div>
         <button className="btn-ghost" onClick={refresh} disabled={loading}>
@@ -11133,7 +11202,10 @@ function AtendimentoSectorPage(){
   ];
   return (
     <div>
-      <h1 className="text-2xl font-extrabold mb-1">💬 Atendimento</h1>
+      <h1 className="text-2xl font-extrabold mb-1 flex items-center gap-3">
+        <Icon3D name="message-circle" color="purple" size={28}/>
+        <span>Atendimento</span>
+      </h1>
       <p className="sub text-sm mb-4">Perguntas, mensagens pós-venda e avaliações</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
@@ -11242,8 +11314,9 @@ function PerformancePage(){
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold">
-            📊 Performance
+          <h1 className="text-2xl font-extrabold flex items-center gap-3 flex-wrap">
+            <Icon3D name="bar-chart" color="blue" size={28}/>
+            <span>Performance</span>
             {perf && <span className="chip ml-3" style={{color:'var(--green)',borderColor:'rgba(0,167,255,.4)',fontSize:11,verticalAlign:'middle'}}>
               <span className="dot" style={{background:'var(--green)'}}/>{perf.total} anúncio(s) · últimos 30d
             </span>}
@@ -11382,7 +11455,10 @@ function MarketingSectorPage({ agent, notif, onGoToAgent, initialSub }){
   ];
   return (
     <div>
-      <h1 className="text-2xl font-extrabold mb-1">📈 Marketing</h1>
+      <h1 className="text-2xl font-extrabold mb-1 flex items-center gap-3">
+        <Icon3D name="trending-up" color="pink" size={28}/>
+        <span>Marketing</span>
+      </h1>
       <p className="sub text-sm mb-4">Ranking de produtos, performance dos anúncios e inteligência de concorrência</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
@@ -11487,7 +11563,10 @@ function SetupPage(){
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold">🔧 Setup do Sistema</h1>
+          <h1 className="text-2xl font-extrabold flex items-center gap-3">
+            <Icon3D name="wrench" color="zinc" size={28}/>
+            <span>Setup do Sistema</span>
+          </h1>
           <p className="sub text-sm">Status de todas as integrações · configuração sem SSH</p>
         </div>
         <button className="btn-ghost" onClick={refresh} disabled={loading}>
@@ -11690,7 +11769,10 @@ function ErrosPage(){
     <div>
       <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold">⚠️ Erros de Integração</h1>
+          <h1 className="text-2xl font-extrabold flex items-center gap-3">
+            <Icon3D name="alert-triangle" color="amber" size={28}/>
+            <span>Erros de Integração</span>
+          </h1>
           <p className="sub text-sm">
             {data ? <>{data.naoResolvidos} não resolvidos · {data.total} totais</> : 'carregando…'}
           </p>
@@ -11760,7 +11842,10 @@ function ConfigSectorPage({ user, notif, agent, initialSub }){
   ];
   return (
     <div>
-      <h1 className="text-2xl font-extrabold mb-1">⚙️ Configurações</h1>
+      <h1 className="text-2xl font-extrabold mb-1 flex items-center gap-3">
+        <Icon3D name="settings" color="zinc" size={28}/>
+        <span>Configurações</span>
+      </h1>
       <p className="sub text-sm mb-4">Integrações, setup, webhooks, erros, conta e segurança</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
