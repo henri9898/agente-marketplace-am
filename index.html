@@ -1471,6 +1471,18 @@
   /* ---- #root acima do fundo animado ---- */
   #root { position: relative; z-index: 1; }
 
+  /* ---- Header responsivo: entre tablet e laptop estreito,
+          esconde o texto dos tabs e mostra só o Icon3D.
+          Blinda o lado direito (Demo/ML/Perfil) de ser cortado. ---- */
+  @media (min-width: 769px) and (max-width: 1280px) {
+    .desktop-header-tabs .tab > span { display: none !important; }
+    .desktop-header-tabs .tab { padding: 6px 8px !important; }
+    .desktop-header-tabs { gap: 4px !important; }
+  }
+  @media (min-width: 1281px) {
+    .desktop-header-tabs { gap: 6px !important; }
+  }
+
   /* ---- Keyframes do fundo animado (div real, não pseudo) ---- */
   @keyframes meshBG {
     0%   { transform: translate(0%, 0%)   rotate(0deg); }
@@ -4593,23 +4605,26 @@ function Header({user, tab, setTab, onLogout, unreadCount, onBellClick, onOpenNo
   }[tab] || tab;
   return (
     <header className="border-b border-[var(--line)] sticky top-0 bg-[var(--bg)]/95 backdrop-blur z-40">
-      <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center gap-6">
-        <div className="flex items-center gap-3">
+      <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center gap-4" style={{overflow:'hidden'}}>
+        <div className="flex items-center gap-3" style={{flexShrink:0}}>
           <div className="w-9 h-9 rounded-lg bg-[var(--green)] flex items-center justify-center text-white font-extrabold text-sm">AM</div>
           <div className="hide-on-mobile">
             <div className="text-[13px] font-bold tracking-wide">AGENTE MARKETPLACE</div>
             <div className="text-[10px] sub mono">painel de operação</div>
           </div>
         </div>
-        <nav className="desktop-header-tabs flex gap-1 ml-6">
+        <nav className="desktop-header-tabs flex gap-1 ml-4" style={{minWidth:0, flex:'1 1 auto', overflow:'hidden'}}>
           {tabs.map(([k, lbl, iconName, iconColor]) => (
-            <div key={k} className={`tab ${activeSector===k?'active':''} flex items-center gap-2`} onClick={()=>setTab(k)}>
-              <Icon3D name={iconName} color={iconColor} size={22}/>
+            <div key={k}
+                 className={`tab ${activeSector===k?'active':''} flex items-center gap-2`}
+                 style={{padding:'6px 10px', fontSize:12, whiteSpace:'nowrap', flexShrink:0}}
+                 onClick={()=>setTab(k)}>
+              <Icon3D name={iconName} color={iconColor} size={18}/>
               <span>{lbl}</span>
             </div>
           ))}
         </nav>
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2" style={{flexShrink:0}}>
           <span onClick={() => setTab('overview')}><SACHeaderBadge/></span>
           <DemoToggle/>
           <MLStatusIndicator onClickConnect={() => setTab('integrations')}/>
