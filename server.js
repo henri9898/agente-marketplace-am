@@ -3224,7 +3224,9 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
             nome:            p.nome,
             codigo:          p.codigo,
             preco:           p.preco,
-            precoCusto:      p.precoCusto,
+            // Bug #2 — `precoCusto` está em `fornecedor.precoCusto` na API Bling v3, não na raiz.
+            // Sem este fallback, o front sempre recebia `undefined`.
+            precoCusto:      p.precoCusto || p.fornecedor?.precoCusto || p.fornecedor?.precoCompra || null,
             situacao:        p.situacao,
             tipo:            p.tipo,
             formato:         p.formato,
@@ -3356,7 +3358,14 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         // 4.1) Precificação top-seller — bloqueia prejuízo, alerta margem crítica
         let precoFinal = Number(produto.preco) || 0;
         let precificacaoInfo = null;
-        const custoBase = Number(produto.precoCusto) || Number(produto.preco) || 0;
+        // Bug #1 — `precoCusto` NÃO existe na raiz do produto Bling v3.
+        // Está em `produto.fornecedor.precoCusto` (ou `precoCompra` como fallback).
+        // Antes: caía em `Number(produto.preco)` e tratava preço de venda como custo,
+        // causando "PREJUÍZO" falso em todo produto com fornecedor cadastrado.
+        const custoBase = Number(produto.precoCusto)
+                       || Number(produto.fornecedor?.precoCusto)
+                       || Number(produto.fornecedor?.precoCompra)
+                       || 0;
         const pricingCfg = body.pricingConfig || {};
         const bloquearPrejuizo = pricingCfg.bloquearPrejuizo !== false; // default true
         if (custoBase > 0) {
