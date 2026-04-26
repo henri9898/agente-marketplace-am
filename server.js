@@ -1238,7 +1238,8 @@ function adaptarProdutoBlingParaSimulado(blingProduto) {
   const imagensExternas = (blingProduto.midia?.imagens?.externas || [])
     .map(i => i.link).filter(Boolean);
   const imagensURL = (blingProduto.midia?.imagens?.imagensURL || []).filter(Boolean);
-  const imagens = [...imagensInternas, ...imagensExternas, ...imagensURL];
+  // ML aceita máximo 12 fotos por anúncio
+  const imagens = [...imagensInternas, ...imagensExternas, ...imagensURL].slice(0, 12);
 
   // Marca pode vir como string ou objeto
   const marca = typeof blingProduto.marca === 'string'
