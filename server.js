@@ -1410,6 +1410,65 @@ function scoreProdutoSimulado(p) {
   return { score: Math.max(0, Math.min(score, 100)), precoVenda, margem, markup };
 }
 
+// ============================================================
+// EXPLICA SCORE — detalhamento passo a passo
+// "Como a IA está vendo este produto"
+// ============================================================
+function explicarScore(p) {
+  if (!p) return null;
+  const cfg = global.agenteConfig || {};
+  const markup = cfg.modoPrimeirasVendas ? (cfg.markupPrimeirasVendas || 1.5) : (cfg.markupNormal || 2.5);
+  const precoVenda = (p.preco_custo || 0) * markup;
+  const margem = ((precoVenda - (p.preco_custo || 0)) / (precoVenda || 1)) * 100;
+  const minFrete = cfg.freteGratisMinimo || 79;
+  const marcasTop = ['Frasle','Monroe','Fremax','Tecfil','NGK','Bosch','Continental','Nakata'];
+
+  const itens = [];
+  let total = 0;
+
+  // Margem
+  if (margem >= 40)      { itens.push({ criterio:'Margem ≥ 40%',      valor: margem.toFixed(1)+'%', pontos: 30 }); total += 30; }
+  else if (margem >= 25) { itens.push({ criterio:'Margem 25-40%',     valor: margem.toFixed(1)+'%', pontos: 20 }); total += 20; }
+  else if (margem >= 15) { itens.push({ criterio:'Margem 15-25%',     valor: margem.toFixed(1)+'%', pontos: 10 }); total += 10; }
+  else                   { itens.push({ criterio:'Margem < 15%',      valor: margem.toFixed(1)+'%', pontos: 0  }); }
+
+  // Estoque
+  if (p.estoque >= 50)      { itens.push({ criterio:'Estoque ≥ 50',   valor: p.estoque, pontos: 20 }); total += 20; }
+  else if (p.estoque >= 20) { itens.push({ criterio:'Estoque 20-50',  valor: p.estoque, pontos: 15 }); total += 15; }
+  else if (p.estoque >= 5)  { itens.push({ criterio:'Estoque 5-20',   valor: p.estoque, pontos: 10 }); total += 10; }
+  else                      { itens.push({ criterio:'Estoque < 5',    valor: p.estoque, pontos: 0  }); }
+
+  // Compatibilidade
+  const nc = p.compatibilidade?.length || 0;
+  if (nc >= 5)      { itens.push({ criterio:'5+ compatibilidades',    valor: nc, pontos: 20 }); total += 20; }
+  else if (nc >= 3) { itens.push({ criterio:'3-5 compatibilidades',   valor: nc, pontos: 15 }); total += 15; }
+  else if (nc >= 1) { itens.push({ criterio:'1-3 compatibilidades',   valor: nc, pontos: 10 }); total += 10; }
+  else              { itens.push({ criterio:'Sem compatibilidade',    valor: 0,  pontos: 0  }); }
+
+  // Marca
+  if (marcasTop.includes(p.marca)) { itens.push({ criterio:'Marca TOP (Frasle/Monroe/etc)', valor: p.marca,        pontos: 15 }); total += 15; }
+  else                              { itens.push({ criterio:'Marca não-top',                 valor: p.marca || '-', pontos: 5  }); total += 5;  }
+
+  // Imagens
+  if (p.imagens?.length > 0) { itens.push({ criterio:'Tem imagem', valor: p.imagens.length, pontos: 15 }); total += 15; }
+  else                       { itens.push({ criterio:'Sem imagem', valor: 0,                pontos: 0  }); }
+
+  // Frete grátis
+  if (precoVenda >= minFrete) { itens.push({ criterio:`Frete grátis (≥R$${minFrete})`,  valor:'R$'+precoVenda.toFixed(2), pontos: 10 }); total += 10; }
+  else                        { itens.push({ criterio:`Sem frete grátis (<R$${minFrete})`, valor:'R$'+precoVenda.toFixed(2), pontos: -5 }); total -= 5;  }
+
+  return {
+    score:        Math.max(0, Math.min(total, 100)),
+    score_max:    100,
+    preco_custo:  p.preco_custo,
+    preco_venda:  +precoVenda.toFixed(2),
+    margem:       +margem.toFixed(1),
+    markup:       markup,
+    detalhamento: itens,
+    recomendacao: total >= 80 ? '🟢🟢 EXCELENTE' : total >= 60 ? '🟢 PUBLICAR' : total >= 40 ? '🟡 REVISAR' : '🔴 NÃO PUBLICAR',
+  };
+}
+
 // Rotaciona contador diário à meia-noite
 function resetPublicacoesSeNovoDia() {
   const hoje = new Date().toDateString();
@@ -4444,20 +4503,24 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
             const dj = await dr.json().catch(() => ({}));
             const adapt = dj.data ? adaptarProdutoBlingParaSimulado(dj.data) : null;
             const qual = qualificarProduto(adapt);
+            const scoreV = adapt ? scoreProdutoSimulado(adapt) : { score: 0, precoVenda: 0, margem: 0 };
             contadores[qual.selo] = (contadores[qual.selo] || 0) + 1;
             if (!filtroSelo || qual.selo === filtroSelo) {
               resultado.push({
-                id:                  item.id,
-                codigo:              item.codigo || adapt?.sku || '',
-                nome:                item.nome   || adapt?.titulo || '',
-                preco:               item.preco  || adapt?.preco || 0,
-                estoque:             item.estoqueSaldo ?? adapt?.estoque ?? 0,
-                selo:                qual.selo,
-                score:               `${qual.score}/${qual.score_max}`,
-                obrigatorios:        `${qual.obrigatorios_ok}/${qual.obrigatorios_total}`,
-                recomendados:        `${qual.recomendados_ok}/${qual.recomendados_total}`,
-                pendencias_count:    qual.pendencias.length,
-                pronto_para_publicar: qual.pronto_para_publicar,
+                id:                    item.id,
+                codigo:                item.codigo || adapt?.sku || '',
+                nome:                  item.nome   || adapt?.titulo || '',
+                preco:                 item.preco  || adapt?.preco || 0,
+                estoque:               item.estoqueSaldo ?? adapt?.estoque ?? 0,
+                selo:                  qual.selo,
+                qualificacao_score:    `${qual.score}/${qual.score_max}`,
+                score_venda:           scoreV.score,                       // 0-100, usado pra ranking
+                preco_venda_estimado:  +scoreV.precoVenda.toFixed(2),
+                margem:                +scoreV.margem.toFixed(1),
+                obrigatorios:          `${qual.obrigatorios_ok}/${qual.obrigatorios_total}`,
+                recomendados:          `${qual.recomendados_ok}/${qual.recomendados_total}`,
+                pendencias_count:      qual.pendencias.length,
+                pronto_para_publicar:  qual.pronto_para_publicar,
               });
             }
             // Throttle leve pra não estourar rate limit
@@ -4467,6 +4530,15 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           }
         }
 
+        // Ordena por: pronto_para_publicar primeiro, depois score_venda decrescente.
+        // Bloqueados ficam no fim mesmo com score alto.
+        resultado.sort((a, b) => {
+          if (a.pronto_para_publicar !== b.pronto_para_publicar) {
+            return a.pronto_para_publicar ? -1 : 1;
+          }
+          return b.score_venda - a.score_venda;
+        });
+
         return send(res, 200, {
           success:     true,
           pagina,
@@ -4474,7 +4546,77 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           filtro_selo: filtroSelo,
           totais:      contadores,
           retornados:  resultado.length,
+          ordenado_por:'pronto_para_publicar DESC, score_venda DESC',
           produtos:    resultado,
+        });
+      } catch (err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // ============================================================
+    // GET /api/agente/explicar/:id — passo a passo: como a IA vê o produto
+    // ============================================================
+    if (u.pathname.startsWith('/api/agente/explicar/') && req.method === 'GET') {
+      const id = u.pathname.replace('/api/agente/explicar/', '');
+      let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+      if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+      if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
+
+      try {
+        const r = await fetch(`https://www.bling.com.br/Api/v3/produtos/${id}`,
+          { headers: { 'Authorization': 'Bearer ' + blingToken } });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.data) return send(res, 200, { success:false, error:'Produto não encontrado', raw: j });
+
+        const adapt = adaptarProdutoBlingParaSimulado(j.data);
+        const qual = qualificarProduto(adapt);
+        const scoreV = explicarScore(adapt);
+        const cfg = global.agenteConfig || {};
+        const scoreMin = cfg.scoreMinimo || 60;
+
+        // Decisão final
+        let decisao;
+        if (!qual.pronto_para_publicar) {
+          decisao = { acao: 'NÃO PUBLICAR', razao: 'Falta requisito obrigatório (qualificação)', detalhes: qual.pendencias };
+        } else if (scoreV.score < scoreMin) {
+          decisao = { acao: 'NÃO PUBLICAR', razao: `Score (${scoreV.score}) abaixo do mínimo (${scoreMin})`, detalhes: 'Veja itens negativos no detalhamento' };
+        } else if (scoreV.score >= 80) {
+          decisao = { acao: 'PUBLICAR PRIORITÁRIO', razao: `Score ${scoreV.score} (excelente)`, detalhes: 'Top do ranking, publicar primeiro' };
+        } else {
+          decisao = { acao: 'PUBLICAR', razao: `Score ${scoreV.score} ≥ mínimo ${scoreMin}`, detalhes: 'Publicação normal' };
+        }
+
+        return send(res, 200, {
+          success: true,
+          produto: {
+            id:           adapt.id,
+            codigo:       adapt.sku,
+            titulo:       adapt.titulo,
+            marca:        adapt.marca,
+            preco_bling:  adapt.preco,
+            preco_custo:  adapt.preco_custo,
+            estoque:      adapt.estoque,
+            n_imagens:    adapt.imagens.length,
+          },
+          passo_1_qualificacao: {
+            selo:                 qual.selo,
+            score:                `${qual.score}/${qual.score_max}`,
+            obrigatorios:         `${qual.obrigatorios_ok}/${qual.obrigatorios_total}`,
+            recomendados:         `${qual.recomendados_ok}/${qual.recomendados_total}`,
+            pendencias:           qual.pendencias.map(c => ({ codigo: c, ...explicarPendencia(c) })),
+            pronto_para_publicar: qual.pronto_para_publicar,
+          },
+          passo_2_score_venda:  scoreV,
+          passo_3_config_agente: {
+            score_minimo:           scoreMin,
+            markup_aplicado:        scoreV.markup,
+            modo_primeiras_vendas:  !!cfg.modoPrimeirasVendas,
+            preferir_premium:       cfg.preferirPremium !== false,
+            frete_gratis_minimo:    cfg.freteGratisMinimo || 79,
+          },
+          passo_4_decisao: decisao,
+          link_bling: `https://www.bling.com.br/produtos.editar.php?id=${adapt.bling_id}`,
         });
       } catch (err) {
         return send(res, 200, { success:false, error: err.message });
@@ -4626,6 +4768,27 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           produto = adaptarProdutoBlingParaSimulado(r.data.data);
           if (!produto) return send(res, 200, { success:false, error:'Adaptação Bling→ML falhou' });
 
+          // MUDANÇA 1 — Auto-detecta categoria-folha do ML pelo nome do produto.
+          // Necessário porque MLB1747 (default Bling) é categoria-pai e ML
+          // só aceita categorias-folha (leaf) na publicação.
+          if (token) {
+            try {
+              const cr = await fetch(
+                `https://api.mercadolibre.com/sites/MLB/domain_discovery/search?q=${encodeURIComponent(produto.titulo || '')}`,
+                { headers: { 'Authorization': 'Bearer ' + token } }
+              );
+              const cj = await cr.json().catch(() => []);
+              if (Array.isArray(cj) && cj[0]?.category_id) {
+                console.log(`🔍 [agente] Categoria detectada: ${cj[0].category_id} (${cj[0].domain_name || 'sem domain'}) para "${produto.titulo}"`);
+                produto.categoria_ml = cj[0].category_id;
+              } else {
+                console.warn(`⚠️ [agente] domain_discovery não retornou categoria pra "${produto.titulo}" — mantendo ${produto.categoria_ml}`);
+              }
+            } catch (e) {
+              console.warn(`⚠️ [agente] domain_discovery falhou: ${e.message}`);
+            }
+          }
+
           // Qualificação obrigatória pra produto Bling
           qualificacao = qualificarProduto(produto);
           if (!qualificacao.pronto_para_publicar && !ignorarQualificacao) {
@@ -4637,6 +4800,23 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
               qualificacao,
               pendencias_legiveis: pendsLegiveis,
               dica: 'Resolva as pendências no Bling ou use ignorarQualificacao:true (não recomendado)',
+            });
+          }
+
+          // MUDANÇA 2 — Aplica scoreMinimo da config global do agente.
+          // (regras de margem, estoque, marca, frete grátis — definidas em scoreProdutoSimulado)
+          const cfgAgente = global.agenteConfig || {};
+          const scoreMin  = cfgAgente.scoreMinimo || 60;
+          const scoreCalc = scoreProdutoSimulado(produto);
+          if (scoreCalc.score < scoreMin && !ignorarQualificacao) {
+            return send(res, 200, {
+              success: false,
+              error:   `📉 Score de venda (${scoreCalc.score}) abaixo do mínimo (${scoreMin}). Produto não recomendado pra publicação.`,
+              produto: { id: produto.id, titulo: produto.titulo, marca: produto.marca },
+              score:         scoreCalc.score,
+              score_minimo:  scoreMin,
+              detalhe_score: explicarScore(produto),
+              dica: 'Aumente preço/estoque, mude pra marca top, ou use ignorarQualificacao:true',
             });
           }
         }
