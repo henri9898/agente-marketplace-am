@@ -1214,6 +1214,174 @@ const catalogoSimulado = [
   },
 ];
 
+// ============================================================
+// ADAPTADOR: Produto Bling → Schema interno (compatível com SIMs)
+// ============================================================
+function adaptarProdutoBlingParaSimulado(blingProduto) {
+  if (!blingProduto || !blingProduto.id) return null;
+
+  // Limpa HTML da descrição
+  const stripHtml = (s) => String(s || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Imagens internas (S3 do Bling) + externas + URLs avulsas
+  const imagensInternas = (blingProduto.midia?.imagens?.internas || [])
+    .map(i => i.link).filter(Boolean);
+  const imagensExternas = (blingProduto.midia?.imagens?.externas || [])
+    .map(i => i.link).filter(Boolean);
+  const imagensURL = (blingProduto.midia?.imagens?.imagensURL || []).filter(Boolean);
+  const imagens = [...imagensInternas, ...imagensExternas, ...imagensURL];
+
+  // Marca pode vir como string ou objeto
+  const marca = typeof blingProduto.marca === 'string'
+    ? blingProduto.marca
+    : (blingProduto.marca?.nome || '');
+
+  // Estoque pode vir em vários formatos
+  const estoque = blingProduto.estoque?.saldoVirtualTotal
+    ?? blingProduto.estoqueSaldo
+    ?? 0;
+
+  // Peso em gramas (Bling devolve em kg)
+  const pesoG = Math.round((blingProduto.pesoBruto || blingProduto.pesoLiquido || 0) * 1000);
+
+  // Dimensões em cm (Bling: dimensoes.altura/largura/profundidade)
+  const altura      = blingProduto.dimensoes?.altura       || 0;
+  const largura     = blingProduto.dimensoes?.largura      || 0;
+  const comprimento = blingProduto.dimensoes?.profundidade || 0;
+
+  return {
+    id:               String(blingProduto.id),
+    bling_id:         blingProduto.id,
+    sku:              blingProduto.codigo || '',
+    titulo:           blingProduto.nome || '',
+    descricao:        stripHtml(blingProduto.descricaoComplementar || blingProduto.descricaoCurta || ''),
+    descricaoCurta:   stripHtml(blingProduto.descricaoCurta || ''),
+    preco:            Number(blingProduto.preco) || 0,
+    preco_custo:      Number(blingProduto.precoCusto) || Number(blingProduto.fornecedor?.precoCusto) || 0,
+    estoque:          Number(estoque) || 0,
+    marca:            marca,
+    categoria_ml:     'MLB1747', // fallback autopeças, ML auto-detecta depois
+    condicao:         'new',
+    imagens:          imagens,
+    tem_video:        !!(blingProduto.midia?.video?.url),
+    compatibilidade:  [], // Bling não tem nativo, vem do título/descrição
+    peso_g:           pesoG,
+    ean:              blingProduto.gtin || '',
+    modelo:           blingProduto.codigo || '',
+    inmetro:          '', // Bling não cadastra inmetro
+    altura_cm:        altura,
+    largura_cm:       largura,
+    comprimento_cm:   comprimento,
+    ativo:            blingProduto.situacao === 'A',
+    situacao:         blingProduto.situacao || 'I',
+    fonte:            'bling',
+  };
+}
+
+// ============================================================
+// QUALIFICAÇÃO: 13 critérios → selo + pendências
+// ============================================================
+function qualificarProduto(produto) {
+  if (!produto) {
+    return {
+      selo: 'BLOQUEADO', score: 0,
+      pendencias: ['produto_inexistente'],
+      obrigatorios_ok: 0, recomendados_ok: 0, premium_ok: 0,
+    };
+  }
+
+  const pend = [];
+  let obrig = 0, recom = 0, prem = 0;
+
+  // ===== OBRIGATÓRIOS (8) =====
+  if (produto.imagens && produto.imagens.length >= 1) obrig++; else pend.push('sem_foto');
+  if (produto.titulo && produto.titulo.length >= 15 && produto.titulo.length <= 60) obrig++;
+  else pend.push(produto.titulo ? `titulo_tamanho_invalido(${produto.titulo.length})` : 'sem_titulo');
+  if (produto.preco > 0) obrig++; else pend.push('sem_preco_venda');
+  if (produto.preco_custo > 0 && produto.preco > produto.preco_custo) obrig++;
+  else pend.push(produto.preco_custo > 0 ? 'preco_menor_que_custo' : 'sem_preco_custo');
+  if (produto.estoque > 0) obrig++; else pend.push('sem_estoque');
+  if (produto.marca && String(produto.marca).trim()) obrig++; else pend.push('sem_marca');
+  if (produto.ativo === true) obrig++; else pend.push('produto_inativo_bling');
+  if (produto.peso_g > 0) obrig++; else pend.push('sem_peso');
+
+  // ===== RECOMENDADOS (4) =====
+  if (produto.imagens && produto.imagens.length >= 3) recom++; else pend.push('menos_de_3_fotos');
+  if (produto.descricao && produto.descricao.length >= 100) recom++; else pend.push('descricao_curta');
+  if (produto.ean && String(produto.ean).length >= 8) recom++; else pend.push('sem_ean');
+  if (produto.altura_cm > 0 && produto.largura_cm > 0 && produto.comprimento_cm > 0) recom++;
+  else pend.push('sem_dimensoes');
+
+  // ===== PREMIUM (1) =====
+  if (produto.tem_video) prem++;
+
+  // Selo
+  let selo;
+  if (obrig === 8 && recom === 4 && prem === 1) selo = 'OURO';
+  else if (obrig === 8 && recom >= 3)            selo = 'PRONTO';
+  else if (obrig === 8)                          selo = 'PUBLICAVEL';
+  else                                           selo = 'BLOQUEADO';
+
+  return {
+    selo,
+    score:               obrig + recom + prem,
+    score_max:           13,
+    obrigatorios_ok:     obrig,
+    obrigatorios_total:  8,
+    recomendados_ok:     recom,
+    recomendados_total:  4,
+    premium_ok:          prem,
+    premium_total:       1,
+    pendencias:          pend,
+    pronto_para_publicar: ['OURO', 'PRONTO', 'PUBLICAVEL'].includes(selo),
+  };
+}
+
+// Tradução de pendências em mensagens humanas
+const PENDENCIAS_LEGIVEIS = {
+  sem_foto:                 { texto: 'Sem fotos cadastradas',                                           como_resolver: 'Bling > Produto > Imagens > Adicionar' },
+  sem_titulo:               { texto: 'Sem nome/título',                                                  como_resolver: 'Bling > Produto > Dados > Nome' },
+  titulo_tamanho_invalido:  { texto: 'Título com tamanho fora de 15-60 caracteres',                      como_resolver: 'Bling > Produto > Dados > Nome (encurtar/alongar)' },
+  sem_preco_venda:          { texto: 'Preço de venda zerado',                                            como_resolver: 'Bling > Produto > Dados > Preço' },
+  preco_menor_que_custo:    { texto: 'Preço de venda menor ou igual ao custo (prejuízo)',                como_resolver: 'Bling > Produto > Dados > Preço' },
+  sem_preco_custo:          { texto: 'Preço de custo não cadastrado',                                    como_resolver: 'Bling > Produto > Dados > Preço de custo' },
+  sem_estoque:              { texto: 'Sem estoque',                                                      como_resolver: 'Bling > Produto > Estoque > Adicionar' },
+  sem_marca:                { texto: 'Marca não preenchida',                                             como_resolver: 'Bling > Produto > Dados > Marca' },
+  produto_inativo_bling:    { texto: 'Produto inativo no Bling',                                         como_resolver: 'Bling > Produto > Situação > Ativar' },
+  sem_peso:                 { texto: 'Peso bruto não cadastrado (frete não calcula)',                    como_resolver: 'Bling > Produto > Dados > Peso bruto' },
+  menos_de_3_fotos:         { texto: 'Menos de 3 fotos (anúncio fica fraco)',                            como_resolver: 'Bling > Produto > Imagens > Adicionar mais' },
+  descricao_curta:          { texto: 'Descrição com menos de 100 caracteres',                            como_resolver: 'Bling > Produto > Descrição complementar' },
+  sem_ean:                  { texto: 'Sem código de barras (EAN/GTIN)',                                  como_resolver: 'Bling > Produto > Dados > GTIN' },
+  sem_dimensoes:            { texto: 'Sem dimensões (frete pode não calcular)',                          como_resolver: 'Bling > Produto > Dados > Altura/Largura/Profundidade' },
+};
+function explicarPendencia(codigo) {
+  const base = String(codigo).split('(')[0]; // remove parâmetros tipo titulo_tamanho_invalido(8)
+  return PENDENCIAS_LEGIVEIS[base] || { texto: codigo, como_resolver: 'Verificar cadastro no Bling' };
+}
+
+// ============================================================
+// HELPER: Lê token Bling do tokens.json (fallback do header)
+// ============================================================
+function lerTokenBlingDoArquivo() {
+  try {
+    const arquivoTokens = path.join(ROOT, 'tokens.json');
+    if (!fs.existsSync(arquivoTokens)) return null;
+    const tokens = JSON.parse(fs.readFileSync(arquivoTokens, 'utf8'));
+    return tokens.bling_access_token || null;
+  } catch (e) {
+    console.warn('[bling] tokens.json não pôde ser lido:', e.message);
+    return null;
+  }
+}
+
 // Score 0-100 pra decidir se vale publicar
 function scoreProdutoSimulado(p) {
   let score = 0;
@@ -4242,13 +4410,236 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
       });
     }
 
-    // PUBLICAR UM PRODUTO (preview/real)
+    // ============================================================
+    // GET /api/agente/produtos-qualificados — lista Bling com selos
+    // Query: ?pagina=1&limite=100&selo=PRONTO (filtra por selo)
+    // ============================================================
+    if (u.pathname === '/api/agente/produtos-qualificados' && req.method === 'GET') {
+      let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+      if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+      if (!blingToken) {
+        return send(res, 200, { success:false, error:'Token Bling não disponível' });
+      }
+      const pagina = Math.max(1, parseInt(u.query.pagina || '1', 10));
+      const limite = Math.min(100, Math.max(1, parseInt(u.query.limite || '100', 10)));
+      const filtroSelo = (u.query.selo || '').toUpperCase() || null;
+
+      try {
+        // 1) Lista paginada (campos básicos)
+        const lr = await fetch(`https://www.bling.com.br/Api/v3/produtos?pagina=${pagina}&limite=${limite}`,
+          { headers: { 'Authorization': 'Bearer ' + blingToken } });
+        const lj = await lr.json().catch(() => ({}));
+        if (!lr.ok || !Array.isArray(lj.data)) {
+          return send(res, 200, { success:false, error:'Bling não retornou lista', raw: lj });
+        }
+
+        // 2) Pra cada produto, busca detalhe (pra ter midia.imagens) + qualifica.
+        // Sequencial pra não estourar rate limit do Bling (~3 req/s).
+        const resultado = [];
+        const contadores = { OURO: 0, PRONTO: 0, PUBLICAVEL: 0, BLOQUEADO: 0 };
+        for (const item of lj.data) {
+          try {
+            const dr = await fetch(`https://www.bling.com.br/Api/v3/produtos/${item.id}`,
+              { headers: { 'Authorization': 'Bearer ' + blingToken } });
+            const dj = await dr.json().catch(() => ({}));
+            const adapt = dj.data ? adaptarProdutoBlingParaSimulado(dj.data) : null;
+            const qual = qualificarProduto(adapt);
+            contadores[qual.selo] = (contadores[qual.selo] || 0) + 1;
+            if (!filtroSelo || qual.selo === filtroSelo) {
+              resultado.push({
+                id:                  item.id,
+                codigo:              item.codigo || adapt?.sku || '',
+                nome:                item.nome   || adapt?.titulo || '',
+                preco:               item.preco  || adapt?.preco || 0,
+                estoque:             item.estoqueSaldo ?? adapt?.estoque ?? 0,
+                selo:                qual.selo,
+                score:               `${qual.score}/${qual.score_max}`,
+                obrigatorios:        `${qual.obrigatorios_ok}/${qual.obrigatorios_total}`,
+                recomendados:        `${qual.recomendados_ok}/${qual.recomendados_total}`,
+                pendencias_count:    qual.pendencias.length,
+                pronto_para_publicar: qual.pronto_para_publicar,
+              });
+            }
+            // Throttle leve pra não estourar rate limit
+            await new Promise(r => setTimeout(r, 350));
+          } catch (e) {
+            console.warn(`[qualificar] falha em ${item.id}:`, e.message);
+          }
+        }
+
+        return send(res, 200, {
+          success:     true,
+          pagina,
+          limite,
+          filtro_selo: filtroSelo,
+          totais:      contadores,
+          retornados:  resultado.length,
+          produtos:    resultado,
+        });
+      } catch (err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // ============================================================
+    // GET /api/agente/pendencias/:id — diagnóstico detalhado
+    // ============================================================
+    if (u.pathname.startsWith('/api/agente/pendencias/') && req.method === 'GET') {
+      const id = u.pathname.replace('/api/agente/pendencias/', '');
+      let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+      if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+      if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
+
+      try {
+        const r = await fetch(`https://www.bling.com.br/Api/v3/produtos/${id}`,
+          { headers: { 'Authorization': 'Bearer ' + blingToken } });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.data) return send(res, 200, { success:false, error:'Produto não encontrado', raw: j });
+        const adapt = adaptarProdutoBlingParaSimulado(j.data);
+        const qual  = qualificarProduto(adapt);
+        const detalhes = qual.pendencias.map(c => ({ codigo: c, ...explicarPendencia(c) }));
+        return send(res, 200, {
+          success: true,
+          produto: {
+            id:             adapt.id,
+            codigo:         adapt.sku,
+            titulo:         adapt.titulo,
+            marca:          adapt.marca,
+            preco:          adapt.preco,
+            preco_custo:    adapt.preco_custo,
+            estoque:        adapt.estoque,
+            n_imagens:      adapt.imagens.length,
+            peso_g:         adapt.peso_g,
+            tem_dimensoes:  adapt.altura_cm > 0 && adapt.largura_cm > 0 && adapt.comprimento_cm > 0,
+          },
+          qualificacao:        qual,
+          pendencias_legiveis: detalhes,
+          link_bling:          `https://www.bling.com.br/produtos.editar.php?id=${adapt.bling_id}`,
+        });
+      } catch (err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // ============================================================
+    // POST /api/agente/publicar-fila — publica todos PRONTO/OURO em lote
+    // Body: { pagina?, limite?, max?, somenteSelo?, dryRun? }
+    // ============================================================
+    if (u.pathname === '/api/agente/publicar-fila' && req.method === 'POST') {
+      const body = await readBody(req).catch(() => ({}));
+      const pagina      = body.pagina || 1;
+      const limite      = Math.min(100, body.limite || 100);
+      const max         = body.max || 10; // máx publicações por chamada (segurança)
+      const somenteSelo = body.somenteSelo || ['OURO', 'PRONTO']; // padrão: só os melhores
+      const dryRun      = body.dryRun !== false; // default true (preview)
+
+      let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+      if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+      if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
+
+      try {
+        // 1) Pega lista qualificada
+        const qResp = await fetch(`http://127.0.0.1:${PORT}/api/agente/produtos-qualificados?pagina=${pagina}&limite=${limite}`,
+          { headers: { 'Authorization': 'Bearer ' + blingToken } });
+        const qData = await qResp.json().catch(() => ({}));
+        if (!qData.success) return send(res, 200, { success:false, error:'Falha ao qualificar', raw: qData });
+
+        // 2) Filtra elegíveis
+        const elegiveis = (qData.produtos || [])
+          .filter(p => somenteSelo.includes(p.selo))
+          .slice(0, max);
+
+        const resultados = [];
+        for (const p of elegiveis) {
+          if (dryRun) {
+            resultados.push({ id: p.id, titulo: p.nome, selo: p.selo, status: 'preview-only' });
+            continue;
+          }
+          // Publica chamando o próprio handler
+          try {
+            const pubResp = await fetch(`http://127.0.0.1:${PORT}/api/agente/publicar`, {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + blingToken, 'Content-Type': 'application/json' },
+              body:    JSON.stringify({ produtoId: String(p.id), modoTeste: false }),
+            });
+            const pubData = await pubResp.json().catch(() => ({}));
+            resultados.push({
+              id:      p.id,
+              titulo:  p.nome,
+              selo:    p.selo,
+              status:  pubData.success ? 'publicado' : 'falhou',
+              mlb_id:  pubData.mlbId || null,
+              erro:    pubData.error || null,
+            });
+            // Throttle entre publicações
+            await new Promise(r => setTimeout(r, 1500));
+          } catch (e) {
+            resultados.push({ id: p.id, titulo: p.nome, status: 'erro', erro: e.message });
+          }
+        }
+
+        return send(res, 200, {
+          success:     true,
+          dryRun,
+          totais:      qData.totais,
+          elegiveis:   elegiveis.length,
+          processados: resultados.length,
+          publicados:  resultados.filter(r => r.status === 'publicado').length,
+          falhas:      resultados.filter(r => r.status === 'falhou' || r.status === 'erro').length,
+          resultados,
+        });
+      } catch (err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // PUBLICAR UM PRODUTO (preview/real) — aceita SIMs e IDs Bling
     if (u.pathname === '/api/agente/publicar' && req.method === 'POST') {
       const token = getMlToken();
       try {
-        const { produtoId, modoTeste = true } = await readBody(req);
-        const produto = catalogoSimulado.find(p => p.id === produtoId);
-        if (!produto) return send(res, 200, { success:false, error:'Produto não encontrado' });
+        const { produtoId, modoTeste = true, ignorarQualificacao = false } = await readBody(req);
+        let produto;
+        let qualificacao = null;
+
+        // Decide fonte: SIM* = simulado, qualquer outra coisa = Bling
+        if (String(produtoId).startsWith('SIM')) {
+          produto = catalogoSimulado.find(p => p.id === produtoId);
+          if (!produto) return send(res, 200, { success:false, error:'Produto SIM não encontrado' });
+        } else {
+          // Busca no Bling (token híbrido: header > tokens.json)
+          let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+          if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+          if (!blingToken) {
+            return send(res, 200, { success:false, error:'Token Bling não disponível. Conecte o Bling em Config.' });
+          }
+
+          const blingFetchLocal = async (url, tk) => {
+            const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + tk, 'Accept': 'application/json' } });
+            const data = await r.json().catch(() => ({}));
+            return { ok: r.ok, status: r.status, data };
+          };
+
+          const r = await blingFetchLocal(`https://www.bling.com.br/Api/v3/produtos/${produtoId}`, blingToken);
+          if (!r.ok || !r.data?.data) {
+            return send(res, 200, { success:false, error:'Produto não encontrado no Bling', bling_id: produtoId, raw_status: r.status });
+          }
+          produto = adaptarProdutoBlingParaSimulado(r.data.data);
+          if (!produto) return send(res, 200, { success:false, error:'Adaptação Bling→ML falhou' });
+
+          // Qualificação obrigatória pra produto Bling
+          qualificacao = qualificarProduto(produto);
+          if (!qualificacao.pronto_para_publicar && !ignorarQualificacao) {
+            const pendsLegiveis = qualificacao.pendencias.map(c => ({ codigo: c, ...explicarPendencia(c) }));
+            return send(res, 200, {
+              success: false,
+              error:   `🚫 Produto BLOQUEADO: ${qualificacao.pendencias.length} pendências obrigatórias`,
+              produto: { id: produto.id, titulo: produto.titulo, marca: produto.marca },
+              qualificacao,
+              pendencias_legiveis: pendsLegiveis,
+              dica: 'Resolva as pendências no Bling ou use ignorarQualificacao:true (não recomendado)',
+            });
+          }
+        }
 
         const { score, precoVenda } = scoreProdutoSimulado(produto);
 
