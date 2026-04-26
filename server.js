@@ -1068,6 +1068,7 @@ global.agenteConfig = global.agenteConfig || {
   markupPrimeirasVendas: 1.5,   // multiplicador baixo (~33% margem)
   vendasParaSairDoModo:  10,    // sair do modo após X vendas
   scoreMinimo:           60,
+  margemSegurancaBling:  0.10,  // 10% acima do preço Bling — protege contra cadastro errado
   limiteDiario:          10,
   preferirPremium:       true,  // preferir Premium quando preço ≥ mínimo
   freteGratisMinimo:     79,    // preço mínimo pra frete grátis (ML 2026)
@@ -1383,31 +1384,74 @@ function lerTokenBlingDoArquivo() {
 }
 
 // Score 0-100 pra decidir se vale publicar
+// Marcas premium de fabricantes de autopeças (alta qualidade reconhecida)
+const MARCAS_FABRICANTE_PREMIUM = ['Frasle','Monroe','Fremax','Tecfil','NGK','Bosch','Continental','Nakata',
+  'Cofap','Magneti Marelli','Valeo','Mahle','Mann-Filter','SKF','Gates','Denso','Delphi','Akebono'];
+// Montadoras (peças originais geralmente confiáveis)
+const MONTADORAS = ['Volkswagen','VW','Fiat','Chevrolet','GM','Ford','Hyundai','Toyota','Honda','Renault',
+  'Nissan','Jeep','Peugeot','Citroen','Mitsubishi','Audi','BMW','Mercedes','Mercedes-Benz','Kia','Suzuki','Volvo','Land Rover'];
+
 function scoreProdutoSimulado(p) {
   let score = 0;
-  // Markup dinâmico baseado em agenteConfig (modo "primeiras vendas" usa menor)
   const cfg = global.agenteConfig || {};
   const markup = cfg.modoPrimeirasVendas ? (cfg.markupPrimeirasVendas || 1.5) : (cfg.markupNormal || 2.5);
-  const precoVenda = p.preco_custo * markup;
-  const margem = ((precoVenda - p.preco_custo) / precoVenda) * 100;
+  const margemSeg = (cfg.margemSegurancaBling != null) ? cfg.margemSegurancaBling : 0.10;
+
+  // PREÇO: se Bling tem preço cadastrado válido, respeita (com margem de segurança).
+  // Senão (raro), aplica markup sobre custo.
+  const precoBlingValido = p.preco > 0 && p.preco > (p.preco_custo || 0);
+  const precoBase = precoBlingValido ? p.preco : ((p.preco_custo || 0) * markup);
+  const precoVenda = Math.ceil(precoBase * (1 + margemSeg));
+
+  // Margem real (vs custo)
+  const custo = p.preco_custo || 0;
+  const margem = custo > 0 ? ((precoVenda - custo) / precoVenda) * 100 : 0;
+
+  // ===== MARGEM (até +30) =====
   if (margem >= 40) score += 30;
   else if (margem >= 25) score += 20;
   else if (margem >= 15) score += 10;
+
+  // ===== ESTOQUE (até +20) — tabela ajustada pra peças únicas/usadas =====
   if (p.estoque >= 50) score += 20;
-  else if (p.estoque >= 20) score += 15;
-  else if (p.estoque >= 5) score += 10;
+  else if (p.estoque >= 10) score += 15;
+  else if (p.estoque >= 3) score += 10;
+  else if (p.estoque >= 1) score += 8;  // peça única ainda vale
+
+  // ===== COMPATIBILIDADE (até +20) =====
   const nc = p.compatibilidade?.length || 0;
   if (nc >= 5) score += 20;
   else if (nc >= 3) score += 15;
   else if (nc >= 1) score += 10;
-  const marcasTop = ['Frasle','Monroe','Fremax','Tecfil','NGK','Bosch','Continental','Nakata'];
-  if (marcasTop.includes(p.marca)) score += 15; else score += 5;
-  if (p.imagens && p.imagens.length > 0) score += 15;
-  // Bônus/penalidade frete grátis — top sellers priorizam >= R$79
+
+  // ===== MARCA (5/12/15) =====
+  if (MARCAS_FABRICANTE_PREMIUM.includes(p.marca)) score += 15;
+  else if (MONTADORAS.includes(p.marca)) score += 12;
+  else score += 5;
+
+  // ===== IMAGENS (até +15) =====
+  if (p.imagens?.length >= 5) score += 15;
+  else if (p.imagens?.length >= 3) score += 12;
+  else if (p.imagens?.length >= 1) score += 8;
+
+  // ===== FRETE GRÁTIS (-5/+10) =====
   const minFrete = cfg.freteGratisMinimo || 79;
   if (precoVenda >= minFrete) score += 10;
   else score -= 5;
-  return { score: Math.max(0, Math.min(score, 100)), precoVenda, margem, markup };
+
+  // ===== TICKET ALTO (BÔNUS — até +10) =====
+  if (precoVenda >= 1000) score += 10;
+  else if (precoVenda >= 300) score += 5;
+
+  return {
+    score: Math.max(0, Math.min(score, 100)),
+    precoVenda,
+    precoBase,
+    precoBlingValido,
+    margem,
+    markup,
+    margemSegurancaAplicada: margemSeg,
+  };
 }
 
 // ============================================================
@@ -1418,13 +1462,32 @@ function explicarScore(p) {
   if (!p) return null;
   const cfg = global.agenteConfig || {};
   const markup = cfg.modoPrimeirasVendas ? (cfg.markupPrimeirasVendas || 1.5) : (cfg.markupNormal || 2.5);
-  const precoVenda = (p.preco_custo || 0) * markup;
-  const margem = ((precoVenda - (p.preco_custo || 0)) / (precoVenda || 1)) * 100;
+  const margemSeg = (cfg.margemSegurancaBling != null) ? cfg.margemSegurancaBling : 0.10;
   const minFrete = cfg.freteGratisMinimo || 79;
-  const marcasTop = ['Frasle','Monroe','Fremax','Tecfil','NGK','Bosch','Continental','Nakata'];
+
+  // Preço (mesma lógica de scoreProdutoSimulado)
+  const precoBlingValido = p.preco > 0 && p.preco > (p.preco_custo || 0);
+  const precoBase = precoBlingValido ? p.preco : ((p.preco_custo || 0) * markup);
+  const precoVenda = Math.ceil(precoBase * (1 + margemSeg));
+  const custo = p.preco_custo || 0;
+  const margem = custo > 0 ? ((precoVenda - custo) / precoVenda) * 100 : 0;
 
   const itens = [];
   let total = 0;
+
+  // Origem do preço (informativo, sem pontos)
+  itens.push({
+    criterio: precoBlingValido ? 'Preço base do Bling' : 'Preço calculado (custo × markup)',
+    valor:    `R$ ${precoBase.toFixed(2)}`,
+    pontos:   0,
+    info:     true,
+  });
+  itens.push({
+    criterio: `Margem segurança (+${(margemSeg*100).toFixed(0)}%)`,
+    valor:    `R$ ${precoVenda.toFixed(2)}`,
+    pontos:   0,
+    info:     true,
+  });
 
   // Margem
   if (margem >= 40)      { itens.push({ criterio:'Margem ≥ 40%',      valor: margem.toFixed(1)+'%', pontos: 30 }); total += 30; }
@@ -1432,40 +1495,58 @@ function explicarScore(p) {
   else if (margem >= 15) { itens.push({ criterio:'Margem 15-25%',     valor: margem.toFixed(1)+'%', pontos: 10 }); total += 10; }
   else                   { itens.push({ criterio:'Margem < 15%',      valor: margem.toFixed(1)+'%', pontos: 0  }); }
 
-  // Estoque
-  if (p.estoque >= 50)      { itens.push({ criterio:'Estoque ≥ 50',   valor: p.estoque, pontos: 20 }); total += 20; }
-  else if (p.estoque >= 20) { itens.push({ criterio:'Estoque 20-50',  valor: p.estoque, pontos: 15 }); total += 15; }
-  else if (p.estoque >= 5)  { itens.push({ criterio:'Estoque 5-20',   valor: p.estoque, pontos: 10 }); total += 10; }
-  else                      { itens.push({ criterio:'Estoque < 5',    valor: p.estoque, pontos: 0  }); }
+  // Estoque (alinhado com scoreProdutoSimulado: 1-2 = 8 pontos)
+  if (p.estoque >= 50)       { itens.push({ criterio:'Estoque ≥ 50',           valor: p.estoque, pontos: 20 }); total += 20; }
+  else if (p.estoque >= 10)  { itens.push({ criterio:'Estoque 10-50',          valor: p.estoque, pontos: 15 }); total += 15; }
+  else if (p.estoque >= 3)   { itens.push({ criterio:'Estoque 3-10',           valor: p.estoque, pontos: 10 }); total += 10; }
+  else if (p.estoque >= 1)   { itens.push({ criterio:'Estoque 1-2 (peça única)', valor: p.estoque, pontos: 8  }); total += 8;  }
+  else                       { itens.push({ criterio:'Sem estoque',            valor: 0,         pontos: 0  }); }
 
   // Compatibilidade
   const nc = p.compatibilidade?.length || 0;
-  if (nc >= 5)      { itens.push({ criterio:'5+ compatibilidades',    valor: nc, pontos: 20 }); total += 20; }
-  else if (nc >= 3) { itens.push({ criterio:'3-5 compatibilidades',   valor: nc, pontos: 15 }); total += 15; }
-  else if (nc >= 1) { itens.push({ criterio:'1-3 compatibilidades',   valor: nc, pontos: 10 }); total += 10; }
-  else              { itens.push({ criterio:'Sem compatibilidade',    valor: 0,  pontos: 0  }); }
+  if (nc >= 5)      { itens.push({ criterio:'5+ compatibilidades',  valor: nc, pontos: 20 }); total += 20; }
+  else if (nc >= 3) { itens.push({ criterio:'3-5 compatibilidades', valor: nc, pontos: 15 }); total += 15; }
+  else if (nc >= 1) { itens.push({ criterio:'1-3 compatibilidades', valor: nc, pontos: 10 }); total += 10; }
+  else              { itens.push({ criterio:'Sem compatibilidade',  valor: 0,  pontos: 0  }); }
 
-  // Marca
-  if (marcasTop.includes(p.marca)) { itens.push({ criterio:'Marca TOP (Frasle/Monroe/etc)', valor: p.marca,        pontos: 15 }); total += 15; }
-  else                              { itens.push({ criterio:'Marca não-top',                 valor: p.marca || '-', pontos: 5  }); total += 5;  }
+  // Marca (3 níveis)
+  if (MARCAS_FABRICANTE_PREMIUM.includes(p.marca)) {
+    itens.push({ criterio:'Marca fabricante premium', valor: p.marca, pontos: 15 });
+    total += 15;
+  } else if (MONTADORAS.includes(p.marca)) {
+    itens.push({ criterio:'Marca de montadora', valor: p.marca, pontos: 12 });
+    total += 12;
+  } else {
+    itens.push({ criterio:'Marca outras', valor: p.marca || '-', pontos: 5 });
+    total += 5;
+  }
 
-  // Imagens
-  if (p.imagens?.length > 0) { itens.push({ criterio:'Tem imagem', valor: p.imagens.length, pontos: 15 }); total += 15; }
-  else                       { itens.push({ criterio:'Sem imagem', valor: 0,                pontos: 0  }); }
+  // Imagens (progressivo)
+  const ni = p.imagens?.length || 0;
+  if (ni >= 5)       { itens.push({ criterio:'5+ imagens', valor: ni, pontos: 15 }); total += 15; }
+  else if (ni >= 3)  { itens.push({ criterio:'3-4 imagens', valor: ni, pontos: 12 }); total += 12; }
+  else if (ni >= 1)  { itens.push({ criterio:'1-2 imagens', valor: ni, pontos: 8  }); total += 8;  }
+  else               { itens.push({ criterio:'Sem imagem',   valor: 0,  pontos: 0  }); }
 
   // Frete grátis
-  if (precoVenda >= minFrete) { itens.push({ criterio:`Frete grátis (≥R$${minFrete})`,  valor:'R$'+precoVenda.toFixed(2), pontos: 10 }); total += 10; }
+  if (precoVenda >= minFrete) { itens.push({ criterio:`Frete grátis (≥R$${minFrete})`,    valor:'R$'+precoVenda.toFixed(2), pontos: 10 }); total += 10; }
   else                        { itens.push({ criterio:`Sem frete grátis (<R$${minFrete})`, valor:'R$'+precoVenda.toFixed(2), pontos: -5 }); total -= 5;  }
 
+  // Ticket alto (bônus)
+  if (precoVenda >= 1000)    { itens.push({ criterio:'Ticket alto (≥R$1000)', valor:'R$'+precoVenda.toFixed(2), pontos: 10 }); total += 10; }
+  else if (precoVenda >= 300){ itens.push({ criterio:'Ticket médio (≥R$300)', valor:'R$'+precoVenda.toFixed(2), pontos: 5  }); total += 5;  }
+
   return {
-    score:        Math.max(0, Math.min(total, 100)),
-    score_max:    100,
-    preco_custo:  p.preco_custo,
-    preco_venda:  +precoVenda.toFixed(2),
-    margem:       +margem.toFixed(1),
-    markup:       markup,
-    detalhamento: itens,
-    recomendacao: total >= 80 ? '🟢🟢 EXCELENTE' : total >= 60 ? '🟢 PUBLICAR' : total >= 40 ? '🟡 REVISAR' : '🔴 NÃO PUBLICAR',
+    score:            Math.max(0, Math.min(total, 100)),
+    score_max:        100,
+    preco_custo:      custo,
+    preco_base:       +precoBase.toFixed(2),
+    preco_venda:      precoVenda,
+    margem:           +margem.toFixed(1),
+    markup:           markup,
+    margem_seguranca: `${(margemSeg*100).toFixed(0)}%`,
+    detalhamento:     itens,
+    recomendacao:     total >= 80 ? '🟢🟢 EXCELENTE' : total >= 60 ? '🟢 PUBLICAR' : total >= 40 ? '🟡 REVISAR' : '🔴 NÃO PUBLICAR',
   };
 }
 
@@ -4555,6 +4636,76 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
     }
 
     // ============================================================
+    // POST /api/agente/atualizar-preco — atualiza preço de anúncio existente no ML
+    // Body: { mlbId, novoPreco?, recalcularDoBling?, blingId?, reativar? }
+    // - novoPreco: usa esse valor direto.
+    // - recalcularDoBling + blingId: busca preço atual do Bling, aplica margem segurança.
+    // - reativar: além de mudar preço, faz status:active.
+    // ============================================================
+    if (u.pathname === '/api/agente/atualizar-preco' && req.method === 'POST') {
+      const body = await readBody(req);
+      const { mlbId, novoPreco, recalcularDoBling, blingId, reativar } = body || {};
+      if (!mlbId) return send(res, 200, { success:false, error:'mlbId obrigatório' });
+
+      let mlToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+      if (!mlToken) mlToken = getMlToken();
+      if (!mlToken) return send(res, 200, { success:false, error:'Token ML não disponível' });
+
+      let precoFinal = Number(novoPreco) || 0;
+
+      // Recalcular do Bling se solicitado
+      if (recalcularDoBling && blingId) {
+        let blingToken = (req.headers['x-bling-token'] || '').replace(/^Bearer\s+/i, '');
+        if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+        if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
+
+        try {
+          const r = await fetch(`https://www.bling.com.br/Api/v3/produtos/${blingId}`,
+            { headers: { 'Authorization': 'Bearer ' + blingToken } });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || !j.data) return send(res, 200, { success:false, error:'Produto Bling não encontrado' });
+          const adapt = adaptarProdutoBlingParaSimulado(j.data);
+          const sc = scoreProdutoSimulado(adapt);
+          precoFinal = sc.precoVenda;
+        } catch (err) {
+          return send(res, 200, { success:false, error:'Falha ao buscar Bling: ' + err.message });
+        }
+      }
+
+      if (precoFinal <= 0) return send(res, 200, { success:false, error:'Preço inválido' });
+
+      // PUT no ML pra atualizar (via mlFetch — passa pelo proxy automaticamente se ML_USE_PROXY)
+      try {
+        const updateBody = { price: precoFinal };
+        if (reativar) updateBody.status = 'active';
+
+        const upResp = await mlFetch(`https://api.mercadolibre.com/items/${mlbId}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': 'Bearer ' + mlToken,
+            'Content-Type':  'application/json',
+          },
+          body: JSON.stringify(updateBody),
+        });
+        const upData = await upResp.json().catch(() => ({}));
+        if (!upResp.ok || upData.error) {
+          return send(res, 200, { success:false, error:'ML rejeitou atualização', raw: upData });
+        }
+        console.log(`💰 [agente] Preço atualizado: ${mlbId} → R$ ${precoFinal.toFixed(2)}${reativar ? ' (reativado)' : ''}`);
+        return send(res, 200, {
+          success:    true,
+          mlbId,
+          preco_novo: precoFinal,
+          status:     upData.status || 'desconhecido',
+          permalink:  upData.permalink || null,
+          mensagem:   `✅ Preço atualizado para R$ ${precoFinal.toFixed(2)}${reativar ? ' (reativado)' : ''}`,
+        });
+      } catch (err) {
+        return send(res, 200, { success:false, error: err.message });
+      }
+    }
+
+    // ============================================================
     // GET /api/agente/explicar/:id — passo a passo: como a IA vê o produto
     // ============================================================
     if (u.pathname.startsWith('/api/agente/explicar/') && req.method === 'GET') {
@@ -5099,7 +5250,8 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
       try {
         const body = await readBody(req).catch(() => ({}));
         const campos = ['modoPrimeirasVendas','markupNormal','markupPrimeirasVendas',
-          'vendasParaSairDoModo','scoreMinimo','limiteDiario','preferirPremium','freteGratisMinimo'];
+          'vendasParaSairDoModo','scoreMinimo','limiteDiario','preferirPremium','freteGratisMinimo',
+          'margemSegurancaBling'];
         for (const c of campos) {
           if (body[c] !== undefined) {
             if (typeof global.agenteConfig[c] === 'boolean') global.agenteConfig[c] = !!body[c];
