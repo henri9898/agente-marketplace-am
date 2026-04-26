@@ -4862,7 +4862,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           try {
             const pubResp = await fetch(`http://127.0.0.1:${PORT}/api/agente/publicar`, {
               method: 'POST',
-              headers: { 'Authorization': 'Bearer ' + blingToken, 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json' },
               body:    JSON.stringify({ produtoId: String(p.id), modoTeste: false }),
             });
             const pubData = await pubResp.json().catch(() => ({}));
