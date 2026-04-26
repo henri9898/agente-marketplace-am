@@ -43,3 +43,6 @@ coverage/
 
 # Scripts de setup com segredos embutidos (ML_CLIENT_SECRET)
 deploy/vps-setup.sh
+
+# Local Netlify folder
+.netlify

@@ -1125,13 +1125,13 @@ const catalogoSimulado = [
     preco_custo: 35.00,
     estoque: 50,
     marca: 'Frasle',
-    categoria_ml: 'MLB180634',
+    categoria_ml: 'MLB120316',
     condicao: 'new',
     imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
     compatibilidade: ['Volkswagen Gol G5 2008-2012','Volkswagen Gol G6 2012-2016','Volkswagen Voyage 2008-2016','Volkswagen Saveiro 2010-2016'],
     peso_g: 450,
     ean: '7890000000001',
-    modelo: 'PF-GOL-G5',
+    modelo: 'PD/123',
     inmetro: 'REG 012345/2024',
     altura_cm: 5,
     largura_cm: 12,
@@ -1146,13 +1146,13 @@ const catalogoSimulado = [
     preco_custo: 120.00,
     estoque: 25,
     marca: 'Monroe',
-    categoria_ml: 'MLB449571',
+    categoria_ml: 'MLB120316',
     condicao: 'new',
     imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
     compatibilidade: ['Honda Civic 2012','Honda Civic 2013','Honda Civic 2014','Honda Civic 2015','Honda Civic 2016'],
     peso_g: 1200,
     ean: '7890000000002',
-    modelo: 'AM-CIVIC-12',
+    modelo: 'AM/456',
     inmetro: 'REG 023456/2024',
     altura_cm: 45,
     largura_cm: 12,
@@ -1167,13 +1167,13 @@ const catalogoSimulado = [
     preco_custo: 85.00,
     estoque: 30,
     marca: 'Fremax',
-    categoria_ml: 'MLB180635',
+    categoria_ml: 'MLB120316',
     condicao: 'new',
     imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
     compatibilidade: ['Toyota Corolla 2009-2014','Toyota Corolla 2015-2019'],
     peso_g: 2800,
     ean: '7890000000003',
-    modelo: 'DF-COROLLA-09',
+    modelo: 'BD/789',
     inmetro: 'REG 034567/2024',
     altura_cm: 30,
     largura_cm: 30,
@@ -1188,11 +1188,12 @@ const catalogoSimulado = [
     preco_custo: 18.00,
     estoque: 100,
     marca: 'Tecfil',
-    categoria_ml: 'MLB455239',
+    categoria_ml: 'MLB120316',
     condicao: 'new',
     imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
     compatibilidade: ['Hyundai HB20 1.0 2012-2022','Hyundai HB20 1.6 2012-2022','Hyundai HB20S 2013-2022'],
     peso_g: 250,
+    modelo: 'FO/012',
     ativo: true,
   },
   {
@@ -1203,11 +1204,12 @@ const catalogoSimulado = [
     preco_custo: 65.00,
     estoque: 40,
     marca: 'NGK',
-    categoria_ml: 'MLB455227',
+    categoria_ml: 'MLB120316',
     condicao: 'new',
     imagens: ['https://http2.mlstatic.com/D_NQ_NP_placeholder.jpg'],
     compatibilidade: ['Chevrolet Onix 1.0 2012-2019','Chevrolet Onix 1.4 2012-2019','Chevrolet Prisma 1.0 2013-2019','Chevrolet Prisma 1.4 2013-2019'],
     peso_g: 200,
+    modelo: 'VI/345',
     ativo: true,
   },
 ];
@@ -4287,26 +4289,37 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           shipping: { mode: 'me2', local_pick_up: false, free_shipping: freteGratis },
           seller_custom_field: produto.sku,
           attributes: [
-            { id: 'BRAND', value_name: produto.marca },
-            { id: 'ITEM_CONDITION', value_id: '2230284' },
+            { id: 'BRAND',              value_name: produto.marca },
+            { id: 'ITEM_CONDITION',     value_id:   '2230284' },
+            { id: 'MODEL',              value_name: String(produto.modelo || produto.sku || 'Padrão') },
+            { id: 'POWER_SUPPLY_TYPES', value_name: 'Mecânico' },
           ],
         };
 
-        // GAP 2 — Inmetro pra autopeças
-        if (produto.inmetro) {
-          payload.attributes.push({ id: 'INMETRO_CERTIFICATION', value_name: String(produto.inmetro) });
-        }
+        // PROBLEMA 1 — Categoria pode ter migrado (ex: MLB180634 → MLB120316).
+        // Consulta o endpoint da categoria; se o ML retornar outra ID, atualiza payload.
+        try {
+          const catCheck = await mlFetch(`https://api.mercadolibre.com/categories/${payload.category_id}`);
+          const catData = await catCheck.json().catch(() => ({}));
+          if (catCheck.ok && catData && catData.id && catData.id !== payload.category_id) {
+            console.log(`🔄 [agente] Categoria migrada: ${payload.category_id} → ${catData.id}`);
+            payload.category_id = catData.id;
+          }
+        } catch (_) { /* segue com a categoria atual */ }
 
-        // GAP 1 — auto-preenchimento de atributos obrigatórios da categoria
-        if (produto.categoria_ml && token) {
+        // GAP 1 + Problema 2 — auto-preenchimento de atributos obrigatórios da categoria.
+        // Também adiciona INMETRO_CERTIFICATION (Problema 3) APENAS se a categoria aceitar.
+        if (payload.category_id && token) {
           try {
             const attrResp = await mlFetch(
-              `https://api.mercadolibre.com/categories/${produto.categoria_ml}/attributes`,
+              `https://api.mercadolibre.com/categories/${payload.category_id}/attributes`,
               { headers: { 'Authorization': 'Bearer ' + token } }
             );
             if (attrResp.ok) {
               const attrs = await attrResp.json().catch(() => []);
-              const obrigatorios = (Array.isArray(attrs) ? attrs : []).filter(a => a.tags?.required);
+              const lista = Array.isArray(attrs) ? attrs : [];
+              const allIds = new Set(lista.map(a => a.id));
+              const obrigatorios = lista.filter(a => a.tags?.required);
               for (const attr of obrigatorios) {
                 if (payload.attributes.some(a => a.id === attr.id)) continue; // já temos
                 if (attr.id === 'GTIN' && produto.ean) {
@@ -4316,12 +4329,35 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
                 } else if (attr.id === 'PACKAGE_WEIGHT' && produto.peso_g) {
                   payload.attributes.push({ id: 'PACKAGE_WEIGHT', value_name: String(produto.peso_g) + ' g' });
                 } else if (attr.id === 'ALPHANUMERIC_MODEL') {
-                  payload.attributes.push({ id: 'ALPHANUMERIC_MODEL', value_name: String(produto.modelo || produto.sku || '') });
+                  payload.attributes.push({ id: 'ALPHANUMERIC_MODEL', value_name: String(produto.modelo || produto.sku || 'Padrão') });
                 } else if (attr.id === 'MANUFACTURER') {
                   payload.attributes.push({ id: 'MANUFACTURER', value_name: String(produto.marca || '') });
+                } else if (attr.id === 'POWER_SUPPLY_TYPES' && Array.isArray(attr.values) && attr.values.length > 0) {
+                  // Usa primeiro valor permitido (cobre quando "Mecânico" não está na lista)
+                  payload.attributes.push({ id: 'POWER_SUPPLY_TYPES', value_id: attr.values[0].id });
                 } else if (Array.isArray(attr.values) && attr.values.length > 0) {
-                  // Fallback: usa o primeiro value disponível pra não falhar
                   payload.attributes.push({ id: attr.id, value_id: attr.values[0].id });
+                } else {
+                  // Sem `values` na definição: cai no produto.modelo / sku / 'Padrão'
+                  payload.attributes.push({
+                    id: attr.id,
+                    value_name: String(produto.modelo || produto.sku || 'Padrão'),
+                  });
+                }
+                console.log(`📋 [agente] Atributo obrigatório adicionado: ${attr.id}`);
+              }
+
+              // PROBLEMA 3 — INMETRO só entra se a categoria aceitar
+              if (produto.inmetro && allIds.has('INMETRO_CERTIFICATION')
+                  && !payload.attributes.some(a => a.id === 'INMETRO_CERTIFICATION')) {
+                payload.attributes.push({ id: 'INMETRO_CERTIFICATION', value_name: String(produto.inmetro) });
+                console.log(`📋 [agente] Inmetro aceito pela categoria — adicionado`);
+              }
+
+              // Sanity: se a categoria NÃO aceita MODEL/POWER_SUPPLY_TYPES, remove o que pré-adicionamos
+              for (const presetId of ['MODEL', 'POWER_SUPPLY_TYPES']) {
+                if (!allIds.has(presetId)) {
+                  payload.attributes = payload.attributes.filter(a => a.id !== presetId);
                 }
               }
             }
@@ -4669,7 +4705,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         }
 
         // GAP 2 — Inmetro obrigatório para autopeças (categorias comuns)
-        const categoriasAutopeças = ['MLB180634','MLB449571','MLB180635','MLB455239','MLB455227',
+        const categoriasAutopeças = ['MLB120316','MLB180634','MLB449571','MLB180635','MLB455239','MLB455227',
           'MLB1747','MLB6312','MLB6316','MLB6320','MLB6308','MLB6328'];
         const ehAutopeca = produto.categoria_ml && categoriasAutopeças.some(c =>
           produto.categoria_ml?.startsWith(c.substring(0, 6))
