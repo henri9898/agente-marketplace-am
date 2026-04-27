@@ -4819,6 +4819,124 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
     }
 
     // ============================================================
+    // FASE 1 — GET /api/agente/mapeamento
+    // Lista total de produtos únicos publicados, total de anúncios ativos,
+    // e detalhamento das duplicatas detectadas.
+    // ============================================================
+    if (u.pathname === '/api/agente/mapeamento' && req.method === 'GET') {
+      try {
+        const total = db.prepare(`SELECT COUNT(DISTINCT bling_id) AS n FROM produtos_publicados`).get().n;
+        const totalAtivos = db.prepare(`SELECT COUNT(*) AS n FROM produtos_publicados WHERE status IN ('active','under_review')`).get().n;
+        const duplicatas = _stmtListarComDuplicatas.all();
+        const stmtMlbsAtivos = db.prepare(`
+          SELECT mlb_id, titulo, preco, status, vendas, cliques, publicado_em
+          FROM produtos_publicados
+          WHERE bling_id = ? AND status IN ('active','under_review')
+        `);
+        const duplicatasDetalhadas = duplicatas.map(d => {
+          const mlbs = stmtMlbsAtivos.all(d.bling_id);
+          return { bling_id: d.bling_id, qtd: d.qtd, mlbs };
+        });
+        return send(res, 200, {
+          success: true,
+          total_produtos_unicos: total,
+          total_anuncios_ativos: totalAtivos,
+          total_com_duplicata: duplicatas.length,
+          duplicatas: duplicatasDetalhadas,
+        });
+      } catch (err) {
+        return send(res, 500, { success: false, error: err.message });
+      }
+    }
+
+    // ============================================================
+    // FASE 1 — POST /api/agente/limpar-duplicatas
+    // Body: { dryRun: true|false } — default true
+    // Aplica regra de rendimento:
+    //   - Tem com rendimento + tem sem rendimento → pausa os sem
+    //   - Nenhum com rendimento → mantém o mais antigo, pausa o resto
+    //   - Todos com rendimento → não faz nada
+    // ============================================================
+    if (u.pathname === '/api/agente/limpar-duplicatas' && req.method === 'POST') {
+      try {
+        const { dryRun = true } = await readBody(req);
+        const mlToken = getMlToken();
+        if (!mlToken) return send(res, 200, { success: false, error: 'Token ML não disponível' });
+
+        const duplicatas = _stmtListarComDuplicatas.all();
+        const acoes = [];
+        const stmtMlbsDup = db.prepare(`
+          SELECT mlb_id, titulo, vendas, cliques, status, publicado_em,
+            julianday('now') - julianday(publicado_em) AS dias_no_ar
+          FROM produtos_publicados
+          WHERE bling_id = ? AND status IN ('active','under_review')
+        `);
+
+        for (const dup of duplicatas) {
+          const mlbs = stmtMlbsDup.all(dup.bling_id);
+
+          // Atualiza métricas frescas pra cada
+          const metricas = [];
+          for (const m of mlbs) {
+            const fresh = await buscarRendimentoMLB(m.mlb_id, mlToken);
+            const efetivo = fresh || { vendas: m.vendas, cliques: m.cliques, dias_no_ar: Math.floor(m.dias_no_ar), status: m.status };
+            if (fresh) {
+              _stmtAtualizarMetricas.run(fresh.vendas, fresh.cliques, m.mlb_id);
+              if (fresh.status !== m.status) _stmtAtualizarStatus.run(fresh.status, m.mlb_id);
+            }
+            metricas.push({ mlb_id: m.mlb_id, titulo: m.titulo, ...efetivo });
+            await new Promise(r => setTimeout(r, 300)); // throttle ML
+          }
+
+          const comRend = metricas.filter(m => temRendimento(m));
+          const semRend = metricas.filter(m => !temRendimento(m) && (m.status === 'active' || m.status === 'under_review'));
+
+          if (comRend.length > 0 && semRend.length > 0) {
+            // Mantém com rendimento, pausa sem rendimento
+            for (const c of comRend) {
+              acoes.push({ bling_id: dup.bling_id, mlb_id: c.mlb_id, acao: 'MANTIDO (rendimento)', vendas: c.vendas, cliques: c.cliques });
+            }
+            for (const s of semRend) {
+              if (dryRun) {
+                acoes.push({ bling_id: dup.bling_id, mlb_id: s.mlb_id, acao: 'PAUSARIA (dry-run)', motivo: 'sem_rendimento_outro_tem' });
+              } else {
+                const ok = await pausarMLB(s.mlb_id, mlToken);
+                acoes.push({ bling_id: dup.bling_id, mlb_id: s.mlb_id, acao: ok ? 'PAUSADO' : 'ERRO_PAUSAR', motivo: 'sem_rendimento_outro_tem' });
+                await new Promise(r => setTimeout(r, 500));
+              }
+            }
+          } else if (comRend.length === 0 && semRend.length > 1) {
+            // Nenhum com rendimento — mantém o mais antigo, pausa os outros
+            semRend.sort((a, b) => b.dias_no_ar - a.dias_no_ar);
+            const manter = semRend[0];
+            const pausar = semRend.slice(1);
+            acoes.push({ bling_id: dup.bling_id, mlb_id: manter.mlb_id, acao: 'MANTIDO (mais antigo)', dias_no_ar: manter.dias_no_ar });
+            for (const p of pausar) {
+              if (dryRun) {
+                acoes.push({ bling_id: dup.bling_id, mlb_id: p.mlb_id, acao: 'PAUSARIA (dry-run)', motivo: 'duplicata_sem_rendimento' });
+              } else {
+                const ok = await pausarMLB(p.mlb_id, mlToken);
+                acoes.push({ bling_id: dup.bling_id, mlb_id: p.mlb_id, acao: ok ? 'PAUSADO' : 'ERRO_PAUSAR', motivo: 'duplicata_sem_rendimento' });
+                await new Promise(r => setTimeout(r, 500));
+              }
+            }
+          }
+          // Se TODOS têm rendimento, não faz nada — todos ficam
+        }
+
+        return send(res, 200, {
+          success: true,
+          dryRun,
+          total_duplicatas: duplicatas.length,
+          total_acoes: acoes.length,
+          acoes,
+        });
+      } catch (err) {
+        return send(res, 500, { success: false, error: err.message });
+      }
+    }
+
+    // ============================================================
     // POST /api/agente/atualizar-preco — atualiza preço de anúncio existente no ML
     // Body: { mlbId, novoPreco?, recalcularDoBling?, blingId?, reativar? }
     // - novoPreco: usa esse valor direto.
