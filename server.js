@@ -437,6 +437,99 @@ function construirDescricaoEstruturada(dados) {
 // ============================================================
 
 // ============================================================
+// FASE 1.6 - FRENTE C: Ordenação e limite de fotos
+// ============================================================
+const FOTOS_MAX = 8;
+
+function ehUrlFotoValida(url) {
+  if (!url || typeof url !== 'string') return false;
+  if (!/^https?:\/\//.test(url)) return false;
+
+  const urlLower = url.toLowerCase();
+  const padroesRuins = [
+    /thumb/i,
+    /\/small\//i,
+    /_small\./i,
+    /\/mini\//i,
+    /_mini\./i,
+    /placeholder/i,
+    /no[-_]?image/i,
+    /no[-_]?foto/i,
+  ];
+  if (padroesRuins.some(re => re.test(urlLower))) return false;
+
+  // Aceita extensões comuns; URLs sem extensão visível também passam (Bling tem alguns)
+  if (!/\.(jpg|jpeg|png|webp)(\?|$)/i.test(url)) return true;
+  return true;
+}
+
+function scoreQualidadeFoto(url, indexOriginal) {
+  let score = 100;
+  const urlLower = (url || '').toLowerCase();
+
+  // BÔNUS por padrões de URL que indicam foto principal
+  if (/principal|main|primary/.test(urlLower)) score += 50;
+  if (/_g\.|_grande/.test(urlLower)) score += 30;
+  if (/_l\.|_large/.test(urlLower)) score += 30;
+  if (/full[-_]?size/.test(urlLower)) score += 20;
+  if (/[-_]hd[-_]/.test(urlLower)) score += 20;
+
+  // PENALIDADE por padrões contextuais
+  if (/carro[-_]?inteiro/.test(urlLower)) score -= 50;
+  if (/contexto|context/.test(urlLower)) score -= 30;
+  if (/aplica[cç][aã]o/.test(urlLower)) score -= 30;
+
+  // BÔNUS pequeno pela posição original (Bling geralmente acerta)
+  score += Math.max(0, 10 - indexOriginal);
+
+  return score;
+}
+
+function ehFotoContextual(url) {
+  const urlLower = (url || '').toLowerCase();
+  return /carro[-_]?inteiro|contexto|aplicacao|context/.test(urlLower);
+}
+
+function processarFotos(urlsBling) {
+  if (!Array.isArray(urlsBling) || urlsBling.length === 0) return [];
+
+  // 1. Filtrar URLs inválidas
+  const validas = urlsBling
+    .map((url, idx) => ({ url, idxOriginal: idx }))
+    .filter(f => ehUrlFotoValida(f.url));
+
+  if (validas.length === 0) {
+    console.warn('[FASE1.6-C] Nenhuma foto válida após filtro, retornando array vazio');
+    return [];
+  }
+
+  // 2. Separar contextuais
+  const contextuais = validas.filter(f => ehFotoContextual(f.url));
+  const naoContextuais = validas.filter(f => !ehFotoContextual(f.url));
+
+  // 3. Ordenar não-contextuais por score (maior primeiro)
+  naoContextuais.sort((a, b) => {
+    const scoreA = scoreQualidadeFoto(a.url, a.idxOriginal);
+    const scoreB = scoreQualidadeFoto(b.url, b.idxOriginal);
+    return scoreB - scoreA;
+  });
+
+  // 4. Não-contextuais primeiro + contextuais por último
+  const resultado = [
+    ...naoContextuais.map(f => f.url),
+    ...contextuais.map(f => f.url),
+  ];
+
+  // 5. Limitar a FOTOS_MAX
+  const final = resultado.slice(0, FOTOS_MAX);
+  console.log(`[FASE1.6-C] Fotos: ${urlsBling.length} brutas → ${validas.length} válidas → ${final.length} finais`);
+  return final;
+}
+// ============================================================
+// FIM Frente C
+// ============================================================
+
+// ============================================================
 // FASE 1.5 — Criação de compatibilidades veiculares no ML
 // ============================================================
 
@@ -5881,7 +5974,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           condition: produto.condicao,
           listing_type_id: listingType,
           description: { plain_text: descricaoEstruturada },
-          pictures: produto.imagens.map(url => ({ source: url })),
+          pictures: processarFotos(produto.imagens || []).map(url => ({ source: url })),
           shipping: { mode: 'me2', local_pick_up: false, free_shipping: freteGratis },
           seller_custom_field: produto.sku,
           attributes: [
