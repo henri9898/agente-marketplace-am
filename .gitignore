@@ -20,6 +20,11 @@ users.json
 # Persistência de tokens OAuth (ML + Bling) — NUNCA commitar
 tokens.json
 
+# SQLite local (gerado em runtime — FASE 1 anti-duplicidade)
+dados.sqlite
+dados.sqlite-shm
+dados.sqlite-wal
+
 # Logs
 *.log
 logs/
