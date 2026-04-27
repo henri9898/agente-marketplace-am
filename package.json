@@ -10,7 +10,9 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "dependencies": {},
+  "dependencies": {
+    "better-sqlite3": "^12.9.0"
+  },
   "private": true,
   "author": "Henrique Barbosa",
   "license": "UNLICENSED"
