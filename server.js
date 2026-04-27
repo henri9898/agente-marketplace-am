@@ -301,17 +301,65 @@ function ehCategoriaCarroceria(categoryId) {
   return CATEGORIAS_CARROCERIA.has(categoryId);
 }
 
+/**
+ * Detecta se um código do Bling parece ser interno (não OEM real).
+ *
+ * Mais inteligente que a versão anterior:
+ * - Detecta palavras descritivas em português (AMORT, PORTA, CAPO, etc)
+ * - Exige proporção alta de números pra ser considerado OEM real
+ * - Mantém compatibilidade com padrões antigos (PD/, BLG/, COSMOS-)
+ *
+ * Exemplos OEM REAL (retorna false):
+ *   A2820900005, 52150932, 664001S000, 72375-T5N-M01
+ *
+ * Exemplos INTERNO (retorna true):
+ *   PD/123, BLG/456, AMORT-TRAS-CIVIC, PORTA-DIANT-FIT, CAPO-ONIX
+ *
+ * @param {string} codigo
+ * @returns {boolean} true se código parece interno (NÃO enviar como PART_NUMBER)
+ */
 function ehCodigoInternoBling(codigo) {
-  if (!codigo || typeof codigo !== 'string') return true; // sem código = interno
+  if (!codigo || typeof codigo !== 'string') return true;
   const c = codigo.trim().toUpperCase();
+
+  // Vazio ou muito curto = interno
+  if (c.length < 5) return true;
+
+  // Padrões EXPLÍCITOS de códigos internos do Bling
   const padroesInternos = [
-    /^PD\//,             // PD/123
-    /^BLG\//,            // BLG/456
-    /^COSMOS/,           // COSMOS-XXX
-    /^PEC[AÇ]A/,         // PECA-789, PEÇA-XXX
-    /^[A-Z]{2,4}\/\d+$/, // 2-4 letras + barra + números (formato Bling padrão)
+    /^PD\//,
+    /^BLG\//,
+    /^COSMOS/,
+    /^PEC[AÇ]A/,
+    /^SKU[-_]/,
+    /^REF[-_]/,
+    /^[A-Z]{2,4}\/\d+$/,
   ];
-  return padroesInternos.some(re => re.test(c));
+  if (padroesInternos.some(re => re.test(c))) return true;
+
+  // Detecta palavras descritivas (códigos tipo AMORT-TRAS-CIVIC)
+  const palavrasDescritivas = [
+    'AMORT', 'PORTA', 'CAPO', 'CAPÔ', 'PARACHOQUE', 'PARALAMA',
+    'TAMPA', 'RETROVISOR', 'ESPELHO', 'FAROL', 'LANTERNA', 'MOLDURA',
+    'GRADE', 'BOMBA', 'BOBINA', 'VELA', 'MOTOR', 'SENSOR', 'MODULO',
+    'ALTERNADOR', 'DIANT', 'TRAS', 'ESQ', 'DIR',
+    'LD', 'LE', 'DD', 'DE', 'TD', 'TE'
+  ];
+  const segmentos = c.split(/[-_\/\s]/);
+  if (segmentos.length >= 2) {
+    const temPalavraDescritiva = segmentos.some(seg => palavrasDescritivas.includes(seg));
+    if (temPalavraDescritiva) return true;
+  }
+
+  // OEM real tem alta proporção de números (>= 50%)
+  const semSeparadores = c.replace(/[-_\/\s]/g, '');
+  if (semSeparadores.length === 0) return true;
+  const qtdNumeros = (semSeparadores.match(/\d/g) || []).length;
+  const proporcaoNumeros = qtdNumeros / semSeparadores.length;
+  if (proporcaoNumeros < 0.5) return true;
+
+  // Passou em todos os testes - parece OEM real
+  return false;
 }
 
 function decidirPartNumber(categoryId, codigoBling) {
@@ -441,13 +489,26 @@ function construirDescricaoEstruturada(dados) {
 // ============================================================
 const FOTOS_MAX = 8;
 
+/**
+ * Filtra URLs de fotos suspeitas. Versão simplificada.
+ *
+ * Aceita qualquer URL HTTP/HTTPS válida, exceto thumbnails/placeholders óbvios.
+ * Bling pode retornar URLs com ou sem extensão visível, com query strings, etc.
+ *
+ * @param {string} url
+ * @returns {boolean} true se URL parece de foto OK
+ */
 function ehUrlFotoValida(url) {
   if (!url || typeof url !== 'string') return false;
+  if (url.length < 10) return false;
   if (!/^https?:\/\//.test(url)) return false;
 
   const urlLower = url.toLowerCase();
+
+  // Rejeita APENAS thumbs/placeholders explícitos
   const padroesRuins = [
-    /thumb/i,
+    /\/thumb\//i,
+    /_thumb\./i,
     /\/small\//i,
     /_small\./i,
     /\/mini\//i,
@@ -458,8 +519,7 @@ function ehUrlFotoValida(url) {
   ];
   if (padroesRuins.some(re => re.test(urlLower))) return false;
 
-  // Aceita extensões comuns; URLs sem extensão visível também passam (Bling tem alguns)
-  if (!/\.(jpg|jpeg|png|webp)(\?|$)/i.test(url)) return true;
+  // Tudo o mais é aceito
   return true;
 }
 
