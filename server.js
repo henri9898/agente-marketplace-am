@@ -5237,6 +5237,60 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
     }
 
     // ============================================================
+    // FASE 1.5 — POST /api/agente/recompatibilizar/:mlbId
+    // Recupera/refaz compatibilidade veicular de anúncio existente.
+    // Body opcional: { titulo?, marca? } — se omitido, busca do ML.
+    // ============================================================
+    if (u.pathname.startsWith('/api/agente/recompatibilizar/') && req.method === 'POST') {
+      try {
+        const mlbId = u.pathname.replace('/api/agente/recompatibilizar/', '').trim();
+        if (!mlbId || !mlbId.startsWith('MLB')) {
+          return send(res, 400, { success: false, erro: 'mlbId invalido' });
+        }
+
+        const body = await readBody(req).catch(() => ({}));
+        const { titulo, marca } = body || {};
+
+        const mlToken = loadTokens().ml_access_token;
+        if (!mlToken) {
+          return send(res, 500, { success: false, erro: 'token ML nao disponivel' });
+        }
+
+        let dadosCompat;
+        if (titulo) {
+          // Usa titulo passado no body
+          dadosCompat = extrairDadosDoTitulo(titulo, marca || null);
+        } else {
+          // Busca o item no ML pra pegar o titulo
+          const PROXY_URL    = process.env.ML_PROXY_URL    || 'https://ml-proxy.agentemarkt.com';
+          const PROXY_SECRET = process.env.ML_PROXY_SECRET || 'agente-ml-proxy-2026';
+          const respItem = await fetch(`${PROXY_URL}/items/${mlbId}`, {
+            headers: {
+              'Authorization':  `Bearer ${mlToken}`,
+              'X-Proxy-Secret': PROXY_SECRET,
+            },
+          });
+          if (!respItem.ok) {
+            return send(res, respItem.status, { success: false, erro: 'erro ao buscar item ML' });
+          }
+          const item = await respItem.json();
+          dadosCompat = extrairDadosDoTitulo(item.title, null);
+        }
+
+        const resultado = await criarCompatibilidades(mlbId, dadosCompat, mlToken);
+        return send(res, 200, {
+          success: true,
+          mlbId,
+          dadosExtraidos: dadosCompat,
+          resultado,
+        });
+      } catch (err) {
+        console.error('[RECOMPATIBILIZAR] erro:', err);
+        return send(res, 500, { success: false, erro: err.message });
+      }
+    }
+
+    // ============================================================
     // POST /api/agente/atualizar-preco — atualiza preço de anúncio existente no ML
     // Body: { mlbId, novoPreco?, recalcularDoBling?, blingId?, reativar? }
     // - novoPreco: usa esse valor direto.
