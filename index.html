@@ -3396,159 +3396,71 @@ function useAgentStore({ notif } = {}) {
     setStatus('running'); setErrorMsg(null);
     startedAt.current = Date.now();
     log('info','🚀 Agente REAL iniciado — Bling → Mercado Livre');
+    log('info','🎯 Usando pipeline com qualificação 13 critérios');
 
-    // 1) Puxa catálogo Bling
-    log('info','📥 Buscando produtos no Bling…');
-    const blingResp = await blingFetchProdutos({ page:1, limit:100 });
-    if (!blingResp.success) {
-      log('error','❌ Falha Bling: ' + (blingResp.error||'erro desconhecido'));
-      setStatus('idle'); return;
-    }
-    const list = blingResp.produtos || [];
-    log('ok', `✓ Bling: ${list.length} produto(s) encontrados`);
-
-    // 2) Score — adapta dados do Bling pro shape que finalScore() espera
     const criteriaNow = loadCriteria();
-    const scored = list.map(p => {
-      const precoNum = Number(p.preco) || 0;
-      const custoNum = Number(p.precoCusto) || precoNum * 0.7;
-      const margem   = precoNum > 0 ? (precoNum - custoNum) / precoNum : 0;
-      const estoque  = Number(p.estoqueSaldo) || 0;
-      const synthetic = {
-        sku: p.codigo || String(p.id),
-        nome: p.nome,
-        marca: p.marca?.nome || '',
-        categoria: p.tipo || 'Geral',
-        vendas30d: Math.min(50, Math.floor(Math.random()*30) + 5), // sem histórico ML ainda, usa estimativa
-        estoque,
-        margem: Math.max(0.05, Math.min(0.6, margem)),
-        diasUltima: Math.floor(Math.random()*14) + 1,
-        completude: (p.gtin ? 20 : 0) + (p.marca ? 15 : 0) + (p.descricaoCurta ? 15 : 0) + 40,
-        categoriaEstrategica: false,
-        statusML: 'no_ml',
-      };
-      const score = finalScore(synthetic, criteriaNow.weights);
-      return { ...p, _synthetic: synthetic, score };
-    });
+    const max = criteriaNow.perDay || 10;
 
-    // 3) Filtra + ordena + limita
-    const elegiveis = scored
-      .filter(p => p.score >= criteriaNow.scoreMin && (p.situacao === 'A' || !p.situacao))
-      .sort((a,b) => b.score - a.score)
-      .slice(0, criteriaNow.perDay || 15);
+    // Varre múltiplas páginas até encontrar produtos PRONTOs (página 1 geralmente
+    // tem produtos novos sem foto). Páginas 5+ tendem a ter produtos antigos
+    // com fotos cadastradas.
+    let publicadosTotal = 0;
+    let falhasTotal = 0;
+    let paginaAtual = 5;       // começa na página 5 que sabidamente tem PRONTOs
+    const maxPaginas = 10;     // varre até página 14 no máximo
 
-    if (elegiveis.length === 0) {
-      log('warn', `⚠️ Nenhum produto passou no filtro (score ≥ ${criteriaNow.scoreMin}). Ajuste em 🔌 Integrações.`);
-      setStatus('idle'); return;
-    }
-    log('info', `🎯 ${elegiveis.length} produto(s) selecionados (top scores: ${elegiveis.slice(0,3).map(p=>p.score).join(', ')})`);
+    while (publicadosTotal < max && paginaAtual < (5 + maxPaginas)) {
+      log('info', `📥 Buscando produtos qualificados na página ${paginaAtual}…`);
 
-    // Popula a fila visual
-    const tasks = elegiveis.map(p => ({
-      id: 'q_b_'+p.id+'_'+Math.random().toString(36).slice(2,5),
-      sku: p._synthetic.sku, action:'Publicar', label: p.nome, eta: 3,
-      _realId: p.id, _score: p.score,
-    }));
-    setQueue(tasks);
-
-    // 4) Publica 1 por 1
-    let ok = 0, fail = 0;
-    for (let i = 0; i < elegiveis.length; i++) {
-      const p = elegiveis[i];
-      log('info', `⚡ [${i+1}/${elegiveis.length}] score=${p.score} · ${p.nome}`);
-
-      // 📝 Preview SEO antes de publicar (ajuda a diagnosticar duplicidades)
+      const restante = max - publicadosTotal;
       try {
-        const ml = loadMLTokens();
-        const seoResp = await fetch('/api/seo/gerar-completo', {
-          method:'POST',
-          headers:{ 'Authorization':'Bearer '+ml.access_token, 'Content-Type':'application/json' },
+        const resp = await fetch('/api/agente/publicar-fila', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            nome: p.nome,
-            marca: p.marca?.nome || '',
-            partNumber: p.codigo || '',
+            pagina: paginaAtual,
+            limite: 10,
+            max: restante,
+            dryRun: false,
+            somenteSelo: ['OURO','PRONTO'],
           }),
         });
-        const seoData = await seoResp.json().catch(()=>({}));
-        if (seoData.success && seoData.titulos) {
-          log('info', `📝 Gerando SEO para "${p.nome.slice(0,40)}..."`);
-          seoData.titulos.forEach(t => {
-            const mark = seoData.recomendacao?.titulo?.variacao === t.variacao ? '✅' : '  ';
-            log('info', `📝 ${mark} Título ${t.variacao}: "${t.titulo}" (${t.chars}ch)`);
-          });
-          if (seoData.duplicidade) {
-            log(seoData.duplicidade.duplicado ? 'warn' : 'info',
-              `📝 Anti-duplicidade: ${seoData.duplicidade.aviso}`);
-          }
-          if (seoData.recomendacao) {
-            log('ok', `📝 Usando variação ${seoData.recomendacao.titulo.variacao} · ${seoData.recomendacao.motivo}`);
-          }
+        const data = await resp.json();
+
+        if (!data.success) {
+          log('error', `❌ Erro: ${data.error || 'desconhecido'}`);
+          break;
         }
-      } catch(_) {}
 
-      try {
-        const r = await publishBlingToML(p.id);
-        if (r.success) {
-          ok++;
-          if (r.precificacao) {
-            const pr = r.precificacao;
-            log('info', `💰 Preço R$${Number(pr.precoUsado).toFixed(2)} · custo R$${Number(p.precoCusto||p.preco||0).toFixed(2)} · margem ${pr.margem} · ${pr.status.emoji} ${pr.status.nivel}`);
-            if (pr.status.nivel === 'critico' || pr.status.nivel === 'prejuizo') {
-              log('warn', `🔴 ${pr.status.alerta}`);
-            }
-          }
-          log('ok', `✅ Publicado → ${r.ml_item_id} · ${r.permalink || ''}`);
-          setProducts(prev => prev.map(pr => pr.sku === p._synthetic.sku ? { ...pr, status:'publicado', mlId: r.ml_item_id } : pr));
-          setMetrics(m => ({ ...m, publishedToday: m.publishedToday + 1, totalProcessed: m.totalProcessed + 1 }));
-          if (notif && notif.push) notif.push(buildNotification('publicado', { ml_id: r.ml_item_id }));
+        const totais = data.totais || {};
+        log('info', `📊 Página ${paginaAtual}: ${totais.OURO||0} OURO · ${totais.PRONTO||0} PRONTO · ${totais.BLOQUEADO||0} BLOQUEADO`);
 
-          // 🚗 Resolve compatibilidade automaticamente (fire-and-forget, sem bloquear fila)
-          (async (mlId, titulo) => {
-            try {
-              await new Promise(r => setTimeout(r, 3500)); // ML precisa indexar
-              const ml = loadMLTokens();
-              if (!ml?.access_token) return;
-              const cr = await fetch('/api/ml/compat/auto-resolver', {
-                method:'POST',
-                headers:{ 'Authorization': 'Bearer ' + ml.access_token, 'Content-Type':'application/json' },
-                body: JSON.stringify({ itemId: mlId }),
-              });
-              const cd = await cr.json().catch(()=>({}));
-              if (cd.sucesso) {
-                log('ok', `🚗 Compat ${mlId} aplicada via ${cd.metodo}${cd.resumo?` — ${cd.resumo}`:''} ✅`);
-              } else {
-                log('warn', `🚗 Compat ${mlId} pendente — aguardando sugestões do ML ⚠️`);
-              }
-            } catch(e) {
-              log('error', `🚗 Compat ${mlId} erro: ${e.message}`);
-            }
-          })(r.ml_item_id, p.nome);
-        } else {
-          fail++;
-          // Bloqueio por prejuízo vem como error com "PREJUÍZO" na mensagem
-          if (r.error && r.error.includes('PREJUÍZO')) {
-            log('error', `🚨 ${r.error}`);
-            if (r.precificacao?.sugerido) {
-              log('warn', `💡 Use preço ≥ R$${r.precificacao.sugerido.precoMinimo} ou ajuste margem em 💰 Precificação`);
-            }
+        if ((data.resultados || []).length === 0) {
+          log('info', `⚠️ Nenhum produto elegível na página ${paginaAtual}, indo pra próxima`);
+          paginaAtual++;
+          continue;
+        }
+
+        for (const r of data.resultados) {
+          if (r.status === 'publicado') {
+            publicadosTotal++;
+            log('ok', `✅ [${publicadosTotal}/${max}] ${r.titulo} → ${r.mlb_id}`);
           } else {
-            log('error', `❌ Falhou: ${r.error || 'erro'}`);
+            falhasTotal++;
+            log('error', `❌ ${r.titulo}: ${r.erro || 'falhou'}`);
           }
-          setMetrics(m => ({ ...m, errors: m.errors + 1, totalProcessed: m.totalProcessed + 1 }));
         }
-      } catch(e) {
-        fail++;
-        log('error', `❌ Exceção: ${e.message}`);
+
+        paginaAtual++;
+      } catch (e) {
+        log('error', `❌ Falha de rede: ${e.message}`);
+        break;
       }
-      // Remove da fila visual
-      setQueue(q => q.filter(t => t._realId !== p.id));
-      // throttle 1s (ML rate-limit). /api/publicar é single-shot; throttle aqui no cliente.
-      if (i < elegiveis.length - 1) await new Promise(r => setTimeout(r, 1000));
     }
 
-    log('info', `🏁 Concluído — ${ok} publicado(s), ${fail} erro(s)`);
+    log('info', `🏁 Concluído — ${publicadosTotal} publicado(s), ${falhasTotal} falha(s)`);
     setStatus('idle');
-  }, [status, log, notif, setQueue, setProducts, setStatus, setMetrics]);
+  }, [status]);
 
   // contadores derivados
   const counts = useMemo(() => ({
