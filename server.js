@@ -5077,6 +5077,30 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         let produto;
         let qualificacao = null;
 
+        // FASE 1 — Anti-duplicidade Bling↔ML (só faz sentido pra produtos Bling reais)
+        const _produtoIdBling = String(produtoId || '');
+        let _mlbsParaPausarDepois = [];
+        if (!modoTeste && _produtoIdBling && !_produtoIdBling.startsWith('SIM')) {
+          try {
+            const _check = await checarDuplicidadeBling(_produtoIdBling, token);
+            if (!_check.podeRepublicar) {
+              return send(res, 200, {
+                success: false,
+                error: '⛔ Produto já publicado',
+                motivo: _check.motivo,
+                mlb_existente: _check.mlbsAtivos.map(m => m.mlb_id),
+                detalhe: _check.motivo === 'tem_mlb_com_rendimento'
+                  ? 'Já tem MLB com rendimento — duplicar canibaliza vendas'
+                  : 'Publicado há <24h — aguardando dados pra decidir',
+              });
+            }
+            _mlbsParaPausarDepois = _check.mlbsParaPausar || [];
+          } catch (err) {
+            console.error('[anti-dup] erro:', err.message);
+            // Em erro de checagem, deixa publicar (fail-open). Logado pra investigar.
+          }
+        }
+
         // Decide fonte: SIM* = simulado, qualquer outra coisa = Bling
         if (String(produtoId).startsWith('SIM')) {
           produto = catalogoSimulado.find(p => p.id === produtoId);
@@ -5326,6 +5350,18 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
             preco: precoVenda,
             hora: new Date().toISOString(),
           });
+
+          // FASE 1 — Registra mapeamento Bling→ML no SQLite (só pra produtos Bling reais)
+          if (pubData.id && _produtoIdBling && !_produtoIdBling.startsWith('SIM')) {
+            registrarPublicacaoBlingML(_produtoIdBling, pubData.id, produto.titulo, precoVenda);
+            // Fire-and-forget: pausa os antigos sem rendimento
+            for (const mlbAntigo of _mlbsParaPausarDepois) {
+              pausarMLB(mlbAntigo, token).then(ok => {
+                if (ok) console.log(`[anti-dup] MLB ${mlbAntigo} pausado (sem rendimento, substituído por ${pubData.id})`);
+              }).catch(() => {});
+            }
+          }
+
           return send(res, 200, {
             success: true,
             modoTeste: false,
