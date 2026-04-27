@@ -272,6 +272,62 @@ function extrairDadosDoTitulo(nome, marcaBling) {
 // ============================================================
 
 // ============================================================
+// FASE 1.6 - FRENTE A: Detecção de tipo de peça via categoria ML
+// ============================================================
+
+// Lista de category_ids ML que correspondem a peças de CARROCERIA/ESTRUTURAL
+// (peças que NÃO precisam de PART_NUMBER OEM)
+const CATEGORIAS_CARROCERIA = new Set([
+  // Capôs e tampas
+  'MLB101762', 'MLB101763', 'MLB45307',
+  // Portas
+  'MLB101764', 'MLB101765', 'MLB101766',
+  // Para-choques
+  'MLB63801', 'MLB101767', 'MLB101768', 'MLB101769',
+  // Paralamas
+  'MLB101770', 'MLB101771', 'MLB101772',
+  // Retrovisores
+  'MLB101773', 'MLB101774', 'MLB101775',
+  // Faróis e lanternas
+  'MLB101776', 'MLB101777', 'MLB101778',
+  // Grades e molduras
+  'MLB101779', 'MLB101780',
+  // Categoria genérica fallback - tratada como carroceria por segurança
+  'MLB1747',
+]);
+
+function ehCategoriaCarroceria(categoryId) {
+  if (!categoryId || typeof categoryId !== 'string') return false;
+  return CATEGORIAS_CARROCERIA.has(categoryId);
+}
+
+function ehCodigoInternoBling(codigo) {
+  if (!codigo || typeof codigo !== 'string') return true; // sem código = interno
+  const c = codigo.trim().toUpperCase();
+  const padroesInternos = [
+    /^PD\//,             // PD/123
+    /^BLG\//,            // BLG/456
+    /^COSMOS/,           // COSMOS-XXX
+    /^PEC[AÇ]A/,         // PECA-789, PEÇA-XXX
+    /^[A-Z]{2,4}\/\d+$/, // 2-4 letras + barra + números (formato Bling padrão)
+  ];
+  return padroesInternos.some(re => re.test(c));
+}
+
+function decidirPartNumber(categoryId, codigoBling) {
+  if (ehCategoriaCarroceria(categoryId)) {
+    return { enviarPartNumber: false, partNumber: null, motivo: 'carroceria_sem_codigo' };
+  }
+  if (ehCodigoInternoBling(codigoBling)) {
+    return { enviarPartNumber: false, partNumber: null, motivo: 'codigo_interno_bling_descartado' };
+  }
+  return { enviarPartNumber: true, partNumber: codigoBling.trim(), motivo: 'mecanica_com_codigo_oem' };
+}
+// ============================================================
+// FIM Frente A
+// ============================================================
+
+// ============================================================
 // FASE 1.5 — Criação de compatibilidades veiculares no ML
 // ============================================================
 
@@ -5676,6 +5732,14 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         const freteGratis = precoVenda >= minFrete;
         console.log(`🤖 [agente] Listagem: ${listingType === 'gold_special' ? 'PREMIUM' : 'CLÁSSICO'} (R$ ${precoVenda.toFixed(2)}${freteGratis ? ' + frete grátis' : ''})`);
 
+        // FASE 1.6 - FRENTE A: decisão inteligente de PART_NUMBER
+        const decisaoPartNumber = decidirPartNumber(produto.categoria_ml, produto.sku);
+        console.log(`[FASE1.6-A] PART_NUMBER decisão: ${decisaoPartNumber.motivo} (categoria=${produto.categoria_ml}, codigo="${produto.sku}")`);
+        // Pra Frente B usar na descrição
+        const codigoPecaDescricao = decisaoPartNumber.enviarPartNumber
+          ? decisaoPartNumber.partNumber
+          : 'Sem Código';
+
         const payload = {
           title: tituloFinal.substring(0, 60),
           category_id: produto.categoria_ml,
@@ -5696,6 +5760,11 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
             { id: 'POWER_SUPPLY_TYPES', value_name: 'Mecânico' },
           ],
         };
+
+        // FASE 1.6 - FRENTE A: PART_NUMBER apenas pra mecânica com código OEM real
+        if (decisaoPartNumber.enviarPartNumber) {
+          payload.attributes.push({ id: 'PART_NUMBER', value_name: decisaoPartNumber.partNumber });
+        }
 
         // PROBLEMA 1 — Categoria pode ter migrado (ex: MLB180634 → MLB120316).
         // Consulta o endpoint da categoria; se o ML retornar outra ID, atualiza payload.
@@ -5723,6 +5792,15 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
               const obrigatorios = lista.filter(a => a.tags?.required);
               for (const attr of obrigatorios) {
                 if (payload.attributes.some(a => a.id === attr.id)) continue; // já temos
+                // FASE 1.6 - FRENTE A: respeita decisão sobre PART_NUMBER (carroceria não envia)
+                if (attr.id === 'PART_NUMBER') {
+                  if (decisaoPartNumber.enviarPartNumber) {
+                    payload.attributes.push({ id: 'PART_NUMBER', value_name: decisaoPartNumber.partNumber });
+                  } else {
+                    console.log(`[FASE1.6-A] Auto-fill PART_NUMBER suprimido: ${decisaoPartNumber.motivo}`);
+                  }
+                  continue;
+                }
                 if (attr.id === 'GTIN' && produto.ean) {
                   payload.attributes.push({ id: 'GTIN', value_name: String(produto.ean) });
                 } else if (attr.id === 'SELLER_SKU' && produto.sku) {
