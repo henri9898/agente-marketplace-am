@@ -328,6 +328,115 @@ function decidirPartNumber(categoryId, codigoBling) {
 // ============================================================
 
 // ============================================================
+// FASE 1.6 - FRENTE B: Descrição estruturada dinâmica
+// ============================================================
+
+/**
+ * Constrói descrição estruturada e dinâmica para o anúncio ML.
+ *
+ * @param {object} dados
+ * @param {string} dados.tituloProduto - nome do produto Bling
+ * @param {object} dados.dadosTitulo - resultado de extrairDadosDoTitulo()
+ * @param {string} dados.codigoPeca - código da peça (vindo de decidirPartNumber)
+ * @param {Array<object>} dados.compatibilidadesExpandidas - lista {marca, modelo, anoIni, anoFim} (Frente D)
+ * @returns {string} descrição final
+ */
+function construirDescricaoEstruturada(dados) {
+  const { tituloProduto, dadosTitulo, codigoPeca, compatibilidadesExpandidas } = dados;
+  const linhas = [];
+
+  // ─── BLOCO 1: Primeira linha (descrição natural) ───
+  let primeiraLinha = '';
+  if (dadosTitulo && dadosTitulo.modelo) {
+    if (tituloProduto && tituloProduto.length < 100) {
+      // Limpa o título: remove "(Peça:1)", códigos entre parênteses, etc
+      primeiraLinha = tituloProduto
+        .replace(/\(Peça:\s*\d+\)/gi, '')
+        .replace(/\([A-Z0-9\-]+\)\s*$/g, '') // remove códigos no final
+        .trim();
+    } else {
+      const partes = [];
+      if (dadosTitulo.posicao) partes.push(dadosTitulo.posicao);
+      if (dadosTitulo.lado) partes.push(dadosTitulo.lado);
+      if (dadosTitulo.modelo) partes.push(dadosTitulo.modelo);
+      if (dadosTitulo.anoInicial && dadosTitulo.anoFinal) {
+        partes.push(`${dadosTitulo.anoInicial} a ${dadosTitulo.anoFinal}`);
+      }
+      if (dadosTitulo.cor) partes.push(dadosTitulo.cor);
+      primeiraLinha = partes.join(' ');
+    }
+  } else {
+    primeiraLinha = (tituloProduto || '').trim();
+  }
+  if (primeiraLinha) {
+    linhas.push(primeiraLinha);
+    linhas.push('');
+  }
+
+  // ─── BLOCO 2: Detalhes do Produto ───
+  linhas.push('Detalhes do Produto:');
+  if (dadosTitulo && dadosTitulo.marca) {
+    linhas.push(`Marca: ${dadosTitulo.marca}`);
+  }
+  // Ano: só mostra se tiver. Mecânica frequentemente não tem.
+  if (dadosTitulo && dadosTitulo.anoInicial && dadosTitulo.anoFinal) {
+    if (dadosTitulo.anoInicial === dadosTitulo.anoFinal) {
+      linhas.push(`Ano: ${dadosTitulo.anoInicial}`);
+    } else {
+      linhas.push(`Ano: ${dadosTitulo.anoInicial} a ${dadosTitulo.anoFinal}`);
+    }
+  }
+  // Modelo: útil pra mecânica sem ano (ex: "A200 1.3")
+  if (dadosTitulo && dadosTitulo.modelo && (!dadosTitulo.anoInicial || dadosTitulo.modelo.includes('.'))) {
+    linhas.push(`Modelo: ${dadosTitulo.modelo}`);
+  }
+  // Código da peça: SEMPRE mostra (Sem Código ou código real)
+  linhas.push(`Código da Peça: ${codigoPeca || 'Sem Código'}`);
+  linhas.push('');
+
+  // ─── BLOCO 3: Características (só se tiver dados) ───
+  const caracteristicas = [];
+  if (dadosTitulo && dadosTitulo.cor)     caracteristicas.push(`Cor: ${dadosTitulo.cor}`);
+  if (dadosTitulo && dadosTitulo.lado)    caracteristicas.push(`Lado: ${dadosTitulo.lado}`);
+  if (dadosTitulo && dadosTitulo.posicao) caracteristicas.push(`Posição: ${dadosTitulo.posicao}`);
+  if (caracteristicas.length > 0) {
+    linhas.push('Características:');
+    caracteristicas.forEach(c => linhas.push(c));
+    linhas.push('');
+  }
+
+  // ─── BLOCO 4: Compatibilidades (penúltimo) ───
+  if (compatibilidadesExpandidas && compatibilidadesExpandidas.length > 0) {
+    linhas.push('Compatibilidades:');
+    compatibilidadesExpandidas.forEach(c => {
+      const anos = (c.anoIni && c.anoFim)
+        ? (c.anoIni === c.anoFim ? `${c.anoIni}` : `${c.anoIni} a ${c.anoFim}`)
+        : '';
+      linhas.push(`- ${c.marca} ${c.modelo}${anos ? ' ' + anos : ''}`);
+    });
+    linhas.push('');
+  } else if (dadosTitulo && dadosTitulo.marca && dadosTitulo.modelo) {
+    // Fallback: sem expansão, lista só o modelo do título
+    linhas.push('Compatibilidades:');
+    const anos = (dadosTitulo.anoInicial && dadosTitulo.anoFinal)
+      ? (dadosTitulo.anoInicial === dadosTitulo.anoFinal
+          ? `${dadosTitulo.anoInicial}`
+          : `${dadosTitulo.anoInicial} a ${dadosTitulo.anoFinal}`)
+      : '';
+    linhas.push(`- ${dadosTitulo.marca} ${dadosTitulo.modelo}${anos ? ' ' + anos : ''}`);
+    linhas.push('');
+  }
+
+  // ─── BLOCO 5: Garantia (último, sempre) ───
+  linhas.push('Garantia do vendedor: 3 meses');
+
+  return linhas.join('\n');
+}
+// ============================================================
+// FIM Frente B
+// ============================================================
+
+// ============================================================
 // FASE 1.5 — Criação de compatibilidades veiculares no ML
 // ============================================================
 
@@ -5735,10 +5844,32 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         // FASE 1.6 - FRENTE A: decisão inteligente de PART_NUMBER
         const decisaoPartNumber = decidirPartNumber(produto.categoria_ml, produto.sku);
         console.log(`[FASE1.6-A] PART_NUMBER decisão: ${decisaoPartNumber.motivo} (categoria=${produto.categoria_ml}, codigo="${produto.sku}")`);
-        // Pra Frente B usar na descrição
         const codigoPecaDescricao = decisaoPartNumber.enviarPartNumber
           ? decisaoPartNumber.partNumber
           : 'Sem Código';
+
+        // FASE 1.6 - FRENTE B: extrai dados do título cedo (será reusado pela Fase 1.5 depois)
+        let dadosTituloFrenteB = null;
+        try {
+          dadosTituloFrenteB = extrairDadosDoTitulo(produto.titulo, produto.marca);
+        } catch (errExt) {
+          console.error('[FASE1.6-B] Erro extraindo dados do titulo:', errExt.message);
+        }
+
+        // FASE 1.6 - FRENTE B: descrição estruturada dinâmica
+        let descricaoEstruturada = '';
+        try {
+          descricaoEstruturada = construirDescricaoEstruturada({
+            tituloProduto: produto.titulo || produto.descricao || '',
+            dadosTitulo: dadosTituloFrenteB,
+            codigoPeca: codigoPecaDescricao,
+            compatibilidadesExpandidas: null, // Frente D pode preencher depois (recompat)
+          });
+          console.log(`[FASE1.6-B] Descrição estruturada gerada (${descricaoEstruturada.length} chars)`);
+        } catch (errDesc) {
+          console.error('[FASE1.6-B] ERRO ao construir descrição, usando fallback:', errDesc.message);
+          descricaoEstruturada = produto.descricao || produto.titulo || '';
+        }
 
         const payload = {
           title: tituloFinal.substring(0, 60),
@@ -5749,7 +5880,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           buying_mode: 'buy_it_now',
           condition: produto.condicao,
           listing_type_id: listingType,
-          description: { plain_text: produto.descricao },
+          description: { plain_text: descricaoEstruturada },
           pictures: produto.imagens.map(url => ({ source: url })),
           shipping: { mode: 'me2', local_pick_up: false, free_shipping: freteGratis },
           seller_custom_field: produto.sku,
