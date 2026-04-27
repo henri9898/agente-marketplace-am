@@ -530,6 +530,103 @@ function processarFotos(urlsBling) {
 // ============================================================
 
 // ============================================================
+// FASE 1.6 - FRENTE D: Compatibilidades expandidas via plataformas
+// ============================================================
+
+// Carrega JSON de plataformas no boot (cache em memória)
+let PLATAFORMAS_VEICULARES = null;
+
+function carregarPlataformas() {
+  try {
+    const caminho = path.join(__dirname, 'plataformas_veiculares.json');
+    if (!fs.existsSync(caminho)) {
+      console.warn('[FASE1.6-D] plataformas_veiculares.json nao encontrado');
+      PLATAFORMAS_VEICULARES = { plataformas: [], versao: '0' };
+      return;
+    }
+    const conteudo = fs.readFileSync(caminho, 'utf8');
+    PLATAFORMAS_VEICULARES = JSON.parse(conteudo);
+    console.log(`[FASE1.6-D] ✅ ${PLATAFORMAS_VEICULARES.plataformas.length} plataformas carregadas (versao ${PLATAFORMAS_VEICULARES.versao})`);
+  } catch (err) {
+    console.error('[FASE1.6-D] ERRO ao carregar plataformas:', err.message);
+    PLATAFORMAS_VEICULARES = { plataformas: [], versao: '0' };
+  }
+}
+carregarPlataformas();
+
+// Aliases internos (independente do ALIASES_MARCA_BLING da Fase 1.5 — esse foca em plataformas)
+function _normalizarMarcaPlat(marca) {
+  if (!marca) return '';
+  const m = String(marca).trim().toLowerCase();
+  const aliases = {
+    'gm': 'chevrolet', 'general motors': 'chevrolet', 'chevy': 'chevrolet',
+    'vw': 'volkswagen',
+    'mb': 'mercedes-benz', 'mercedes': 'mercedes-benz',
+  };
+  return aliases[m] || m;
+}
+
+function _normalizarModeloPlat(modelo) {
+  if (!modelo) return '';
+  return String(modelo).trim().toLowerCase()
+    .replace(/[^a-z0-9 ]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+function encontrarPlataforma(marca, modelo, anoIni, anoFim) {
+  if (!PLATAFORMAS_VEICULARES) return null;
+  if (!marca || !modelo) return null;
+  const marcaNorm = _normalizarMarcaPlat(marca);
+  const modeloNorm = _normalizarModeloPlat(modelo);
+  for (const plat of PLATAFORMAS_VEICULARES.plataformas) {
+    for (const carro of plat.carros) {
+      if (_normalizarMarcaPlat(carro.marca) !== marcaNorm) continue;
+      if (_normalizarModeloPlat(carro.modelo) !== modeloNorm) continue;
+      // Verifica overlap de anos (se ano informado)
+      if (anoIni && anoFim) {
+        if (anoFim < carro.anoIni || anoIni > carro.anoFim) continue;
+      }
+      return plat;
+    }
+  }
+  return null;
+}
+
+function expandirCompatibilidades(marca, modelo, anoIni, anoFim) {
+  const plataforma = encontrarPlataforma(marca, modelo, anoIni, anoFim);
+  if (!plataforma) {
+    return { expandidas: [], plataformaEncontrada: false, plataformaId: null };
+  }
+  const expandidas = plataforma.carros.map(carro => {
+    if (!anoIni || !anoFim) {
+      return { marca: carro.marca, modelo: carro.modelo, anoIni: carro.anoIni, anoFim: carro.anoFim };
+    }
+    return {
+      marca: carro.marca,
+      modelo: carro.modelo,
+      anoIni: Math.max(anoIni, carro.anoIni),
+      anoFim: Math.min(anoFim, carro.anoFim),
+    };
+  });
+  return { expandidas, plataformaEncontrada: true, plataformaId: plataforma.id };
+}
+
+function registrarModeloPendente(marca, modelo, anoIni, anoFim, tituloExemplo, mlbExemplo) {
+  try {
+    const dbMod = require('./db.js');
+    if (typeof dbMod.registrarPendente === 'function') {
+      dbMod.registrarPendente(marca, modelo, anoIni, anoFim, tituloExemplo, mlbExemplo);
+      console.log(`[FASE1.6-D] 📌 Modelo pendente: ${marca} ${modelo} (${anoIni || '-'}/${anoFim || '-'})`);
+    }
+  } catch (err) {
+    console.error('[FASE1.6-D] ERRO ao registrar pendente:', err.message);
+  }
+}
+// ============================================================
+// FIM Frente D — helpers
+// ============================================================
+
+// ============================================================
 // FASE 1.5 — Criação de compatibilidades veiculares no ML
 // ============================================================
 
@@ -5495,6 +5592,53 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
     }
 
     // ============================================================
+    // FASE 1.6 - FRENTE D: Endpoints painel de plataformas pendentes
+    // ============================================================
+
+    // GET /api/agente/plataformas-pendentes — lista modelos não mapeados
+    if (u.pathname === '/api/agente/plataformas-pendentes' && req.method === 'GET') {
+      try {
+        const dbMod = require('./db.js');
+        const pendentes = dbMod.listarPendentes();
+        return send(res, 200, { success: true, total: pendentes.length, pendentes });
+      } catch (err) {
+        console.error('[FASE1.6-D] erro listar pendentes:', err);
+        return send(res, 500, { success: false, error: err.message });
+      }
+    }
+
+    // POST /api/agente/plataformas-pendentes/marcar-revisado — body { marca, modelo }
+    if (u.pathname === '/api/agente/plataformas-pendentes/marcar-revisado' && req.method === 'POST') {
+      try {
+        const body = await readBody(req).catch(() => ({}));
+        const { marca, modelo } = body || {};
+        if (!marca || !modelo) {
+          return send(res, 400, { success: false, error: 'marca e modelo obrigatorios' });
+        }
+        const dbMod = require('./db.js');
+        const result = dbMod.marcarRevisado(marca, modelo);
+        return send(res, 200, { success: true, changes: result.changes });
+      } catch (err) {
+        console.error('[FASE1.6-D] erro marcar revisado:', err);
+        return send(res, 500, { success: false, error: err.message });
+      }
+    }
+
+    // POST /api/agente/plataformas-pendentes/recarregar — recarrega JSON sem restart
+    if (u.pathname === '/api/agente/plataformas-pendentes/recarregar' && req.method === 'POST') {
+      try {
+        carregarPlataformas();
+        return send(res, 200, {
+          success: true,
+          total_plataformas: PLATAFORMAS_VEICULARES.plataformas.length,
+          versao: PLATAFORMAS_VEICULARES.versao,
+        });
+      } catch (err) {
+        return send(res, 500, { success: false, error: err.message });
+      }
+    }
+
+    // ============================================================
     // FASE 1.5 — POST /api/agente/recompatibilizar/:mlbId
     // Recupera/refaz compatibilidade veicular de anúncio existente.
     // Body opcional: { titulo?, marca? } — se omitido, busca do ML.
@@ -6135,15 +6279,56 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
               }).catch(() => {});
             }
 
-            // FASE 1.5 — Tenta criar compatibilidades veiculares (não bloqueante).
-            // Falha aqui NUNCA pode quebrar o fluxo de publicação.
+            // FASE 1.5 + FASE 1.6 FRENTE D — compatibilidades veiculares (não bloqueante).
+            // 1) Extrai dados do título (reusa dadosTituloFrenteB se disponível)
+            // 2) Tenta expandir via plataforma (Frente D)
+            // 3) Cria compat pra cada modelo expandido OU só pro modelo do título (fallback Fase 1.5)
+            // 4) Se modelo não estiver mapeado, registra pendente
             try {
-              const dadosCompat = extrairDadosDoTitulo(produto.titulo, produto.marca);
+              const dadosCompat = dadosTituloFrenteB || extrairDadosDoTitulo(produto.titulo, produto.marca);
               console.log(`[FASE 1.5] Dados extraidos do titulo:`, JSON.stringify(dadosCompat));
-              const resultadoCompat = await criarCompatibilidades(pubData.id, dadosCompat, token);
-              console.log(`[FASE 1.5] Resultado compat:`, JSON.stringify(resultadoCompat));
+
+              // Expansão por plataforma (Frente D)
+              let listaCompat = null;
+              if (dadosCompat && dadosCompat.marca && dadosCompat.modelo) {
+                try {
+                  const exp = expandirCompatibilidades(
+                    dadosCompat.marca, dadosCompat.modelo,
+                    dadosCompat.anoInicial, dadosCompat.anoFinal
+                  );
+                  if (exp.plataformaEncontrada) {
+                    listaCompat = exp.expandidas;
+                    console.log(`[FASE1.6-D] ✅ Plataforma "${exp.plataformaId}" — ${exp.expandidas.length} compat expandida(s)`);
+                  } else {
+                    console.log(`[FASE1.6-D] ⚠️  Modelo "${dadosCompat.marca} ${dadosCompat.modelo}" nao mapeado — registrando pendente`);
+                    registrarModeloPendente(
+                      dadosCompat.marca, dadosCompat.modelo,
+                      dadosCompat.anoInicial, dadosCompat.anoFinal,
+                      produto.titulo || produto.descricao || '', pubData.id || ''
+                    );
+                  }
+                } catch (errExp) {
+                  console.error('[FASE1.6-D] ERRO na expansao, seguindo Fase 1.5 padrao:', errExp.message);
+                }
+              }
+
+              // Cria compat: lista expandida (Frente D) OU 1 entrada do título (Fase 1.5)
+              if (listaCompat && listaCompat.length > 0) {
+                for (const c of listaCompat) {
+                  await criarCompatibilidades(pubData.id, {
+                    marca: c.marca,
+                    modelo: c.modelo,
+                    anoInicial: c.anoIni,
+                    anoFinal: c.anoFim,
+                  }, token);
+                }
+                console.log(`[FASE 1.6-D] Compat criadas em lote: ${listaCompat.length}`);
+              } else {
+                const resultadoCompat = await criarCompatibilidades(pubData.id, dadosCompat, token);
+                console.log(`[FASE 1.5] Resultado compat:`, JSON.stringify(resultadoCompat));
+              }
             } catch (errCompat) {
-              console.log(`[FASE 1.5] Erro ignorado em compatibilidade:`, errCompat.message);
+              console.log(`[FASE 1.5/1.6] Erro ignorado em compatibilidade:`, errCompat.message);
               // Não propaga — fluxo principal continua normal
             }
           }
