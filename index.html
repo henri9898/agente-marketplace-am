@@ -11742,6 +11742,126 @@ function ErrosPage(){
   );
 }
 
+// FASE 1.6 - FRENTE D: Página de plataformas pendentes (modelos não mapeados)
+function PlataformasPendentesPage(){
+  const [pendentes, setPendentes] = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [err, setErr]             = useState(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch('/api/agente/plataformas-pendentes');
+      const d = await r.json();
+      if (d.success === false) setErr(d.error || 'Falha ao carregar');
+      else setPendentes(d.pendentes || []);
+    } catch (e) { setErr(e.message); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function marcarRevisado(marca, modelo){
+    try {
+      const r = await fetch('/api/agente/plataformas-pendentes/marcar-revisado', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marca, modelo }),
+      });
+      const d = await r.json();
+      if (d.success) {
+        setPendentes(prev => prev.filter(p => !(p.marca === marca && p.modelo === modelo)));
+      }
+    } catch (_) {}
+  }
+
+  async function recarregarPlataformas(){
+    try {
+      const r = await fetch('/api/agente/plataformas-pendentes/recarregar', { method: 'POST' });
+      const d = await r.json();
+      if (d.success) {
+        alert(`✅ ${d.total_plataformas} plataformas recarregadas (versão ${d.versao})`);
+      } else {
+        alert(`❌ ${d.error || 'Falha ao recarregar'}`);
+      }
+    } catch (e) { alert(`❌ ${e.message}`); }
+  }
+
+  return (
+    <div>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold flex items-center gap-3">
+            <Icon3D name="alert-triangle" color="amber" size={28}/>
+            <span>Atenção — Modelos não mapeados</span>
+          </h1>
+          <p className="sub text-sm">
+            Modelos que apareceram em produtos publicados mas não estão em <span className="mono">plataformas_veiculares.json</span>.
+          </p>
+        </div>
+        <button className="btn-ghost" onClick={refresh} disabled={loading}>
+          {loading ? '🔄 ...' : '🔄 Atualizar'}
+        </button>
+      </div>
+
+      {err && <div className="err mb-4 text-xs">{err}</div>}
+
+      {pendentes.length === 0 ? (
+        <div className="ok mb-4">✅ Nenhum modelo pendente. Tudo mapeado!</div>
+      ) : (
+        <div className="card p-5 mb-4">
+          <h3 className="font-bold mb-3">📋 {pendentes.length} pendente(s) — ordenado por demanda</h3>
+          <div style={{maxHeight: 400, overflowY: 'auto'}}>
+            <table className="w-full text-sm">
+              <thead>
+                <tr>
+                  <th>Marca</th>
+                  <th>Modelo</th>
+                  <th>Anos</th>
+                  <th>Qtd</th>
+                  <th>Exemplo</th>
+                  <th>Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendentes.map((p, idx) => (
+                  <tr key={idx}>
+                    <td>{p.marca}</td>
+                    <td className="font-bold">{p.modelo}</td>
+                    <td className="mono text-xs">{p.ano_inicial || '—'}–{p.ano_final || '—'}</td>
+                    <td className="text-center">{p.qtd_produtos}</td>
+                    <td className="sub text-xs truncate" style={{maxWidth: 220}}>{p.titulo_exemplo}</td>
+                    <td>
+                      <button
+                        className="btn-ghost text-xs"
+                        onClick={() => marcarRevisado(p.marca, p.modelo)}
+                      >✓ Resolver</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <div className="card p-5">
+        <h3 className="font-bold mb-2">💡 Como adicionar uma plataforma nova</h3>
+        <ol className="text-sm sub" style={{lineHeight: 1.8, paddingLeft: 22, listStyle: 'decimal'}}>
+          <li>Pesquise quais carros compartilham peças com esse modelo (top sellers ML, concessionária)</li>
+          <li>Edite <span className="mono">plataformas_veiculares.json</span> no servidor</li>
+          <li>Adicione novo objeto no array <span className="mono">plataformas</span></li>
+          <li>Clique em "🔄 Recarregar plataformas" abaixo (sem precisar restart)</li>
+          <li>Marque os modelos como "✓ Resolver"</li>
+        </ol>
+        <button className="btn-ghost mt-3" onClick={recarregarPlataformas}>
+          🔄 Recarregar plataformas_veiculares.json
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ConfigSectorPage({ user, notif, agent, initialSub }){
   const [sub, setSub] = useSubTab('config', 'integracoes', initialSub);
   const wh = useWebhooks();
@@ -11751,6 +11871,7 @@ function ConfigSectorPage({ user, notif, agent, initialSub }){
     { id:'setup',       label:'Setup',       iconName:'wrench',          iconColor:'zinc'   },
     { id:'webhooks',    label:'Webhooks',    iconName:'bell',            iconColor:'amber'  },
     { id:'erros',       label:'Erros',       iconName:'alert-triangle',  iconColor:'red'    },
+    { id:'atencao',     label:'Atenção',     iconName:'alert-triangle',  iconColor:'amber'  },
     { id:'conta',       label:'Conta',       iconName:'users',           iconColor:'blue'   },
     { id:'seguranca',   label:'Segurança',   iconName:'shield',          iconColor:'zinc'   },
   ];
@@ -11760,7 +11881,7 @@ function ConfigSectorPage({ user, notif, agent, initialSub }){
         <Icon3D name="settings" color="zinc" size={28}/>
         <span>Configurações</span>
       </h1>
-      <p className="sub text-sm mb-4">Integrações, setup, webhooks, erros, conta e segurança</p>
+      <p className="sub text-sm mb-4">Integrações, setup, webhooks, erros, atenção, conta e segurança</p>
       <SubTabs tabs={tabs} activeTab={sub} onTabChange={setSub}/>
       <CardErrorBoundary label={tabs.find(t => t.id === sub)?.label}>
         {sub === 'integracoes' && <IntegracoesPage agent={agent} notif={notif}/>}
@@ -11773,6 +11894,7 @@ function ConfigSectorPage({ user, notif, agent, initialSub }){
           </div>
         )}
         {sub === 'erros' && <ErrosPage/>}
+        {sub === 'atencao' && <PlataformasPendentesPage/>}
         {sub === 'conta' && <ContaConfigPage user={user} notif={notif}/>}
         {sub === 'seguranca' && <SegurancaPage/>}
       </CardErrorBoundary>
