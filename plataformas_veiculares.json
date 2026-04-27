@@ -1,0 +1,152 @@
+{
+  "versao": "1.0",
+  "atualizado_em": "2026-04-27",
+  "fontes": [
+    "Concessionária Metropeças (oficial GM)",
+    "Daytona Parts (top seller VW)",
+    "RR Auto Peças Santos (top seller Renault)",
+    "Top sellers ML (Castelo, Fuscão Preto, Picolotto)",
+    "Wikipedia plataformas automotivas"
+  ],
+  "plataformas": [
+    {
+      "id": "GM_GAMMA_II_HATCH_SEDAN",
+      "nome": "GM Gamma II - Onix/Prisma",
+      "carros": [
+        { "marca": "Chevrolet", "modelo": "Onix", "anoIni": 2013, "anoFim": 2019 },
+        { "marca": "Chevrolet", "modelo": "Onix Joy", "anoIni": 2017, "anoFim": 2019 },
+        { "marca": "Chevrolet", "modelo": "Prisma", "anoIni": 2013, "anoFim": 2019 }
+      ],
+      "fonte": "OEM 52150932 - Metropeças concessionária GM oficial"
+    },
+    {
+      "id": "GM_GAMMA_II_SPIN_COBALT",
+      "nome": "GM Gamma II - Spin/Cobalt",
+      "carros": [
+        { "marca": "Chevrolet", "modelo": "Spin", "anoIni": 2012, "anoFim": 2019 },
+        { "marca": "Chevrolet", "modelo": "Cobalt", "anoIni": 2011, "anoFim": 2019 }
+      ],
+      "fonte": "Entre-eixos 2620mm vs 2528mm Onix - peças carroceria proprias"
+    },
+    {
+      "id": "GM_ANOS_90",
+      "nome": "GM Plataforma T - Monza/Kadett/Ipanema",
+      "carros": [
+        { "marca": "Chevrolet", "modelo": "Monza", "anoIni": 1989, "anoFim": 1996 },
+        { "marca": "Chevrolet", "modelo": "Kadett", "anoIni": 1989, "anoFim": 1998 },
+        { "marca": "Chevrolet", "modelo": "Ipanema", "anoIni": 1990, "anoFim": 1998 }
+      ],
+      "fonte": "Metropeças - Disco freio 19349280 aplica nos 3"
+    },
+    {
+      "id": "VW_G5",
+      "nome": "VW PQ24 G5 - Gol/Voyage/Saveiro",
+      "carros": [
+        { "marca": "Volkswagen", "modelo": "Gol", "anoIni": 2008, "anoFim": 2012 },
+        { "marca": "Volkswagen", "modelo": "Voyage", "anoIni": 2008, "anoFim": 2012 },
+        { "marca": "Volkswagen", "modelo": "Saveiro", "anoIni": 2008, "anoFim": 2012 }
+      ],
+      "fonte": "Top sellers ML + Wikipedia geração G5"
+    },
+    {
+      "id": "VW_G6",
+      "nome": "VW G6 - Gol/Voyage/Saveiro facelift",
+      "carros": [
+        { "marca": "Volkswagen", "modelo": "Gol", "anoIni": 2013, "anoFim": 2016 },
+        { "marca": "Volkswagen", "modelo": "Voyage", "anoIni": 2013, "anoFim": 2016 },
+        { "marca": "Volkswagen", "modelo": "Saveiro", "anoIni": 2013, "anoFim": 2016 }
+      ],
+      "fonte": "OEM 5U0823031CGRU - Daytona Parts"
+    },
+    {
+      "id": "VW_G7",
+      "nome": "VW G7 - Gol/Voyage/Saveiro",
+      "carros": [
+        { "marca": "Volkswagen", "modelo": "Gol", "anoIni": 2017, "anoFim": 2018 },
+        { "marca": "Volkswagen", "modelo": "Voyage", "anoIni": 2017, "anoFim": 2018 },
+        { "marca": "Volkswagen", "modelo": "Saveiro", "anoIni": 2017, "anoFim": 2018 }
+      ],
+      "fonte": "Top sellers anuncios G6 G7 conjunto"
+    },
+    {
+      "id": "HYUNDAI_BA_FASE1",
+      "nome": "Hyundai BA Fase 1 - HB20/HB20S/HB20X",
+      "carros": [
+        { "marca": "Hyundai", "modelo": "HB20", "anoIni": 2012, "anoFim": 2019 },
+        { "marca": "Hyundai", "modelo": "HB20S", "anoIni": 2013, "anoFim": 2019 },
+        { "marca": "Hyundai", "modelo": "HB20X", "anoIni": 2013, "anoFim": 2019 }
+      ],
+      "fonte": "OEM 664001S000 - validado em multiplos top sellers"
+    },
+    {
+      "id": "HYUNDAI_BR2",
+      "nome": "Hyundai BR2 - HB20/HB20S Fase 2",
+      "carros": [
+        { "marca": "Hyundai", "modelo": "HB20", "anoIni": 2020, "anoFim": 2025 },
+        { "marca": "Hyundai", "modelo": "HB20S", "anoIni": 2020, "anoFim": 2025 }
+      ],
+      "fonte": "Plataforma renovada - HB20X descontinuado"
+    },
+    {
+      "id": "RENAULT_B0_SANDERO_LOGAN",
+      "nome": "Renault B0 - Sandero/Logan",
+      "carros": [
+        { "marca": "Renault", "modelo": "Sandero", "anoIni": 2014, "anoFim": 2020 },
+        { "marca": "Renault", "modelo": "Logan", "anoIni": 2014, "anoFim": 2020 }
+      ],
+      "fonte": "OEM 620223795R - RR Auto Peças Santos"
+    },
+    {
+      "id": "RENAULT_B0_STEPWAY",
+      "nome": "Renault B0 - Sandero Stepway",
+      "carros": [
+        { "marca": "Renault", "modelo": "Sandero Stepway", "anoIni": 2014, "anoFim": 2020 }
+      ],
+      "fonte": "OEM 620221506R - parachoque proprio diferente do Sandero comum"
+    },
+    {
+      "id": "RENAULT_B0_DUSTER",
+      "nome": "Renault B0 - Duster",
+      "carros": [
+        { "marca": "Renault", "modelo": "Duster", "anoIni": 2015, "anoFim": 2019 }
+      ],
+      "fonte": "Compartilha alma parachoque com Sandero/Logan, mas carroceria propria"
+    },
+    {
+      "id": "RENAULT_CMF_A_KWID",
+      "nome": "Renault CMF-A - Kwid (exclusivo)",
+      "carros": [
+        { "marca": "Renault", "modelo": "Kwid", "anoIni": 2017, "anoFim": 2025 }
+      ],
+      "fonte": "Plataforma exclusiva - nao compartilha com nenhum outro Renault"
+    },
+    {
+      "id": "HONDA_GLOBAL_FIT_WRV",
+      "nome": "Honda Global Compact - Fit/WR-V",
+      "carros": [
+        { "marca": "Honda", "modelo": "Fit", "anoIni": 2015, "anoFim": 2021 },
+        { "marca": "Honda", "modelo": "WR-V", "anoIni": 2018, "anoFim": 2021 }
+      ],
+      "fonte": "OEM 72375-T5N-M01 - guarnicao porta dianteira"
+    },
+    {
+      "id": "HONDA_FIT_CITY",
+      "nome": "Honda Global Compact - Fit/City",
+      "carros": [
+        { "marca": "Honda", "modelo": "Fit", "anoIni": 2015, "anoFim": 2021 },
+        { "marca": "Honda", "modelo": "City", "anoIni": 2015, "anoFim": 2021 }
+      ],
+      "fonte": "OEM 51320T5A003 - bieleta dianteira"
+    },
+    {
+      "id": "FIAT_SMALL",
+      "nome": "Fiat Small - Argo/Cronos/Strada",
+      "carros": [
+        { "marca": "Fiat", "modelo": "Argo", "anoIni": 2017, "anoFim": 2023 },
+        { "marca": "Fiat", "modelo": "Cronos", "anoIni": 2018, "anoFim": 2023 },
+        { "marca": "Fiat", "modelo": "Strada", "anoIni": 2020, "anoFim": 2023 }
+      ],
+      "fonte": "Capa retrovisor compartilhada - Castelo Auto Peças"
+    }
+  ]
+}
