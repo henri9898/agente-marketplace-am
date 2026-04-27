@@ -110,6 +110,10 @@ const path = require('path');
 const url  = require('url');
 const crypto = require('crypto');
 
+// FASE 1 — Persistência SQLite (anti-duplicidade Bling↔ML).
+// Requer better-sqlite3 instalado: npm install better-sqlite3
+const { db } = require('./db.js');
+
 // Porta: em produção (Render, Heroku, etc) vem de process.env.PORT;
 // localmente cai pra 3000.
 const PORT = parseInt(process.env.PORT, 10) || 3000;
@@ -1381,6 +1385,175 @@ function lerTokenBlingDoArquivo() {
   } catch (e) {
     console.warn('[bling] tokens.json não pôde ser lido:', e.message);
     return null;
+  }
+}
+
+// ============================================================
+// FASE 1 — Anti-duplicidade Bling-ML via SQLite
+// Regra: duplicação só se justifica quando produto VENDE.
+//   - Sem rendimento >24h → permite republicar (e pausa o velho)
+//   - Com rendimento → NÃO publica novo (canibaliza vendas)
+//   - <24h no ar → NÃO publica novo (aguarda dados)
+// Rendimento = vendas > 0 OU cliques > 50.
+// ============================================================
+
+const _stmtInserirPublicacao = db.prepare(`
+  INSERT INTO produtos_publicados (bling_id, mlb_id, titulo, preco, publicado_em, status)
+  VALUES (?, ?, ?, ?, datetime('now'), 'active')
+  ON CONFLICT(mlb_id) DO UPDATE SET
+    titulo = excluded.titulo,
+    preco = excluded.preco,
+    atualizado_em = datetime('now')
+`);
+
+const _stmtBuscarPorBling = db.prepare(`
+  SELECT mlb_id, titulo, preco, publicado_em, status, vendas, cliques, metricas_atualizado_em,
+    julianday('now') - julianday(publicado_em) AS dias_no_ar
+  FROM produtos_publicados
+  WHERE bling_id = ? AND status IN ('active', 'under_review')
+  ORDER BY publicado_em ASC
+`);
+
+const _stmtAtualizarMetricas = db.prepare(`
+  UPDATE produtos_publicados
+  SET vendas = ?, cliques = ?, metricas_atualizado_em = datetime('now'), atualizado_em = datetime('now')
+  WHERE mlb_id = ?
+`);
+
+const _stmtAtualizarStatus = db.prepare(`
+  UPDATE produtos_publicados
+  SET status = ?, atualizado_em = datetime('now')
+  WHERE mlb_id = ?
+`);
+
+const _stmtListarComDuplicatas = db.prepare(`
+  SELECT bling_id, COUNT(*) AS qtd
+  FROM produtos_publicados
+  WHERE status IN ('active', 'under_review')
+  GROUP BY bling_id
+  HAVING qtd > 1
+`);
+
+function registrarPublicacaoBlingML(blingId, mlbId, titulo, preco) {
+  try {
+    _stmtInserirPublicacao.run(String(blingId), String(mlbId), titulo || '', Number(preco) || 0);
+    return true;
+  } catch (err) {
+    console.error('[mapeamento] erro inserindo:', err.message);
+    return false;
+  }
+}
+
+async function buscarRendimentoMLB(mlbId, mlToken) {
+  // Retorna { vendas, cliques, dias_no_ar, status } ou null
+  try {
+    const proxy = process.env.ML_PROXY_URL || 'https://ml-proxy.agentemarkt.com';
+    const proxySecret = process.env.ML_PROXY_SECRET || 'agente-ml-proxy-2026';
+    const headers = {
+      'Authorization': 'Bearer ' + mlToken,
+      'X-Proxy-Secret': proxySecret,
+    };
+
+    const itemResp = await fetch(`${proxy}/items/${mlbId}?attributes=id,sold_quantity,date_created,status`, { headers });
+    if (!itemResp.ok) return null;
+    const item = await itemResp.json();
+
+    const dataPublicacao = new Date(item.date_created);
+    const diasNoAr = Math.floor((Date.now() - dataPublicacao.getTime()) / (1000 * 60 * 60 * 24));
+
+    let cliques = 0;
+    try {
+      const visitsResp = await fetch(`${proxy}/items/${mlbId}/visits/time_window?last=30&unit=day`, { headers });
+      if (visitsResp.ok) {
+        const visits = await visitsResp.json();
+        cliques = (visits.results || []).reduce((sum, day) => sum + (day.total || 0), 0);
+      }
+    } catch (_) {}
+
+    return {
+      vendas: Number(item.sold_quantity) || 0,
+      cliques,
+      dias_no_ar: diasNoAr,
+      status: item.status,
+    };
+  } catch (err) {
+    console.error(`[rendimento ${mlbId}]:`, err.message);
+    return null;
+  }
+}
+
+function temRendimento(metricas) {
+  if (!metricas) return false;
+  return metricas.vendas > 0 || metricas.cliques > 50;
+}
+
+async function checarDuplicidadeBling(blingId, mlToken) {
+  // Retorna { jaPublicado, mlbsAtivos, comRendimento, podeRepublicar, motivo, mlbsParaPausar }
+  const registros = _stmtBuscarPorBling.all(String(blingId));
+  if (registros.length === 0) {
+    return { jaPublicado: false, mlbsAtivos: [], comRendimento: [], podeRepublicar: true, motivo: 'primeiro_anuncio', mlbsParaPausar: [] };
+  }
+
+  const ativos = [];
+  const comRend = [];
+  for (const r of registros) {
+    // Cache válido se atualizado <6h, senão busca fresh do ML
+    const cacheValido = r.metricas_atualizado_em
+      && (Date.now() - new Date(r.metricas_atualizado_em).getTime()) < 6 * 60 * 60 * 1000;
+    let metricas;
+    if (cacheValido) {
+      metricas = { vendas: r.vendas, cliques: r.cliques, dias_no_ar: Math.floor(r.dias_no_ar), status: r.status };
+    } else {
+      const fresh = await buscarRendimentoMLB(r.mlb_id, mlToken);
+      if (!fresh) continue;
+      _stmtAtualizarMetricas.run(fresh.vendas, fresh.cliques, r.mlb_id);
+      if (fresh.status !== r.status) _stmtAtualizarStatus.run(fresh.status, r.mlb_id);
+      metricas = fresh;
+    }
+    if (metricas.status === 'active' || metricas.status === 'under_review') {
+      ativos.push({ mlb_id: r.mlb_id, ...metricas });
+      if (temRendimento(metricas)) comRend.push({ mlb_id: r.mlb_id, ...metricas });
+    }
+  }
+
+  if (ativos.length === 0) {
+    return { jaPublicado: true, mlbsAtivos: [], comRendimento: [], podeRepublicar: true, motivo: 'todos_pausados_ou_fechados', mlbsParaPausar: [] };
+  }
+
+  if (comRend.length > 0) {
+    return { jaPublicado: true, mlbsAtivos: ativos, comRendimento: comRend, podeRepublicar: false, motivo: 'tem_mlb_com_rendimento', mlbsParaPausar: [] };
+  }
+
+  const algumComProva = ativos.some(a => a.dias_no_ar >= 1);
+  if (!algumComProva) {
+    return { jaPublicado: true, mlbsAtivos: ativos, comRendimento: [], podeRepublicar: false, motivo: 'aguardando_dados_24h', mlbsParaPausar: [] };
+  }
+
+  // Tem ativos sem rendimento >24h — permite republicar e marca os velhos pra pausar
+  return { jaPublicado: true, mlbsAtivos: ativos, comRendimento: [], podeRepublicar: true, motivo: 'sem_rendimento_apos_24h', mlbsParaPausar: ativos.map(a => a.mlb_id) };
+}
+
+async function pausarMLB(mlbId, mlToken) {
+  try {
+    const proxy = process.env.ML_PROXY_URL || 'https://ml-proxy.agentemarkt.com';
+    const proxySecret = process.env.ML_PROXY_SECRET || 'agente-ml-proxy-2026';
+    const resp = await fetch(`${proxy}/items/${mlbId}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': 'Bearer ' + mlToken,
+        'X-Proxy-Secret': proxySecret,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'paused' }),
+    });
+    if (resp.ok) {
+      _stmtAtualizarStatus.run('paused', mlbId);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error(`[pausar ${mlbId}]:`, err.message);
+    return false;
   }
 }
 
