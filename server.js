@@ -271,6 +271,149 @@ function extrairDadosDoTitulo(nome, marcaBling) {
 // FIM Fase 1.5 — Extração
 // ============================================================
 
+// ============================================================
+// FASE 1.5 — Criação de compatibilidades veiculares no ML
+// ============================================================
+
+/**
+ * Cria compatibilidades veiculares para um item ML após sua publicação.
+ * Esta função NUNCA propaga erros — falha de compatibilidade não pode quebrar
+ * o fluxo principal de publicação.
+ *
+ * @param {string} mlbId - ID do item ML (ex: "MLB123456789")
+ * @param {object} dadosTitulo - Saída da função extrairDadosDoTitulo
+ * @param {string} mlToken - Token Bearer do ML
+ * @returns {object} { sucesso, motivo, compatibilidadesCriadas }
+ */
+async function criarCompatibilidades(mlbId, dadosTitulo, mlToken) {
+  const log = (msg) => console.log(`[COMPAT ${mlbId}] ${msg}`);
+  const PROXY_URL    = process.env.ML_PROXY_URL    || 'https://ml-proxy.agentemarkt.com';
+  const PROXY_SECRET = process.env.ML_PROXY_SECRET || 'agente-ml-proxy-2026';
+
+  try {
+    if (!mlbId || !mlToken) {
+      log('SKIP: mlbId ou mlToken faltando');
+      return { sucesso: false, motivo: 'parametros_invalidos', compatibilidadesCriadas: 0 };
+    }
+    if (!dadosTitulo || !dadosTitulo.marca || !dadosTitulo.modelo) {
+      log(`SKIP: marca/modelo nao extraidos (marca=${dadosTitulo?.marca}, modelo=${dadosTitulo?.modelo})`);
+      return { sucesso: false, motivo: 'sem_marca_modelo', compatibilidadesCriadas: 0 };
+    }
+
+    // Resolve BRAND value_id
+    const brandId = COMPATIBILIDADES_ML.BRAND[dadosTitulo.marca];
+    if (!brandId) {
+      log(`SKIP: marca "${dadosTitulo.marca}" nao esta no mapa`);
+      return { sucesso: false, motivo: 'marca_nao_mapeada', compatibilidadesCriadas: 0 };
+    }
+
+    // Resolve MODEL value_id
+    const modelosDaMarca = COMPATIBILIDADES_ML.MODEL[brandId] || {};
+    const modelId = modelosDaMarca[dadosTitulo.modelo];
+    if (!modelId) {
+      log(`SKIP: modelo "${dadosTitulo.modelo}" nao esta no mapa para marca "${dadosTitulo.marca}"`);
+      return { sucesso: false, motivo: 'modelo_nao_mapeado', compatibilidadesCriadas: 0 };
+    }
+
+    // Resolve VEHICLE_YEAR value_ids — gera 1 entrada por ano no range
+    const anoIni = dadosTitulo.anoInicial || 2018;
+    const anoFim = dadosTitulo.anoFinal   || anoIni;
+    const yearMap = COMPATIBILIDADES_ML.VEHICLE_YEAR;
+    const familias = [];
+    for (let ano = anoIni; ano <= anoFim; ano++) {
+      const yearId = yearMap[String(ano)];
+      if (!yearId) {
+        log(`Aviso: ano ${ano} nao mapeado, pulando`);
+        continue;
+      }
+      familias.push({
+        domain_id: COMPATIBILIDADES_ML.domain_id,
+        creation_source: 'DEFAULT',
+        attributes: [
+          { id: 'BRAND',        value_id: brandId },
+          { id: 'MODEL',        value_id: modelId },
+          { id: 'VEHICLE_YEAR', value_id: yearId  },
+        ],
+      });
+    }
+
+    if (familias.length === 0) {
+      log('SKIP: nenhum ano valido encontrado');
+      return { sucesso: false, motivo: 'sem_anos_validos', compatibilidadesCriadas: 0 };
+    }
+
+    log(`Tentando criar ${familias.length} compatibilidade(s) [${dadosTitulo.marca} ${dadosTitulo.modelo} ${anoIni}-${anoFim}]`);
+
+    // POST /items/{mlb}/compatibilities
+    const url = `${PROXY_URL}/items/${mlbId}/compatibilities`;
+    const body = { products_families: familias };
+
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization':  `Bearer ${mlToken}`,
+        'X-Proxy-Secret': PROXY_SECRET,
+        'Content-Type':   'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    const respText = await resp.text();
+    let respJson = null;
+    try { respJson = JSON.parse(respText); } catch (e) { /* não é JSON */ }
+
+    if (resp.ok) {
+      log(`OK: ${familias.length} compatibilidade(s) criadas`);
+      return { sucesso: true, motivo: 'criadas', compatibilidadesCriadas: familias.length };
+    }
+
+    log(`ERRO ${resp.status}: ${respText.substring(0, 300)}`);
+
+    // Fallback: se o ML disse que não encontrou produtos, tenta endpoint de exceção
+    const mensagemErro = (respJson?.message || respText || '').toLowerCase();
+    if (
+      resp.status === 400 &&
+      (mensagemErro.includes('no products') ||
+       mensagemErro.includes('not found') ||
+       mensagemErro.includes('product families'))
+    ) {
+      log('Tentando fallback /compatibilities/exception');
+      const urlException = `${PROXY_URL}/items/${mlbId}/compatibilities/exception`;
+      const bodyException = {
+        comment: `Veiculo ${dadosTitulo.marca} ${dadosTitulo.modelo} ${anoIni}-${anoFim} nao disponivel no catalogo ML`,
+      };
+      try {
+        const respEx = await fetch(urlException, {
+          method: 'POST',
+          headers: {
+            'Authorization':  `Bearer ${mlToken}`,
+            'X-Proxy-Secret': PROXY_SECRET,
+            'Content-Type':   'application/json',
+          },
+          body: JSON.stringify(bodyException),
+        });
+        if (respEx.ok) {
+          log('OK: exception registrada');
+          return { sucesso: true, motivo: 'exception', compatibilidadesCriadas: 0 };
+        }
+        const exText = await respEx.text();
+        log(`Exception falhou ${respEx.status}: ${exText.substring(0, 200)}`);
+      } catch (eEx) {
+        log(`Exception erro: ${eEx.message}`);
+      }
+    }
+
+    return { sucesso: false, motivo: `http_${resp.status}`, compatibilidadesCriadas: 0 };
+  } catch (err) {
+    // NUNCA propaga erro — apenas loga
+    log(`ERRO INESPERADO: ${err.message}`);
+    return { sucesso: false, motivo: 'excecao_javascript', compatibilidadesCriadas: 0 };
+  }
+}
+// ============================================================
+// FIM Fase 1.5 — Compatibilidades
+// ============================================================
+
 // Porta: em produção (Render, Heroku, etc) vem de process.env.PORT;
 // localmente cai pra 3000.
 const PORT = parseInt(process.env.PORT, 10) || 3000;
