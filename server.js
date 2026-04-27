@@ -114,6 +114,163 @@ const crypto = require('crypto');
 // Requer better-sqlite3 instalado: npm install better-sqlite3
 const { db } = require('./db.js');
 
+// ============================================================
+// FASE 1.5 — Extração de dados do título do produto Bling
+// ============================================================
+const COMPATIBILIDADES_ML = require('./compatibilidades_ml.json');
+
+// Aliases comuns no Bling para nome ML canônico
+const ALIASES_MARCA_BLING = {
+  'mercedes':       'Mercedes-Benz',
+  'mercedes-benz':  'Mercedes-Benz',
+  'mercedez':       'Mercedes-Benz',
+  'vw':             'Volkswagen',
+  'volkswagem':     'Volkswagen',
+  'volkswagen':     'Volkswagen',
+  'gm':             'Chevrolet',
+  'chevrolet':      'Chevrolet',
+  'chevy':          'Chevrolet',
+  'renault':        'Renault',
+  'honda':          'Honda',
+  'hyundai':        'Hyundai',
+  'nissan':         'Nissan',
+  'jeep':           'Jeep',
+  'fiat':           'Fiat',
+  'ford':           'Ford',
+  'toyota':         'Toyota',
+};
+
+function normalizarNomeMarca(marcaBling) {
+  if (!marcaBling) return null;
+  const lower = String(marcaBling).toLowerCase().trim();
+  if (ALIASES_MARCA_BLING[lower]) return ALIASES_MARCA_BLING[lower];
+  // Tenta match direto com BRAND do mapa
+  for (const nome of Object.keys(COMPATIBILIDADES_ML.BRAND)) {
+    if (nome.toLowerCase() === lower) return nome;
+  }
+  return null;
+}
+
+function normalizarCor(cor) {
+  if (!cor) return null;
+  const map = {
+    'Branca':    'Branco',
+    'Preta':     'Preto',
+    'Vermelha':  'Vermelho',
+    'Amarela':   'Amarelo',
+    'Dourada':   'Dourado',
+    'Prateado':  'Prata',
+  };
+  return map[cor] || cor;
+}
+
+/**
+ * Extrai dados estruturados do nome/título do produto Bling.
+ * @param {string} nome - Título do produto (ex: "Capô Renault Kwid 2017 a 2025 Cinza")
+ * @param {string} marcaBling - Marca do produto Bling (opcional, usado como prioridade)
+ * @returns {object} { marca, modelo, posicao, lado, cor, anoInicial, anoFinal }
+ */
+function extrairDadosDoTitulo(nome, marcaBling) {
+  if (!nome) return {};
+  const txt = String(nome);
+  const txtLower = txt.toLowerCase();
+
+  // 1) Marca: prioridade marcaBling, fallback regex no título
+  let marca = normalizarNomeMarca(marcaBling);
+  if (!marca) {
+    for (const nomeMarca of Object.keys(COMPATIBILIDADES_ML.BRAND)) {
+      const re = new RegExp(`\\b${nomeMarca.toLowerCase().replace(/-/g, '\\-')}\\b`, 'i');
+      if (re.test(txtLower)) {
+        marca = nomeMarca;
+        break;
+      }
+    }
+  }
+
+  // 2) Modelo: busca dentro dos modelos da marca encontrada
+  let modelo = null;
+  if (marca) {
+    const brandId = COMPATIBILIDADES_ML.BRAND[marca];
+    const modelosDaMarca = COMPATIBILIDADES_ML.MODEL[brandId] || {};
+    // Ordena por tamanho do nome DESC para match de "Sandero Stepway" antes de "Sandero"
+    const nomesModelos = Object.keys(modelosDaMarca).sort((a, b) => b.length - a.length);
+    for (const nomeModelo of nomesModelos) {
+      const escapado = nomeModelo.replace(/[-\/\.]/g, '\\$&');
+      const re = new RegExp(`\\b${escapado}\\b`, 'i');
+      if (re.test(txt)) {
+        modelo = nomeModelo;
+        break;
+      }
+    }
+  }
+
+  // 3) Posição (Traseira/Dianteira)
+  let posicao = null;
+  if (/\btraseir[oa]\b/i.test(txt))      posicao = 'Traseira';
+  else if (/\bdianteir[oa]\b/i.test(txt)) posicao = 'Dianteira';
+
+  // 4) Lado (Esquerda/Direita)
+  let lado = null;
+  if (/\bdireit[oa]\b/i.test(txt))        lado = 'Direita';
+  else if (/\besquerd[oa]\b/i.test(txt))  lado = 'Esquerda';
+
+  // 5) Cor
+  const coresPossiveis = [
+    'Branca', 'Branco', 'Preta', 'Preto', 'Cinza', 'Prata', 'Prateado',
+    'Azul', 'Vermelha', 'Vermelho', 'Verde', 'Amarela', 'Amarelo',
+    'Bege', 'Marrom', 'Dourada', 'Dourado',
+  ];
+  let cor = null;
+  for (const c of coresPossiveis) {
+    const re = new RegExp(`\\b${c}\\b`, 'i');
+    if (re.test(txt)) { cor = c; break; }
+  }
+  cor = normalizarCor(cor);
+
+  // 6) Anos — múltiplos padrões
+  let anoInicial = null, anoFinal = null;
+  // Padrão "2017 a 2025" ou "2017 até 2025"
+  let m = txt.match(/(\b\d{4}\b)\s*(?:a|até|ate)\s*(\b\d{4}\b)/i);
+  if (m) { anoInicial = parseInt(m[1], 10); anoFinal = parseInt(m[2], 10); }
+  // Padrão "2017-2025" ou "2017/2025"
+  if (!anoInicial) {
+    m = txt.match(/(\b\d{4}\b)\s*[-\/]\s*(\b\d{4}\b)/);
+    if (m) { anoInicial = parseInt(m[1], 10); anoFinal = parseInt(m[2], 10); }
+  }
+  // Padrão "2017 2018 2019 2020 ..." (lista de anos)
+  if (!anoInicial) {
+    const anos = txt.match(/\b(20\d{2})\b/g);
+    if (anos && anos.length >= 2) {
+      const ints = anos.map(a => parseInt(a, 10)).sort((a, b) => a - b);
+      anoInicial = ints[0];
+      anoFinal = ints[ints.length - 1];
+    } else if (anos && anos.length === 1) {
+      anoInicial = parseInt(anos[0], 10);
+      anoFinal = anoInicial;
+    }
+  }
+  // Sanity check: anos no range razoável
+  if (anoInicial && (anoInicial < 2000 || anoInicial > 2030)) anoInicial = null;
+  if (anoFinal && (anoFinal < 2000 || anoFinal > 2030)) anoFinal = null;
+  // Garante anoInicial <= anoFinal
+  if (anoInicial && anoFinal && anoInicial > anoFinal) {
+    [anoInicial, anoFinal] = [anoFinal, anoInicial];
+  }
+
+  return {
+    marca:      marca      || null,
+    modelo:     modelo     || null,
+    posicao:    posicao    || null,
+    lado:       lado       || null,
+    cor:        cor        || null,
+    anoInicial: anoInicial || null,
+    anoFinal:   anoFinal   || null,
+  };
+}
+// ============================================================
+// FIM Fase 1.5 — Extração
+// ============================================================
+
 // Porta: em produção (Render, Heroku, etc) vem de process.env.PORT;
 // localmente cai pra 3000.
 const PORT = parseInt(process.env.PORT, 10) || 3000;
