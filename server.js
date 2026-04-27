@@ -4239,13 +4239,57 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         }
 
         // 5) Body do anúncio
-        const imagens = (produto.midia?.imagens?.internas || [])
-          .map(img => ({ source: img.link }))
-          .filter(i => i.source);
+        // FASE 1.6 - FRENTE C: ordenar e limitar fotos (max 8)
+        const urlsBrutasFotos = (produto.midia?.imagens?.internas || [])
+          .map(img => img.link)
+          .filter(Boolean);
+        const imagens = processarFotos(urlsBrutasFotos)
+          .map(url => ({ source: url }));
+        console.log(`[FASE1.6-C] ✅ ${imagens.length} fotos aplicadas no payload`);
+
         const estoque = produto.estoque?.saldoVirtualTotal ?? 1;
-        const descFinal = descricaoPlain
-          || produto.descricaoCurta
-          || (titulo + ' — produto novo, com garantia. Envio rápido para todo Brasil.');
+
+        // FASE 1.6 - FRENTE B: descrição estruturada dinâmica
+        let descFinal;
+        try {
+          const dadosTituloDesc = extrairDadosDoTitulo(titulo, produto.fornecedor?.nome || '');
+
+          // FASE 1.6 - FRENTE D: tentar expandir compatibilidades pra incluir na descrição
+          let compatExpandidasDesc = null;
+          if (dadosTituloDesc && dadosTituloDesc.marca && dadosTituloDesc.modelo) {
+            try {
+              const expansao = expandirCompatibilidades(
+                dadosTituloDesc.marca,
+                dadosTituloDesc.modelo,
+                dadosTituloDesc.anoInicial,
+                dadosTituloDesc.anoFinal
+              );
+              if (expansao.plataformaEncontrada) {
+                compatExpandidasDesc = expansao.expandidas;
+              }
+            } catch (errExp) {
+              console.error('[FASE1.6-D] erro expansao na descrição:', errExp.message);
+            }
+          }
+
+          // Decidir código pra descrição (mesma lógica da Frente A)
+          const decisaoCod = decidirPartNumber(categoryId, produto.sku || produto.codigo);
+          const codigoPraDesc = decisaoCod.enviarPartNumber ? decisaoCod.partNumber : 'Sem Código';
+
+          descFinal = construirDescricaoEstruturada({
+            tituloProduto: titulo,
+            dadosTitulo: dadosTituloDesc,
+            codigoPeca: codigoPraDesc,
+            compatibilidadesExpandidas: compatExpandidasDesc,
+          });
+          console.log(`[FASE1.6-B] ✅ descrição estruturada (${descFinal.length} chars) aplicada no payload`);
+        } catch (errDesc) {
+          console.error('[FASE1.6-B] erro construir descrição, fallback:', errDesc.message);
+          descFinal = descricaoPlain
+            || produto.descricaoCurta
+            || (titulo + ' — produto novo, com garantia. Envio rápido para todo Brasil.');
+        }
+
         const anuncio = {
           title:       titulo,
           category_id: categoryId,
@@ -4256,7 +4300,23 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           listing_type_id: 'gold_special',
           condition:    'new',
           description:  { plain_text: String(descFinal).slice(0, 50000) },
-          attributes:   requiredAttrs,
+          attributes:   (function() {
+            // FASE 1.6 - FRENTE A: filtrar PART_NUMBER conforme tipo de peça
+            try {
+              const decisao = decidirPartNumber(categoryId, produto.sku || produto.codigo);
+              if (!decisao.enviarPartNumber) {
+                console.log(`[FASE1.6-A] ✅ PART_NUMBER suprimido no payload (${decisao.motivo})`);
+                return (requiredAttrs || []).filter(a => a.id !== 'PART_NUMBER');
+              }
+              // Mecânica com OEM real - garantir que PART_NUMBER está presente
+              const semPart = (requiredAttrs || []).filter(a => a.id !== 'PART_NUMBER');
+              console.log(`[FASE1.6-A] ✅ PART_NUMBER aplicado: ${decisao.partNumber}`);
+              return [...semPart, { id: 'PART_NUMBER', value_name: decisao.partNumber }];
+            } catch (errAttr) {
+              console.error('[FASE1.6-A] erro filtrar attrs, usando original:', errAttr.message);
+              return requiredAttrs;
+            }
+          })(),
           pictures:     imagens,
         };
 
