@@ -5778,6 +5778,18 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
                 if (ok) console.log(`[anti-dup] MLB ${mlbAntigo} pausado (sem rendimento, substituído por ${pubData.id})`);
               }).catch(() => {});
             }
+
+            // FASE 1.5 — Tenta criar compatibilidades veiculares (não bloqueante).
+            // Falha aqui NUNCA pode quebrar o fluxo de publicação.
+            try {
+              const dadosCompat = extrairDadosDoTitulo(produto.titulo, produto.marca);
+              console.log(`[FASE 1.5] Dados extraidos do titulo:`, JSON.stringify(dadosCompat));
+              const resultadoCompat = await criarCompatibilidades(pubData.id, dadosCompat, token);
+              console.log(`[FASE 1.5] Resultado compat:`, JSON.stringify(resultadoCompat));
+            } catch (errCompat) {
+              console.log(`[FASE 1.5] Erro ignorado em compatibilidade:`, errCompat.message);
+              // Não propaga — fluxo principal continua normal
+            }
           }
 
           return send(res, 200, {
