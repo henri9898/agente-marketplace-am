@@ -4195,27 +4195,13 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           if (Array.isArray(cj) && cj[0]?.category_id) categoryId = cj[0].category_id;
         } catch(_) {}
 
-        // 3) Atributos obrigatórios
+        // 3) Atributos base — auto-fill robusto roda DEPOIS do payload base ser montado
+        // (alinhado com /api/agente/publicar — corrige bug "Validation error" do botão Catálogo)
+        // O array `requiredAttrs` aqui ficou só pra compatibilidade com a IIFE de PART_NUMBER abaixo.
+        // O auto-fill REAL acontece após o objeto `anuncio` ser criado (bloco GAP 1).
         let requiredAttrs = [];
-        try {
-          const ar = await mlFetch(`https://api.mercadolibre.com/categories/${categoryId}/attributes`, {
-            headers: { 'Authorization': 'Bearer ' + mlToken }
-          });
-          const attrs = await ar.json().catch(() => []);
-          if (Array.isArray(attrs)) {
-            requiredAttrs = attrs
-              .filter(a => a.tags && a.tags.required)
-              .map(a => ({
-                id: a.id,
-                value_name:
-                  a.id === 'BRAND'      ? (produto.marca || 'Genérico') :
-                  a.id === 'GTIN'       ? (produto.gtin || '') :
-                  a.id === 'SELLER_SKU' ? (produto.codigo || '') :
-                  (a.values?.[0]?.name || ''),
-              }))
-              .filter(a => a.value_name);
-          }
-        } catch(_) {}
+        // Marca (Bling pode entregar como string ou {nome,id})
+        const marcaProduto = (typeof produto.marca === 'string' ? produto.marca : produto.marca?.nome) || produto.fornecedor?.nome || 'Genérico';
 
         // 4) Título + descrição otimizados via SEO (AUTOMÁTICO — IA faz tudo)
         // Se o cliente mandou tituloOtimizado, respeita; senão gera.
@@ -4364,6 +4350,24 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
             || (titulo + ' — produto novo, com garantia. Envio rápido para todo Brasil.');
         }
 
+        // FASE 1.6 - FRENTE A: decisão de PART_NUMBER (carroceria não envia)
+        const decisaoPartNumber = decidirPartNumber(categoryId, produto.sku || produto.codigo);
+        console.log(`[FASE1.6-A] PART_NUMBER decisão: ${decisaoPartNumber.motivo} (categoria=${categoryId}, codigo="${produto.sku || produto.codigo}")`);
+
+        // Atributos-base coerentes com /api/agente/publicar (corrige Validation error)
+        const attrsBase = [
+          { id: 'BRAND',              value_name: marcaProduto },
+          { id: 'ITEM_CONDITION',     value_id:   '2230284' },
+          { id: 'MODEL',              value_name: String(produto.modelo || produto.codigo || produto.sku || 'Padrão') },
+          { id: 'POWER_SUPPLY_TYPES', value_name: 'Mecânico' },
+        ];
+        if (decisaoPartNumber.enviarPartNumber) {
+          attrsBase.push({ id: 'PART_NUMBER', value_name: decisaoPartNumber.partNumber });
+          console.log(`[FASE1.6-A] ✅ PART_NUMBER aplicado: ${decisaoPartNumber.partNumber}`);
+        } else {
+          console.log(`[FASE1.6-A] ✅ PART_NUMBER suprimido no payload (${decisaoPartNumber.motivo})`);
+        }
+
         const anuncio = {
           title:       titulo,
           category_id: categoryId,
@@ -4374,24 +4378,9 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           listing_type_id: 'gold_special',
           condition:    'new',
           description:  { plain_text: String(descFinal).slice(0, 50000) },
-          attributes:   (function() {
-            // FASE 1.6 - FRENTE A: filtrar PART_NUMBER conforme tipo de peça
-            try {
-              const decisao = decidirPartNumber(categoryId, produto.sku || produto.codigo);
-              if (!decisao.enviarPartNumber) {
-                console.log(`[FASE1.6-A] ✅ PART_NUMBER suprimido no payload (${decisao.motivo})`);
-                return (requiredAttrs || []).filter(a => a.id !== 'PART_NUMBER');
-              }
-              // Mecânica com OEM real - garantir que PART_NUMBER está presente
-              const semPart = (requiredAttrs || []).filter(a => a.id !== 'PART_NUMBER');
-              console.log(`[FASE1.6-A] ✅ PART_NUMBER aplicado: ${decisao.partNumber}`);
-              return [...semPart, { id: 'PART_NUMBER', value_name: decisao.partNumber }];
-            } catch (errAttr) {
-              console.error('[FASE1.6-A] erro filtrar attrs, usando original:', errAttr.message);
-              return requiredAttrs;
-            }
-          })(),
+          attributes:   attrsBase,
           pictures:     imagens,
+          seller_custom_field: produto.codigo || produto.sku || '',
           // COSMOS 2026: frete "Combinar com vendedor" — sem ME2, sem frete grátis
           shipping: {
             mode:           'not_specified',
@@ -4402,6 +4391,85 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           },
         };
 
+        // PROBLEMA 1 — Categoria pode ter migrado (ex: MLB180634 → MLB120316).
+        // Consulta o endpoint da categoria; se o ML retornar outra ID, atualiza payload.
+        try {
+          const catCheck = await mlFetch(`https://api.mercadolibre.com/categories/${anuncio.category_id}`);
+          const catData = await catCheck.json().catch(() => ({}));
+          if (catCheck.ok && catData && catData.id && catData.id !== anuncio.category_id) {
+            console.log(`🔄 [/api/publicar] Categoria migrada: ${anuncio.category_id} → ${catData.id}`);
+            anuncio.category_id = catData.id;
+          }
+        } catch (_) { /* segue com a categoria atual */ }
+
+        // GAP 1 + Problema 2 — auto-preenchimento de atributos obrigatórios da categoria.
+        // Também adiciona INMETRO_CERTIFICATION (Problema 3) APENAS se a categoria aceitar.
+        // ALINHADO com /api/agente/publicar — corrige Validation error do botão Catálogo.
+        if (anuncio.category_id && mlToken) {
+          try {
+            const attrResp = await mlFetch(
+              `https://api.mercadolibre.com/categories/${anuncio.category_id}/attributes`,
+              { headers: { 'Authorization': 'Bearer ' + mlToken } }
+            );
+            if (attrResp.ok) {
+              const attrs = await attrResp.json().catch(() => []);
+              const lista = Array.isArray(attrs) ? attrs : [];
+              const allIds = new Set(lista.map(a => a.id));
+              const obrigatorios = lista.filter(a => a.tags?.required);
+              for (const attr of obrigatorios) {
+                if (anuncio.attributes.some(a => a.id === attr.id)) continue; // já temos
+                // FASE 1.6 - FRENTE A: respeita decisão sobre PART_NUMBER (carroceria não envia)
+                if (attr.id === 'PART_NUMBER') {
+                  if (decisaoPartNumber.enviarPartNumber) {
+                    anuncio.attributes.push({ id: 'PART_NUMBER', value_name: decisaoPartNumber.partNumber });
+                  } else {
+                    console.log(`[FASE1.6-A] Auto-fill PART_NUMBER suprimido: ${decisaoPartNumber.motivo}`);
+                  }
+                  continue;
+                }
+                if (attr.id === 'GTIN' && produto.gtin) {
+                  anuncio.attributes.push({ id: 'GTIN', value_name: String(produto.gtin) });
+                } else if (attr.id === 'SELLER_SKU' && (produto.codigo || produto.sku)) {
+                  anuncio.attributes.push({ id: 'SELLER_SKU', value_name: String(produto.codigo || produto.sku) });
+                } else if (attr.id === 'PACKAGE_WEIGHT' && (produto.pesoBruto || produto.pesoLiq)) {
+                  const pesoG = Math.round((Number(produto.pesoBruto || produto.pesoLiq) || 0) * 1000);
+                  if (pesoG > 0) anuncio.attributes.push({ id: 'PACKAGE_WEIGHT', value_name: String(pesoG) + ' g' });
+                } else if (attr.id === 'ALPHANUMERIC_MODEL') {
+                  anuncio.attributes.push({ id: 'ALPHANUMERIC_MODEL', value_name: String(produto.modelo || produto.codigo || produto.sku || 'Padrão') });
+                } else if (attr.id === 'MANUFACTURER') {
+                  anuncio.attributes.push({ id: 'MANUFACTURER', value_name: String(marcaProduto || '') });
+                } else if (attr.id === 'POWER_SUPPLY_TYPES' && Array.isArray(attr.values) && attr.values.length > 0) {
+                  // Usa primeiro valor permitido (cobre quando "Mecânico" não está na lista)
+                  anuncio.attributes.push({ id: 'POWER_SUPPLY_TYPES', value_id: attr.values[0].id });
+                } else if (Array.isArray(attr.values) && attr.values.length > 0) {
+                  anuncio.attributes.push({ id: attr.id, value_id: attr.values[0].id });
+                } else {
+                  anuncio.attributes.push({
+                    id: attr.id,
+                    value_name: String(produto.modelo || produto.codigo || produto.sku || 'Padrão'),
+                  });
+                }
+                console.log(`📋 [/api/publicar] Atributo obrigatório adicionado: ${attr.id}`);
+              }
+
+              // Sanity: se a categoria NÃO aceita MODEL/POWER_SUPPLY_TYPES, remove o que pré-adicionamos
+              for (const presetId of ['MODEL', 'POWER_SUPPLY_TYPES']) {
+                if (!allIds.has(presetId)) {
+                  anuncio.attributes = anuncio.attributes.filter(a => a.id !== presetId);
+                  console.log(`📋 [/api/publicar] Preset ${presetId} removido (categoria não aceita)`);
+                }
+              }
+
+              // Se a categoria NÃO aceita ITEM_CONDITION, remove (algumas não exigem)
+              if (!allIds.has('ITEM_CONDITION')) {
+                anuncio.attributes = anuncio.attributes.filter(a => a.id !== 'ITEM_CONDITION');
+              }
+            }
+          } catch (e) {
+            console.log('[/api/publicar] ⚠️ Atributos da categoria não puderam ser lidos:', e.message);
+          }
+        }
+
         // 6) POST /items no ML
         const mr = await mlFetch('https://api.mercadolibre.com/items', {
           method: 'POST',
@@ -4409,6 +4477,16 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           body: JSON.stringify(anuncio),
         });
         const mj = await mr.json().catch(() => ({}));
+        // Log RAW pra diagnosticar Validation error futuros (alinhado com /api/agente/publicar)
+        if (!mj.id) {
+          console.error(`🔍 [ML-RAW-RESPONSE /api/publicar] HTTP ${mr.status} · payload sent:`, JSON.stringify({
+            title: anuncio.title, category_id: anuncio.category_id, price: anuncio.price,
+            attributes_count: anuncio.attributes?.length || 0,
+            attributes_ids: (anuncio.attributes || []).map(a => a.id),
+            shipping: anuncio.shipping?.mode,
+          }));
+          console.error(`🔍 [ML-RAW-RESPONSE /api/publicar] response:`, JSON.stringify(mj).slice(0, 2000));
+        }
         if (mj.id) {
           // 🚗 Dispara compatibilidade automática em background (3s depois do ML indexar)
           setTimeout(async () => {
