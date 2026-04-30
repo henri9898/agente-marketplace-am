@@ -1787,11 +1787,22 @@ global.agenteConfig = global.agenteConfig || {
   markupPrimeirasVendas: 1.5,   // multiplicador baixo (~33% margem)
   vendasParaSairDoModo:  10,    // sair do modo após X vendas
   scoreMinimo:           60,
-  margemSegurancaBling:  0.10,  // 10% acima do preço Bling — protege contra cadastro errado
+  margemSegurancaBling:  0.45,  // 45% acima do preço Bling (markup fixo Cosmos 2026)
   limiteDiario:          10,
   preferirPremium:       true,  // preferir Premium quando preço ≥ mínimo
-  freteGratisMinimo:     79,    // preço mínimo pra frete grátis (ML 2026)
+  freteGratisMinimo:     999999,// DESATIVADO — frete sempre "combinar com cliente" (Cosmos 2026)
 };
+
+// ============================================================
+// MARKUP FIXO BLING → ML (Cosmos 2026)
+// Politica de preco: ML = Bling × 1.45 (markup fixo de 45%)
+// ============================================================
+const MARKUP_BLING = 1.45;
+function aplicarMarkupBling(precoBling) {
+  const p = Number(precoBling);
+  if (!p || p <= 0) return 0;
+  return Math.ceil(p * MARKUP_BLING);
+}
 
 // ============================================================
 // NOMES POPULARES — traduz termo técnico pro que cliente procura
@@ -4245,7 +4256,10 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         if (titulo.length > 60) titulo = titulo.slice(0, 57) + '...';
 
         // 4.1) Precificação top-seller — bloqueia prejuízo, alerta margem crítica
-        let precoFinal = Number(produto.preco) || 0;
+        // COSMOS 2026: markup fixo de 45% sobre preço Bling (substitui usarPrecoSugerido)
+        const precoBlingOriginal = Number(produto.preco) || 0;
+        let precoFinal = aplicarMarkupBling(precoBlingOriginal);
+        console.log(`💰 [markup-fixo] Bling R$${precoBlingOriginal.toFixed(2)} → ML R$${precoFinal.toFixed(2)} (×${MARKUP_BLING})`);
         let precificacaoInfo = null;
         // Bug #1 — `precoCusto` NÃO existe na raiz do produto Bling v3.
         // Está em `produto.fornecedor.precoCusto` (ou `precoCompra` como fallback).
@@ -4270,9 +4284,9 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
             });
             if (calc.success) {
               precificacaoInfo = calc;
-              // Se usuário pediu preço sugerido, usa; senão mantém do Bling
-              if (pricingCfg.usarPrecoSugerido) precoFinal = calc.precoSugerido;
-              console.log(`💰 Preço: R$${precoFinal.toFixed(2)} (custo R$${custoBase.toFixed(2)}, margem ${calc.breakdown.margemReal}, ${calc.status.emoji} ${calc.status.nivel})`);
+              // COSMOS 2026: markup fixo de 45% — usarPrecoSugerido desativado
+              // (mantemos calc só pra info de margem/lucro/status nos logs e response)
+              console.log(`💰 Preço final: R$${precoFinal.toFixed(2)} (custo R$${custoBase.toFixed(2)}, margem ${calc.breakdown.margemReal}, ${calc.status.emoji} ${calc.status.nivel})`);
               // Simula com o preço final pra ver se passa
               const sim = simularLucroVenda({
                 precoVenda: precoFinal, custo: custoBase,
@@ -4378,6 +4392,14 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
             }
           })(),
           pictures:     imagens,
+          // COSMOS 2026: frete "Combinar com vendedor" — sem ME2, sem frete grátis
+          shipping: {
+            mode:           'not_specified',
+            local_pick_up:  true,
+            free_shipping:  false,
+            methods:        [],
+            tags:           [],
+          },
         };
 
         // 6) POST /items no ML
@@ -4781,22 +4803,118 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         const sugestoes = sugData.results || [];
         resultados.etapas.push({ etapa:'Sugestões do ML', total: sugestoes.length });
 
-        // 3) Aplica sugestões (até 200)
-        if (sugestoes.length > 0) {
+        // 2.5) FASE 1.6.1 - COMPAT EXPANDIDA: cobrir TODOS os anos do range do título
+        // Sugestões SUGGESTED do ML cobrem só alguns anos — aqui fechamos o gap
+        // gerando 1 family BRAND+MODEL+YEAR pra CADA ano do range do título.
+        let familiasPorAno = [];
+        let infoExpansao = null;
+        try {
+          const dadosTituloAuto = extrairDadosDoTitulo(item.title || '', '');
+          if (dadosTituloAuto.marca && dadosTituloAuto.modelo &&
+              dadosTituloAuto.anoInicial && dadosTituloAuto.anoFinal) {
+            const brandId = COMPATIBILIDADES_ML.BRAND[dadosTituloAuto.marca];
+            const modelId = brandId
+              ? (COMPATIBILIDADES_ML.MODEL[brandId] || {})[dadosTituloAuto.modelo]
+              : null;
+            if (brandId && modelId) {
+              const anosFaltantes = [];
+              for (let ano = dadosTituloAuto.anoInicial; ano <= dadosTituloAuto.anoFinal; ano++) {
+                const yearId = COMPATIBILIDADES_ML.VEHICLE_YEAR[String(ano)];
+                if (!yearId) {
+                  console.log(`[COMPAT-EXPANDIDA] year_id não mapeado pra ${ano}, pulando`);
+                  continue;
+                }
+                familiasPorAno.push({
+                  domain_id: 'MLB-CARS_AND_VANS',
+                  creation_source: 'DEFAULT',
+                  attributes: [
+                    { id: 'BRAND',        value_id: brandId },
+                    { id: 'MODEL',        value_id: modelId },
+                    { id: 'VEHICLE_YEAR', value_id: yearId  },
+                  ],
+                });
+                anosFaltantes.push(ano);
+              }
+              infoExpansao = {
+                marca:  dadosTituloAuto.marca,
+                modelo: dadosTituloAuto.modelo,
+                range:  `${dadosTituloAuto.anoInicial}-${dadosTituloAuto.anoFinal}`,
+                anos_cobertos: anosFaltantes,
+                total_familias: familiasPorAno.length,
+              };
+              resultados.etapas.push({
+                etapa: 'Famílias por ano geradas (cobertura 100%)',
+                total: familiasPorAno.length,
+                marca: dadosTituloAuto.marca,
+                modelo: dadosTituloAuto.modelo,
+                range: `${dadosTituloAuto.anoInicial}-${dadosTituloAuto.anoFinal}`,
+              });
+            } else {
+              resultados.etapas.push({
+                etapa: 'Compat expandida pulada — marca/modelo não mapeado em COMPATIBILIDADES_ML',
+                marca: dadosTituloAuto.marca || 'null',
+                modelo: dadosTituloAuto.modelo || 'null',
+              });
+            }
+          } else {
+            resultados.etapas.push({
+              etapa: 'Compat expandida pulada — título sem marca/modelo/anos válidos',
+            });
+          }
+        } catch (errExp) {
+          console.error('[COMPAT-EXPANDIDA] erro:', errExp.message);
+          resultados.etapas.push({ etapa:'Compat expandida — erro', error: errExp.message });
+        }
+
+        // 3) Aplica sugestões (até 200) + famílias por ano em UM único POST
+        if (sugestoes.length > 0 || familiasPorAno.length > 0) {
           const productsToAdd = sugestoes.slice(0, 200).map(s => ({ id: s.id }));
+          const corpoPost = {};
+          if (productsToAdd.length > 0) corpoPost.products = productsToAdd;
+          if (familiasPorAno.length > 0) corpoPost.products_families = familiasPorAno;
+
           const cadR = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
             method:'POST',
             headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
-            body: JSON.stringify({ products: productsToAdd }),
+            body: JSON.stringify(corpoPost),
           });
           const cadD = await cadR.json().catch(()=>({}));
           if (cadR.ok) {
             resultados.sucesso = true;
-            resultados.metodo  = 'sugestoes';
-            resultados.aplicadas = productsToAdd.length;
-            resultados.etapas.push({ etapa:'Compatibilidades aplicadas via sugestões', total: productsToAdd.length });
+            resultados.metodo  = (productsToAdd.length > 0 && familiasPorAno.length > 0)
+              ? 'sugestoes+familias_anuais'
+              : (familiasPorAno.length > 0 ? 'familias_anuais' : 'sugestoes');
+            resultados.aplicadas = productsToAdd.length + familiasPorAno.length;
+            if (infoExpansao) resultados.expansao = infoExpansao;
+            if (infoExpansao && infoExpansao.range) {
+              resultados.resumo = `${infoExpansao.modelo} ${infoExpansao.range}`;
+            }
+            resultados.etapas.push({
+              etapa: 'Compatibilidades aplicadas',
+              sugestoes: productsToAdd.length,
+              familias_anuais: familiasPorAno.length,
+              total: resultados.aplicadas,
+            });
           } else {
-            resultados.etapas.push({ etapa:'Erro ao aplicar sugestões', erro: cadD.message });
+            resultados.etapas.push({
+              etapa:'Erro ao aplicar compat (sugestões+famílias)',
+              erro: cadD.message || `HTTP ${cadR.status}`,
+              detalhe: cadD.cause || cadD,
+            });
+            // Fallback: tentar só sugestões caso o ML rejeitou o combo
+            if (productsToAdd.length > 0 && familiasPorAno.length > 0) {
+              const cadR2 = await mlFetch(`https://api.mercadolibre.com/items/${itemId}/compatibilities`, {
+                method:'POST',
+                headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json' },
+                body: JSON.stringify({ products: productsToAdd }),
+              });
+              if (cadR2.ok) {
+                resultados.sucesso = true;
+                resultados.metodo  = 'sugestoes (fallback após combo falhar)';
+                resultados.aplicadas = productsToAdd.length;
+                resultados.etapas.push({ etapa: 'Fallback: aplicou só sugestões', total: productsToAdd.length });
+              }
+            }
           }
         }
 
@@ -6173,7 +6291,13 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           }
         }
 
-        const { score, precoVenda } = scoreProdutoSimulado(produto);
+        let { score, precoVenda } = scoreProdutoSimulado(produto);
+        // COSMOS 2026: markup fixo de 45% sobre preço Bling — sobrescreve qualquer cálculo anterior
+        const precoBlingAgente = Number(produto.preco) || 0;
+        if (precoBlingAgente > 0) {
+          precoVenda = aplicarMarkupBling(precoBlingAgente);
+          console.log(`💰 [agente:markup-fixo] Bling R$${precoBlingAgente.toFixed(2)} → ML R$${precoVenda.toFixed(2)} (×${MARKUP_BLING})`);
+        }
 
         // GAP 8 — aplica reserva de segurança
         const reserva = (global.estoqueConfig?.reservaSeguranca) || 0;
@@ -6192,11 +6316,11 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
 
         // Estratégia Clássico vs Premium — baseado em preço e config
         const cfgAg  = global.agenteConfig || {};
-        const minFrete = cfgAg.freteGratisMinimo || 79;
         const preferPrem = cfgAg.preferirPremium !== false;
-        const listingType = (preferPrem && precoVenda >= minFrete) ? 'gold_special' : 'gold_pro';
-        const freteGratis = precoVenda >= minFrete;
-        console.log(`🤖 [agente] Listagem: ${listingType === 'gold_special' ? 'PREMIUM' : 'CLÁSSICO'} (R$ ${precoVenda.toFixed(2)}${freteGratis ? ' + frete grátis' : ''})`);
+        const listingType = preferPrem ? 'gold_special' : 'gold_pro';
+        // COSMOS 2026: frete sempre "combinar com cliente" — sem frete grátis automático
+        const freteGratis = false;
+        console.log(`🤖 [agente] Listagem: ${listingType === 'gold_special' ? 'PREMIUM' : 'CLÁSSICO'} (R$ ${precoVenda.toFixed(2)}, frete: combinar com cliente)`);
 
         // FASE 1.6 - FRENTE A: decisão inteligente de PART_NUMBER
         const decisaoPartNumber = decidirPartNumber(produto.categoria_ml, produto.sku);
@@ -6239,7 +6363,14 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           listing_type_id: listingType,
           description: { plain_text: descricaoEstruturada },
           pictures: processarFotos(produto.imagens || []).map(url => ({ source: url })),
-          shipping: { mode: 'me2', local_pick_up: false, free_shipping: freteGratis },
+          // COSMOS 2026: frete "Combinar com vendedor" — sem ME2, sem frete grátis
+          shipping: {
+            mode:           'not_specified',
+            local_pick_up:  true,
+            free_shipping:  false,
+            methods:        [],
+            tags:           [],
+          },
           seller_custom_field: produto.sku,
           attributes: [
             { id: 'BRAND',              value_name: produto.marca },
