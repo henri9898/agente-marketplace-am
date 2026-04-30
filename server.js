@@ -6229,13 +6229,19 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
               body:    JSON.stringify({ produtoId: String(p.id), modoTeste: false }),
             });
             const pubData = await pubResp.json().catch(() => ({}));
+            const isPublicado = pubData.success === true;
+            const isSkipped   = pubData.skipped === true;
             resultados.push({
-              id:      p.id,
-              titulo:  p.nome,
-              selo:    p.selo,
-              status:  pubData.success ? 'publicado' : 'falhou',
-              mlb_id:  pubData.mlbId || null,
-              erro:    pubData.error || null,
+              id:           p.id,
+              titulo:       p.nome,
+              selo:         p.selo,
+              status:       isPublicado ? 'publicado' : (isSkipped ? 'skipped' : 'falhou'),
+              mlb_id:       pubData.mlbId || pubData.ml_item_id || null,
+              erro:         (!isPublicado && !isSkipped) ? (pubData.error || null) : null,
+              // Campos de skip (só presentes quando isSkipped)
+              skipMotivo:   isSkipped ? (pubData.skipMotivo || null) : null,
+              skipMensagem: isSkipped ? (pubData.skipMensagem || null) : null,
+              mlb_existente: isSkipped ? (pubData.mlb_existente || []) : null,
             });
             // Throttle entre publicações
             await new Promise(r => setTimeout(r, 1500));
@@ -6251,6 +6257,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           elegiveis:   elegiveis.length,
           processados: resultados.length,
           publicados:  resultados.filter(r => r.status === 'publicado').length,
+          skipped:     resultados.filter(r => r.status === 'skipped').length,
           falhas:      resultados.filter(r => r.status === 'falhou' || r.status === 'erro').length,
           resultados,
         });
@@ -6274,14 +6281,22 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           try {
             const _check = await checarDuplicidadeBling(_produtoIdBling, token);
             if (!_check.podeRepublicar) {
+              const _mlbsAtivos = (_check.mlbsAtivos || []).map(m => m.mlb_id);
+              const _mlbStr = _mlbsAtivos[0] || '';
+              const _detalhe = _check.motivo === 'tem_mlb_com_rendimento'
+                ? 'Já tem MLB com rendimento — duplicar canibaliza vendas'
+                : 'Publicado há <24h — aguardando dados pra decidir';
+              // SKIP visível (não-erro): frontend deve tratar como info, não consumir limite diário,
+              // não incrementar contador de erros nem de publicações.
               return send(res, 200, {
                 success: false,
-                error: '⛔ Produto já publicado',
+                skipped: true,
+                skipMotivo: _check.motivo, // 'tem_mlb_com_rendimento' | 'aguardando_dados_24h'
+                skipMensagem: _mlbStr ? `⏭️ Pulado — já publicado (${_mlbStr})` : '⏭️ Pulado — já publicado',
+                error: '⛔ Produto já publicado', // legado — mantido pra compat
                 motivo: _check.motivo,
-                mlb_existente: _check.mlbsAtivos.map(m => m.mlb_id),
-                detalhe: _check.motivo === 'tem_mlb_com_rendimento'
-                  ? 'Já tem MLB com rendimento — duplicar canibaliza vendas'
-                  : 'Publicado há <24h — aguardando dados pra decidir',
+                mlb_existente: _mlbsAtivos,
+                detalhe: _detalhe,
               });
             }
             _mlbsParaPausarDepois = _check.mlbsParaPausar || [];

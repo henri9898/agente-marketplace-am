@@ -3263,7 +3263,7 @@ function useAgentStore({ notif } = {}) {
     weekendsPaused: true,
     actions: { publish:true, repricing:true, faq:true, pause:false, remove:false },
   });
-  const [metrics, setMetrics]   = useState({ publishedToday: 0, errors: 0, totalTimeMs: 0, totalProcessed: 0 });
+  const [metrics, setMetrics]   = useState({ publishedToday: 0, errors: 0, skippedToday: 0, totalTimeMs: 0, totalProcessed: 0 });
   const [errorMsg, setErrorMsg] = useState(null);
   const startedAt = useRef(null);
 
@@ -3405,6 +3405,7 @@ function useAgentStore({ notif } = {}) {
     // tem produtos novos sem foto). Páginas 5+ tendem a ter produtos antigos
     // com fotos cadastradas.
     let publicadosTotal = 0;
+    let skipsTotal = 0;
     let falhasTotal = 0;
     let paginaAtual = 5;       // começa na página 5 que sabidamente tem PRONTOs
     const maxPaginas = 10;     // varre até página 14 no máximo
@@ -3414,6 +3415,7 @@ function useAgentStore({ notif } = {}) {
 
       const restante = max - publicadosTotal;
       try {
+        const t0Page = Date.now();
         const resp = await fetch('/api/agente/publicar-fila', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3441,13 +3443,47 @@ function useAgentStore({ notif } = {}) {
           continue;
         }
 
+        // Tempo médio rateado (delta da página / nº de itens) — alimenta avgTimeMs do dashboard
+        const tDelta = Date.now() - t0Page;
+        const itensPag = data.resultados.length || 1;
+        const msPorItem = Math.max(0, Math.round(tDelta / itensPag));
+
         for (const r of data.resultados) {
           if (r.status === 'publicado') {
             publicadosTotal++;
             log('ok', `✅ [${publicadosTotal}/${max}] ${r.titulo} → ${r.mlb_id}`);
+            // Dashboard: incrementa publicados + processado + tempo
+            setMetrics(m => ({
+              ...m,
+              publishedToday: m.publishedToday + 1,
+              totalProcessed: m.totalProcessed + 1,
+              totalTimeMs:    m.totalTimeMs + msPorItem,
+            }));
+          } else if (r.status === 'skipped') {
+            // SKIP visível: NÃO conta como erro, NÃO conta como publicação,
+            // NÃO consome limite diário (publicadosTotal não incrementa)
+            skipsTotal++;
+            const mlbStr = r.mlb_existente?.[0] || '';
+            const txt = r.skipMensagem
+              || (mlbStr ? `⏭️ Pulado — já publicado (${mlbStr})` : '⏭️ Pulado — já publicado');
+            log('info', `${txt} · ${r.titulo}`);
+            // Dashboard: incrementa só skip + processado (sem publishedToday, sem errors)
+            setMetrics(m => ({
+              ...m,
+              skippedToday:   (m.skippedToday || 0) + 1,
+              totalProcessed: m.totalProcessed + 1,
+              totalTimeMs:    m.totalTimeMs + msPorItem,
+            }));
           } else {
             falhasTotal++;
             log('error', `❌ ${r.titulo}: ${r.erro || 'falhou'}`);
+            // Dashboard: incrementa erros + processado
+            setMetrics(m => ({
+              ...m,
+              errors:         m.errors + 1,
+              totalProcessed: m.totalProcessed + 1,
+              totalTimeMs:    m.totalTimeMs + msPorItem,
+            }));
           }
         }
 
@@ -3458,7 +3494,11 @@ function useAgentStore({ notif } = {}) {
       }
     }
 
-    log('info', `🏁 Concluído — ${publicadosTotal} publicado(s), ${falhasTotal} falha(s)`);
+    // Resumo final — separa publicações de skips de falhas
+    const partes = [`${publicadosTotal} publicado(s)`];
+    if (skipsTotal > 0) partes.push(`${skipsTotal} pulado(s) (já publicados)`);
+    partes.push(`${falhasTotal} falha(s)`);
+    log('info', `🏁 Concluído — ${partes.join(', ')}`);
     setStatus('idle');
   }, [status]);
 
@@ -8182,9 +8222,10 @@ function AgentStatusCard({ agent }) {
 function AgentMetrics({ agent }) {
   const { metrics, queue, counts } = agent;
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-4">
       <div className="metric-card"><div className="ml">📤 Publicados hoje</div><div className="mv" style={{color:'var(--green)'}}>{metrics.publishedToday}</div></div>
       <div className="metric-card"><div className="ml">⏳ Na fila</div><div className="mv">{queue.length}</div></div>
+      <div className="metric-card" title="Produtos já publicados antes — pulados sem consumir limite diário"><div className="ml">⏭️ Pulados</div><div className="mv" style={{color:'#60a5fa'}}>{metrics.skippedToday || 0}</div></div>
       <div className="metric-card"><div className="ml">❌ Erros</div><div className="mv" style={{color:'#ef4444'}}>{metrics.errors}</div></div>
       <div className="metric-card"><div className="ml">⏱️ Tempo médio</div><div className="mv">{metrics.avgTimeMs > 0 ? Math.round(metrics.avgTimeMs/100)/10 + 's' : '—'}</div></div>
     </div>
