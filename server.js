@@ -6037,7 +6037,9 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
               id:      p.id,
               titulo:  p.nome,
               selo:    p.selo,
-              status:  pubData.success ? 'publicado' : 'falhou',
+              status:  pubData.success ? 'publicado' : (pubData.skipped ? 'pulado' : 'falhou'),
+              skipped: pubData.skipped || false,
+              mlb_existente: pubData.mlb_existente || null,
               mlb_id:  pubData.mlbId || null,
               erro:    pubData.error || null,
             });
@@ -6055,6 +6057,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           elegiveis:   elegiveis.length,
           processados: resultados.length,
           publicados:  resultados.filter(r => r.status === 'publicado').length,
+          pulados:     resultados.filter(r => r.status === 'pulado').length,
           falhas:      resultados.filter(r => r.status === 'falhou' || r.status === 'erro').length,
           resultados,
         });
@@ -6080,6 +6083,9 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
             if (!_check.podeRepublicar) {
               return send(res, 200, {
                 success: false,
+                skipped: true,
+                skipMotivo: _check.motivo,
+                skipMensagem: '⏭️ Pulado — já publicado (' + _check.mlbsAtivos.map(m => m.mlb_id).join(', ') + ')',
                 error: '⛔ Produto já publicado',
                 motivo: _check.motivo,
                 mlb_existente: _check.mlbsAtivos.map(m => m.mlb_id),
