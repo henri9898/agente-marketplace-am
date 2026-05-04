@@ -363,11 +363,12 @@ function ehCodigoInternoBling(codigo) {
 }
 
 function decidirPartNumber(categoryId, codigoBling) {
+  // FIX 2026-04-29: ML exige PART_NUMBER pra carroceria. Sempre envia, com fallback 'SEM CODIGO' (padrão Cosmos).
   if (ehCategoriaCarroceria(categoryId)) {
-    return { enviarPartNumber: false, partNumber: null, motivo: 'carroceria_sem_codigo' };
+    return { enviarPartNumber: true, partNumber: 'SEM CODIGO', motivo: 'carroceria_sem_codigo_real' };
   }
   if (ehCodigoInternoBling(codigoBling)) {
-    return { enviarPartNumber: false, partNumber: null, motivo: 'codigo_interno_bling_descartado' };
+    return { enviarPartNumber: true, partNumber: 'SEM CODIGO', motivo: 'codigo_interno_bling_substituido' };
   }
   return { enviarPartNumber: true, partNumber: codigoBling.trim(), motivo: 'mecanica_com_codigo_oem' };
 }
@@ -1787,7 +1788,7 @@ global.agenteConfig = global.agenteConfig || {
   markupPrimeirasVendas: 1.5,   // multiplicador baixo (~33% margem)
   vendasParaSairDoModo:  10,    // sair do modo após X vendas
   scoreMinimo:           60,
-  margemSegurancaBling:  0.10,  // 10% acima do preço Bling — protege contra cadastro errado
+  margemSegurancaBling:  0.45,  // FIX 2026-05-02: Cosmos pediu 45% acima do preço Bling (era 0.10)
   limiteDiario:          10,
   preferirPremium:       true,  // preferir Premium quando preço ≥ mínimo
   freteGratisMinimo:     79,    // preço mínimo pra frete grátis (ML 2026)
@@ -4245,7 +4246,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         if (titulo.length > 60) titulo = titulo.slice(0, 57) + '...';
 
         // 4.1) Precificação top-seller — bloqueia prejuízo, alerta margem crítica
-        let precoFinal = Number(produto.preco) || 0;
+        let precoFinal = Math.ceil((Number(produto.preco) || 0) * 1.45);  // FIX 2026-05-03: markup 45% Cosmos (era preço cru)
         let precificacaoInfo = null;
         // Bug #1 — `precoCusto` NÃO existe na raiz do produto Bling v3.
         // Está em `produto.fornecedor.precoCusto` (ou `precoCompra` como fallback).
@@ -4359,6 +4360,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           buying_mode:  'buy_it_now',
           listing_type_id: 'gold_special',
           condition:    'new',
+          shipping:     { mode: 'me2', local_pick_up: true, free_shipping: false },
           description:  { plain_text: String(descFinal).slice(0, 50000) },
           attributes:   (function() {
             // FASE 1.6 - FRENTE A: filtrar PART_NUMBER conforme tipo de peça
@@ -4387,7 +4389,29 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
           body: JSON.stringify(anuncio),
         });
         const mj = await mr.json().catch(() => ({}));
+        if (!mj.id) {
+          console.error(`🔍 [ML-RAW-RESPONSE /api/publicar] status HTTP: ${mr.status}`);
+          console.error(`🔍 [ML-RAW-RESPONSE] ${JSON.stringify(mj, null, 2)}`);
+          console.error(`🔍 [ML-PAYLOAD-ENVIADO] título="${anuncio.title}" categoria=${anuncio.category_id} fotos=${anuncio.pictures?.length || 0} attrs=${anuncio.attributes?.length || 0}`);
+        }
         if (mj.id) {
+          // FIX 2026-04-29: ML ignora description no POST /items. Precisa POST separado em /description.
+          try {
+            const descResp = await mlFetch("https://api.mercadolibre.com/items/" + mj.id + "/description", {
+              method: "POST",
+              headers: { "Authorization": "Bearer " + mlToken, "Content-Type": "application/json" },
+              body: JSON.stringify({ plain_text: String(descFinal).slice(0, 50000) }),
+            });
+            if (descResp.ok) {
+              console.log("📝 [DESC-FIX] ✅ descrição salva em " + mj.id + " (" + String(descFinal).length + " chars)");
+            } else {
+              const descErr = await descResp.json().catch(() => ({}));
+              console.error("📝 [DESC-FIX] ❌ falhou em " + mj.id + ": HTTP " + descResp.status + " " + JSON.stringify(descErr).slice(0, 200));
+            }
+          } catch (errDesc) {
+            console.error("📝 [DESC-FIX] erro ao salvar descrição em " + mj.id + ": " + errDesc.message);
+          }
+
           // 🚗 Dispara compatibilidade automática em background (3s depois do ML indexar)
           setTimeout(async () => {
             try {
@@ -6245,7 +6269,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           listing_type_id: listingType,
           description: { plain_text: descricaoEstruturada },
           pictures: processarFotos(produto.imagens || []).map(url => ({ source: url })),
-          shipping: { mode: 'me2', local_pick_up: false, free_shipping: freteGratis },
+          shipping: { mode: 'me2', local_pick_up: true, free_shipping: false },  // FIX 2026-05-02: Cosmos pediu combinar com cliente, sem frete grátis
           seller_custom_field: produto.sku,
           attributes: [
             { id: 'BRAND',              value_name: produto.marca },
@@ -6386,6 +6410,24 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
 
         if (pubResp.ok) {
           console.log(`🤖 [agente] ✅ PUBLICADO: ${produto.titulo} → ${pubData.id} (R$ ${precoVenda.toFixed(2)})`);
+
+          // FIX 2026-04-29: ML ignora description no POST /items. Precisa POST separado em /description.
+          try {
+            const descResp = await mlFetch("https://api.mercadolibre.com/items/" + pubData.id + "/description", {
+              method: "POST",
+              headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+              body: JSON.stringify({ plain_text: String(descricaoEstruturada).slice(0, 50000) }),
+            });
+            if (descResp.ok) {
+              console.log("📝 [DESC-FIX] ✅ descrição salva em " + pubData.id + " (" + String(descricaoEstruturada).length + " chars)");
+            } else {
+              const descErr = await descResp.json().catch(() => ({}));
+              console.error("📝 [DESC-FIX] ❌ falhou em " + pubData.id + ": HTTP " + descResp.status + " " + JSON.stringify(descErr).slice(0, 200));
+            }
+          } catch (errDesc) {
+            console.error("📝 [DESC-FIX] erro ao salvar descrição em " + pubData.id + ": " + errDesc.message);
+          }
+
           resetPublicacoesSeNovoDia();
           global.publicacoesHoje.count++;
           global.publicacoesHoje.items.push({
@@ -6470,7 +6512,8 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
             mensagem: `✅ Publicado com sucesso! ID: ${pubData.id}`,
           });
         }
-        console.error(`🤖 [agente] ❌ ERRO ao publicar: ${pubData.message || JSON.stringify(pubData.cause)}`);
+        console.error(`🤖 [agente] ❌ ERRO ao publicar: ${pubData.message || "sem mensagem"}`);
+        console.error(`🔍 [ML-RAW-RESPONSE] ${JSON.stringify(pubData, null, 2)}`);
         return send(res, 200, { success: false, error: pubData.message, cause: pubData.cause, details: pubData });
       } catch (err) {
         return send(res, 200, { success: false, error: err.message });
