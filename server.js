@@ -2142,6 +2142,25 @@ const _stmtAtualizarStatus = db.prepare(`
   WHERE mlb_id = ?
 `);
 
+// FIX 2026-05-04: CATEGORIAS PROBLEMÁTICAS — ML força frete grátis (Cosmos não permite)
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS categorias_problematicas (
+    category_id TEXT PRIMARY KEY,
+    motivo TEXT,
+    detectado_em TEXT DEFAULT CURRENT_TIMESTAMP,
+    exemplo_mlb TEXT
+  )
+`).run();
+const _stmtCategoriaProblematica = db.prepare(`SELECT category_id FROM categorias_problematicas WHERE category_id = ?`);
+const _stmtMarcarCategoriaProblematica = db.prepare(`INSERT OR REPLACE INTO categorias_problematicas (category_id, motivo, exemplo_mlb) VALUES (?, ?, ?)`);
+function categoriaForcaFrete(catId) {
+  if (!catId) return false;
+  return !!_stmtCategoriaProblematica.get(String(catId));
+}
+function marcarCategoriaProblematica(catId, motivo, mlbExemplo) {
+  try { _stmtMarcarCategoriaProblematica.run(String(catId), String(motivo || ""), String(mlbExemplo || "")); }
+  catch (e) { console.error("[cat-frete] erro ao marcar:", e.message); }
+}
 const _stmtListarComDuplicatas = db.prepare(`
   SELECT bling_id, COUNT(*) AS qtd
   FROM produtos_publicados
@@ -6284,6 +6303,19 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           payload.attributes.push({ id: 'PART_NUMBER', value_name: decisaoPartNumber.partNumber });
         }
 
+        // FIX 2026-05-04: Pré-check categoria que força frete grátis (regra Cosmos: zero frete grátis)
+        if (categoriaForcaFrete(payload.category_id)) {
+          console.log(`🚫 [cat-frete] Categoria ${payload.category_id} marcada como FORÇA frete grátis. Bloqueando publicação.`);
+          return send(res, 200, {
+            success: false,
+            skipped: true,
+            skipMotivo: "categoria_forca_frete_gratis",
+            skipMensagem: "🚫 Pulado — categoria força frete grátis (regra Cosmos)",
+            error: "Categoria força frete grátis (Cosmos não permite)",
+            category_id: payload.category_id,
+          });
+        }
+
         // PROBLEMA 1 — Categoria pode ter migrado (ex: MLB180634 → MLB120316).
         // Consulta o endpoint da categoria; se o ML retornar outra ID, atualiza payload.
         try {
@@ -6407,6 +6439,34 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           body: JSON.stringify(payload),
         });
         const pubData = await pubResp.json().catch(() => ({}));
+
+        // FIX 2026-05-04 v2: Pós-check via GET (resposta inicial do POST não tem free_shipping decidido)
+        if (pubData.id) {
+          // Espera 3s pra ML processar e decidir frete
+          await new Promise(r => setTimeout(r, 3000));
+          try {
+            const checkResp = await mlFetch("https://api.mercadolibre.com/items/" + pubData.id, {
+              headers: { "Authorization": "Bearer " + token },
+            });
+            const checkData = await checkResp.json().catch(() => ({}));
+            if (checkData.shipping && checkData.shipping.free_shipping === true) {
+              console.warn("⚠️ [cat-frete] ML forçou free_shipping em " + pubData.id + " (cat " + payload.category_id + "). Pausando.");
+              marcarCategoriaProblematica(payload.category_id, "ml_forcou_free_shipping", pubData.id);
+              try { await pausarMLB(pubData.id, token); } catch (e) { console.error("[cat-frete] erro pausar:", e.message); }
+              return send(res, 200, {
+                success: false,
+                skipped: true,
+                skipMotivo: "ml_forcou_frete_gratis",
+                skipMensagem: "🚫 ML forçou frete grátis em " + pubData.id + " — pausado, categoria " + payload.category_id + " marcada",
+                mlb_pausado: pubData.id,
+                categoria_marcada: payload.category_id,
+                error: "ML forçou frete grátis — anúncio pausado",
+              });
+            }
+          } catch (e) {
+            console.error("[cat-frete] erro no GET pós-check:", e.message);
+          }
+        }
 
         if (pubResp.ok) {
           console.log(`🤖 [agente] ✅ PUBLICADO: ${produto.titulo} → ${pubData.id} (R$ ${precoVenda.toFixed(2)})`);
