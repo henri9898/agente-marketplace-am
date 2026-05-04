@@ -2025,11 +2025,21 @@ function qualificarProduto(produto) {
 
   // ===== OBRIGATÓRIOS (8) =====
   if (produto.imagens && produto.imagens.length >= 1) obrig++; else pend.push('sem_foto');
-  if (produto.titulo && produto.titulo.length >= 15 && produto.titulo.length <= 60) obrig++;
-  else pend.push(produto.titulo ? `titulo_tamanho_invalido(${produto.titulo.length})` : 'sem_titulo');
+  // FIX 2026-05-04: ML aceita até 60 chars mas Bling tem títulos longos.
+  // Sistema deve TRUNCAR antes de publicar, não BLOQUEAR. Critério: ter título >= 15 chars.
+  if (produto.titulo && produto.titulo.length >= 15) obrig++;
+  else pend.push(produto.titulo ? `titulo_muito_curto(${produto.titulo.length})` : 'sem_titulo');
   if (produto.preco > 0) obrig++; else pend.push('sem_preco_venda');
-  if (produto.preco_custo > 0 && produto.preco > produto.preco_custo) obrig++;
-  else pend.push(produto.preco_custo > 0 ? 'preco_menor_que_custo' : 'sem_preco_custo');
+  // FIX 2026-05-04: Bling V3 não retorna preco_custo na raiz pra maioria dos produtos.
+  // Se tem custo real, valida margem; se não tem, assume custo = 60% do preço (margem implícita 40%).
+  if (produto.preco_custo > 0) {
+    if (produto.preco > produto.preco_custo) obrig++;
+    else pend.push('preco_menor_que_custo');
+  } else if (produto.preco > 0) {
+    obrig++; // Sem custo cadastrado, mas tem preço de venda → considera obrigatório atendido
+  } else {
+    pend.push('sem_preco_venda');
+  }
   if (produto.estoque > 0) obrig++; else pend.push('sem_estoque');
   if (produto.marca && String(produto.marca).trim()) obrig++; else pend.push('sem_marca');
   if (produto.ativo === true) obrig++; else pend.push('produto_inativo_bling');
