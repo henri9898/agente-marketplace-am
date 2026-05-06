@@ -51,3 +51,14 @@ deploy/vps-setup.sh
 
 # Local Netlify folder
 .netlify
+
+# Backups locais (criados durante deploys)
+*.backup-*
+*.backup
+*.bak
+dados.sqlite-shm
+dados.sqlite-wal
+db.sqlite
+node_modules/
+.env
+tokens.json

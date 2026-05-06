@@ -119,6 +119,40 @@ const { db } = require('./db.js');
 // ============================================================
 const COMPATIBILIDADES_ML = require('./compatibilidades_ml.json');
 
+// ============================================================
+// SSE LOGS — Streaming de logs em tempo real (Sessao 14)
+// ============================================================
+const LOGS_BUFFER = [];
+const LOGS_BUFFER_MAX = 200;
+const SSE_CLIENTS = new Set();
+
+const _origLog = console.log;
+const _origWarn = console.warn;
+const _origErr = console.error;
+
+function pushLog(level, args) {
+  try {
+    const msg = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+    const entry = {
+      ts: new Date().toISOString(),
+      time: new Date().toTimeString().slice(0,8),
+      level,
+      msg: msg.slice(0, 800),
+    };
+    LOGS_BUFFER.push(entry);
+    if (LOGS_BUFFER.length > LOGS_BUFFER_MAX) LOGS_BUFFER.shift();
+    const data = "data: " + JSON.stringify(entry) + "\n\n";
+    for (const client of SSE_CLIENTS) {
+      try { client.write(data); } catch (e) { }
+    }
+  } catch (e) { }
+}
+
+console.log = function(...args) { pushLog("info", args); _origLog.apply(console, args); };
+console.warn = function(...args) { pushLog("warn", args); _origWarn.apply(console, args); };
+console.error = function(...args) { pushLog("error", args); _origErr.apply(console, args); };
+
+
 // Aliases comuns no Bling para nome ML canônico
 const ALIASES_MARCA_BLING = {
   'mercedes':       'Mercedes-Benz',
@@ -2158,17 +2192,27 @@ db.prepare(`
     category_id TEXT PRIMARY KEY,
     motivo TEXT,
     detectado_em TEXT DEFAULT CURRENT_TIMESTAMP,
-    exemplo_mlb TEXT
+    exemplo_mlb TEXT,
+    tipo TEXT DEFAULT 'forca_frete'
   )
 `).run();
-const _stmtCategoriaProblematica = db.prepare(`SELECT category_id FROM categorias_problematicas WHERE category_id = ?`);
-const _stmtMarcarCategoriaProblematica = db.prepare(`INSERT OR REPLACE INTO categorias_problematicas (category_id, motivo, exemplo_mlb) VALUES (?, ?, ?)`);
+// FIX 2026-05-06: ALTER pra DBs existentes que nao tem coluna tipo
+try { db.prepare(`ALTER TABLE categorias_problematicas ADD COLUMN tipo TEXT DEFAULT 'forca_frete'`).run(); } catch (e) { /* coluna ja existe */ }
+
+const _stmtCategoriaProblematica = db.prepare(`SELECT category_id, tipo FROM categorias_problematicas WHERE category_id = ?`);
+const _stmtMarcarCategoriaProblematica = db.prepare(`INSERT OR REPLACE INTO categorias_problematicas (category_id, motivo, exemplo_mlb, tipo) VALUES (?, ?, ?, ?)`);
 function categoriaForcaFrete(catId) {
   if (!catId) return false;
-  return !!_stmtCategoriaProblematica.get(String(catId));
+  const row = _stmtCategoriaProblematica.get(String(catId));
+  return !!row && row.tipo === 'forca_frete';
 }
-function marcarCategoriaProblematica(catId, motivo, mlbExemplo) {
-  try { _stmtMarcarCategoriaProblematica.run(String(catId), String(motivo || ""), String(mlbExemplo || "")); }
+function categoriaForcaMarkupExtra(catId) {
+  if (!catId) return false;
+  const row = _stmtCategoriaProblematica.get(String(catId));
+  return !!row && row.tipo === 'aplicar_markup_35';
+}
+function marcarCategoriaProblematica(catId, motivo, mlbExemplo, tipo) {
+  try { _stmtMarcarCategoriaProblematica.run(String(catId), String(motivo || ""), String(mlbExemplo || ""), String(tipo || "forca_frete")); }
   catch (e) { console.error("[cat-frete] erro ao marcar:", e.message); }
 }
 const _stmtListarComDuplicatas = db.prepare(`
@@ -6326,6 +6370,13 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           });
         }
 
+        // FIX 2026-05-06: Pré-check categoria que força markup +35% (Cosmos pediu pra absorver custo do frete)
+        if (categoriaForcaMarkupExtra(payload.category_id)) {
+          const precoOriginal = payload.price;
+          payload.price = +(payload.price * 1.35).toFixed(2);
+          console.log(`💰 [markup-35] Categoria ${payload.category_id} marcada — preço ajustado: R$ ${precoOriginal.toFixed(2)} → R$ ${payload.price.toFixed(2)} (+35%)`);
+        }
+
         // PROBLEMA 1 — Categoria pode ter migrado (ex: MLB180634 → MLB120316).
         // Consulta o endpoint da categoria; se o ML retornar outra ID, atualiza payload.
         try {
@@ -6460,18 +6511,29 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
             });
             const checkData = await checkResp.json().catch(() => ({}));
             if (checkData.shipping && checkData.shipping.free_shipping === true) {
-              console.warn("⚠️ [cat-frete] ML forçou free_shipping em " + pubData.id + " (cat " + payload.category_id + "). Pausando.");
-              marcarCategoriaProblematica(payload.category_id, "ml_forcou_free_shipping", pubData.id);
-              try { await pausarMLB(pubData.id, token); } catch (e) { console.error("[cat-frete] erro pausar:", e.message); }
-              return send(res, 200, {
-                success: false,
-                skipped: true,
-                skipMotivo: "ml_forcou_frete_gratis",
-                skipMensagem: "🚫 ML forçou frete grátis em " + pubData.id + " — pausado, categoria " + payload.category_id + " marcada",
-                mlb_pausado: pubData.id,
-                categoria_marcada: payload.category_id,
-                error: "ML forçou frete grátis — anúncio pausado",
-              });
+              // FIX 2026-05-06: ML forçou frete grátis — em vez de pausar, aplica +35% no preço pra cobrir custo (decisão Henri)
+              const precoAtual = checkData.price || payload.price;
+              const precoNovo = +(precoAtual * 1.35).toFixed(2);
+              console.warn("⚠️ [markup-35] ML forçou free_shipping em " + pubData.id + " (cat " + payload.category_id + "). Aplicando +35% no preço: R$ " + precoAtual.toFixed(2) + " → R$ " + precoNovo.toFixed(2));
+              try {
+                const updateResp = await mlFetch("https://api.mercadolibre.com/items/" + pubData.id, {
+                  method: "PUT",
+                  headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+                  body: JSON.stringify({ price: precoNovo }),
+                });
+                if (updateResp.ok) {
+                  console.log("✅ [markup-35] Preço atualizado com sucesso em " + pubData.id);
+                  marcarCategoriaProblematica(payload.category_id, "ml_forcou_aplicar_markup_35", pubData.id, "aplicar_markup_35");
+                } else {
+                  const errTxt = await updateResp.text().catch(() => "");
+                  console.error("[markup-35] erro ao atualizar preço (HTTP " + updateResp.status + "):", errTxt);
+                  // Fallback: se PUT falhou, marca categoria mesmo assim pra próximas publicações já saírem corrigidas
+                  marcarCategoriaProblematica(payload.category_id, "ml_forcou_aplicar_markup_35_put_falhou", pubData.id, "aplicar_markup_35");
+                }
+              } catch (e) {
+                console.error("[markup-35] exceção no PUT:", e.message);
+                marcarCategoriaProblematica(payload.category_id, "ml_forcou_aplicar_markup_35_excecao", pubData.id, "aplicar_markup_35");
+              }
             }
           } catch (e) {
             console.error("[cat-frete] erro no GET pós-check:", e.message);
@@ -6969,6 +7031,36 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         success: true,
         fila: global.filaPublicacao || [],
         total: (global.filaPublicacao || []).length,
+      });
+    }
+
+    if (u.pathname === "/api/logs/stream" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+      });
+      const historico = LOGS_BUFFER.slice(-50);
+      for (const entry of historico) {
+        res.write("data: " + JSON.stringify(entry) + "\n\n");
+      }
+      SSE_CLIENTS.add(res);
+      const heartbeat = setInterval(() => {
+        try { res.write(": ping\n\n"); } catch (e) { clearInterval(heartbeat); }
+      }, 30000);
+      req.on("close", () => {
+        SSE_CLIENTS.delete(res);
+        clearInterval(heartbeat);
+      });
+      return;
+    }
+
+    if (u.pathname === "/api/logs/recentes" && req.method === "GET") {
+      const limit = parseInt((u.query && u.query.limit) || "100", 10);
+      return send(res, 200, {
+        success: true,
+        logs: LOGS_BUFFER.slice(-limit),
+        total: LOGS_BUFFER.length,
       });
     }
 

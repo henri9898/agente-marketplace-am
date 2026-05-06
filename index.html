@@ -3287,6 +3287,111 @@ function useAgentStore({ notif } = {}) {
   }, []);
   const clearLogs = useCallback(() => setLogs([]), []);
 
+  // ============================================================
+  // FIX FILA + DASHBOARD — sincronizar com backend (Sessao 14)
+  // - Item 2: Na fila sempre 0 (frontend nao buscava do backend)
+  // - Item 3: F5 zera dashboard (useState reinicia ao reload)
+  // ============================================================
+  useEffect(() => {
+    let cancelado = false;
+
+    const sincronizar = async () => {
+      try {
+        // Busca status (publicacoesHoje, etc)
+        const statusResp = await fetch(/api/agente/status).catch(() => null);
+        if (!cancelado && statusResp?.ok) {
+          const sd = await statusResp.json();
+          if (sd?.success) {
+            setMetrics(m => ({
+              ...m,
+              publishedToday: sd.publicacoesHoje?.total || m.publishedToday,
+              skippedToday:   sd.publicacoesHoje?.pulados || m.skippedToday,
+              errors:         sd.publicacoesHoje?.erros || m.errors,
+            }));
+          }
+        }
+
+        // Busca fila real do backend
+        const filaResp = await fetch(/api/agente/fila).catch(() => null);
+        if (!cancelado && filaResp?.ok) {
+          const fd = await filaResp.json();
+          if (fd?.success && Array.isArray(fd.fila)) {
+            // So sobrescreve se tem dados reais ou se o frontend ta vazio
+            setQueue(prev => {
+              if (fd.fila.length > 0) return fd.fila;
+              return prev; // mantem fila local se backend ta vazio
+            });
+          }
+        }
+      } catch (e) {
+        // silencioso — nao quebrar UI por erro de rede
+      }
+    };
+
+    // Sincroniza ao montar
+    sincronizar();
+
+    // Sincroniza a cada 10s
+    const intervalo = setInterval(sincronizar, 10000);
+
+    return () => {
+      cancelado = true;
+      clearInterval(intervalo);
+    };
+  }, []);
+
+  // ============================================================
+  // SSE LOGS — Conexao com /api/logs/stream (Sessao 14)
+  // ============================================================
+  useEffect(() => {
+    let es = null;
+    let reconnectTimer = null;
+    let cancelado = false;
+
+    const conectar = () => {
+      if (cancelado) return;
+      try {
+        es = new EventSource("/api/logs/stream");
+        es.onmessage = (event) => {
+          try {
+            const entry = JSON.parse(event.data);
+            const level = entry.level || "info";
+            // Detecta level por emoji/conteudo
+            let lvl = level;
+            if (entry.msg) {
+              const m = entry.msg;
+              if (m.includes("\u274c") || m.includes("ERRO") || m.includes("erro:")) lvl = "error";
+              else if (m.includes("\u26a0") || m.includes("WARN") || m.includes("aviso")) lvl = "warn";
+              else if (m.includes("\u2705") || m.includes("OK") || m.includes("sucesso")) lvl = "ok";
+            }
+            setLogs(prev => {
+              const novo = { id: Date.now() + Math.random(), time: entry.time, level: lvl, msg: entry.msg };
+              return [...prev, novo].slice(-300);
+            });
+          } catch (e) { /* ignora linha invalida */ }
+        };
+        es.onerror = () => {
+          if (es) { es.close(); es = null; }
+          if (!cancelado) {
+            reconnectTimer = setTimeout(conectar, 5000);
+          }
+        };
+      } catch (e) {
+        if (!cancelado) reconnectTimer = setTimeout(conectar, 5000);
+      }
+    };
+
+    conectar();
+
+    return () => {
+      cancelado = true;
+      if (es) es.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+  }, []);
+
+
+
   // Tick do simulador — processa um item da fila a cada N ms (depende de speed)
   useEffect(() => {
     if (status !== 'running') return;
