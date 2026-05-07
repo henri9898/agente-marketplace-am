@@ -1,0 +1,140 @@
+{
+  "MLB101763": {
+    "nome": "Porta",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "POSITION":       { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
+      "SIDE":           { "tipo": "do_titulo", "campo": "lado", "se_vazio": "fallback_0000" },
+      "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
+      "MAIN_COLOR":     { "tipo": "mapear_cor_de", "campo": "cor", "se_vazio": "nao_enviar" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
+      "DETRAN_TRACKING_NUMBER": { "tipo": "fixo_0000" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "MATERIAL":       { "tipo": "nao_enviar" }
+    }
+  },
+  "MLB428983": {
+    "nome": "Maçaneta",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "POSITION":       { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
+      "SIDE_POSITION":  { "tipo": "do_titulo", "campo": "lado", "se_vazio": "fallback_0000", "transformar": "lado_para_eo" },
+      "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
+      "INCLUDES_KEYS":         { "tipo": "fixo", "value_name": "Não" },
+      "INCLUDES_LOCK_CYLINDER": { "tipo": "fixo", "value_name": "Não" },
+      "MATERIAL":       { "tipo": "nao_enviar" },
+      "FINISH":         { "tipo": "nao_enviar" }
+    }
+  },
+  "MLB191715": {
+    "nome": "Maquina Vidro Manual",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" }
+    }
+  },
+  "MLB191714": {
+    "nome": "Maquina Vidro Eletrica",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "MODEL":          { "tipo": "fixo_0000" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "NUMBER_OF_OPERABLE_WINDOWS": { "tipo": "fixo", "value_name": "1" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" }
+    }
+  },
+  "MLB194431": {
+    "nome": "Fechadura Porta Carro",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "LENGTH":         { "tipo": "do_bling_dim", "campo": "profundidade", "unidade": "cm" },
+      "WIDTH":          { "tipo": "do_bling_dim", "campo": "largura", "unidade": "cm" },
+      "HEIGHT":         { "tipo": "do_bling_dim", "campo": "altura", "unidade": "cm" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" }
+    }
+  },
+  "MLB194430": {
+    "nome": "Fechadura Capô Carro",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" }
+    }
+  },
+  "MLB47115": {
+    "nome": "Bomba Combustivel",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "FUEL_TYPE":      { "tipo": "regra_negocio", "regra": "detectar_fuel_type" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "IS_ELECTRICAL":  { "tipo": "fixo", "value_name": "Sim" },
+      "INCLUDES_FILTER":           { "tipo": "fixo", "value_name": "Não" },
+      "INCLUDES_MOUNTING_HARDWARE":{ "tipo": "fixo", "value_name": "Não" },
+      "INCLUDES_GASKET_OR_SEAL":   { "tipo": "fixo", "value_name": "Não" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" }
+    }
+  },
+  "MLB190976": {
+    "nome": "Motor de Arranque",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "BENDIX_GEAR_TEETH": { "tipo": "regra_negocio", "regra": "extrair_dentes_bendix" },
+      "DIRECTION_ROTATION": { "tipo": "nao_enviar" },
+      "STARTER_VOLTAGE":    { "tipo": "nao_enviar" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
+      "DETRAN_TRACKING_NUMBER": { "tipo": "fixo_0000" }
+    }
+  },
+  "MLB191707": {
+    "nome": "Sensor ABS",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "CONNECTOR_GENDER":  { "tipo": "nao_enviar" },
+      "ABS_SENSOR_LENGTH": { "tipo": "nao_enviar" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" }
+    }
+  },
+  "MLB115598": {
+    "nome": "Botao Vidro",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" }
+    }
+  }
+}

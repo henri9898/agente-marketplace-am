@@ -306,6 +306,285 @@ function extrairDadosDoTitulo(nome, marcaBling) {
 // ============================================================
 
 // ============================================================
+// FASE B - ATRIBUTOS COMPLETOS POR CATEGORIA
+// Mapa categoria_ML -> atributos com regras (do_titulo, do_bling,
+// fixo, fixo_0000, fallback_0000, mapear_cor_de, regra_negocio,
+// do_bling_dim, nao_enviar). Config em categorias_atributos.json.
+//
+// Inclui FALLBACK UNIVERSAL: garante BRAND/GTIN/SELLER_SKU/
+// PACKAGE_WEIGHT/ITEM_CONDITION/VEHICLE_TYPE/ORIGIN em qualquer
+// categoria (mesmo as não mapeadas no JSON), só se ML pede e há dado.
+// ============================================================
+let _categoriasAtributosCache = null;
+function carregarCategoriasAtributos() {
+  if (_categoriasAtributosCache) return _categoriasAtributosCache;
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const filePath = path.join(__dirname, 'categorias_atributos.json');
+    if (!fs.existsSync(filePath)) {
+      console.warn('[FASE-B] categorias_atributos.json não encontrado — fallback universal continua ativo');
+      _categoriasAtributosCache = {};
+      return _categoriasAtributosCache;
+    }
+    _categoriasAtributosCache = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    console.log(`[FASE-B] Config de atributos carregado: ${Object.keys(_categoriasAtributosCache).length} categorias mapeadas`);
+    return _categoriasAtributosCache;
+  } catch (e) {
+    console.error('[FASE-B] Erro carregando categorias_atributos.json:', e.message);
+    _categoriasAtributosCache = {};
+    return _categoriasAtributosCache;
+  }
+}
+
+function numeroSeValido(valor) {
+  const n = Number(valor);
+  if (!isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function extrairDentesBendix(titulo) {
+  if (!titulo) return null;
+  const m = String(titulo).match(/\b(\d{1,3})\s*Dentes?\b/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function detectarFuelType(titulo) {
+  if (!titulo) return 'Gasolina';
+  const t = String(titulo);
+  if (/\b(diesel|tdi|hdi|cdi|multijet|bluetec|dci|dti)\b/i.test(t)) return 'Diesel';
+  return 'Gasolina'; // Cosmos: default Flex/Gasolina (Bling não diferencia)
+}
+
+const _MAPA_COR_PRINCIPAL = {
+  'preto': 'Preto', 'preta': 'Preto',
+  'branco': 'Branco', 'branca': 'Branco',
+  'prata': 'Prateado', 'prateado': 'Prateado', 'prateada': 'Prateado',
+  'cinza': 'Cinza',
+  'azul': 'Azul',
+  'vermelho': 'Vermelho', 'vermelha': 'Vermelho',
+  'verde': 'Verde',
+  'amarelo': 'Amarelo', 'amarela': 'Amarelo',
+  'marrom': 'Marrom',
+  'rosa': 'Rosa',
+  'violeta': 'Violeta', 'roxo': 'Violeta', 'roxa': 'Violeta',
+  'laranja': 'Laranja',
+  'dourado': 'Dourado', 'dourada': 'Dourado',
+};
+function mapearCorPrincipal(corLivre) {
+  if (!corLivre) return null;
+  const limpo = String(corLivre).trim().toLowerCase();
+  return _MAPA_COR_PRINCIPAL[limpo] || null;
+}
+
+function detectarCategoriaCosmos(titulo) {
+  if (!titulo) return null;
+  const t = String(titulo);
+  // Ordem importa: regras mais específicas primeiro
+  if (/\bMotor\s+(Partida|Arranque)\b/i.test(t)) return 'MLB190976';
+  if (/\bFechadura\b/i.test(t) && /\bCap[oô]\b/i.test(t)) return 'MLB194430';
+  if (/\bFechadura\b/i.test(t)) return 'MLB194431';
+  if (/\bM[aá]quina\s+Vidro\s+Manual\b/i.test(t)) return 'MLB191715';
+  if (/\bM[aá]quina\s+Vidro\b/i.test(t)) return 'MLB191714';
+  return null; // deixa detecção automática do ML cuidar dos outros
+}
+
+/**
+ * Normaliza o produto pra absorver tanto Bling raw (campos: nome, codigo,
+ * gtin, dimensoes.{altura,largura,profundidade}, pesoBruto/pesoLiquido)
+ * quanto o adaptado por adaptarProdutoBlingParaSimulado() (campos: titulo,
+ * sku, ean, altura_cm/largura_cm/comprimento_cm, peso_g).
+ *
+ * Mitigação Gap D — função aceita ambas as estruturas via or-fallback.
+ */
+function _normalizarProdutoFaseB(produto) {
+  produto = produto || {};
+  const marcaResolvida = typeof produto.marca === 'string'
+    ? produto.marca
+    : (produto.marca?.nome || '');
+  // Peso em gramas: usa peso_g (adaptado) OU pesoBruto/pesoLiquido (Bling raw, kg)
+  let pesoG = Number(produto.peso_g) || 0;
+  if (pesoG <= 0) {
+    const kg = Number(produto.pesoBruto) || Number(produto.pesoLiquido) || 0;
+    if (kg > 0) pesoG = Math.round(kg * 1000);
+  }
+  return {
+    nome:    produto.nome || produto.titulo || '',
+    codigo:  produto.codigo || produto.sku || '',
+    gtin:    produto.gtin || produto.ean || '',
+    marca:   marcaResolvida,
+    pesoG:   pesoG,
+    dim: {
+      altura:       Number(produto.dimensoes?.altura)       || Number(produto.altura_cm)      || 0,
+      largura:      Number(produto.dimensoes?.largura)      || Number(produto.largura_cm)     || 0,
+      profundidade: Number(produto.dimensoes?.profundidade) || Number(produto.comprimento_cm) || 0,
+    },
+    descricao: produto.descricaoCurta || produto.descricao || '',
+  };
+}
+
+/**
+ * Monta lista completa de atributos para o ML, baseado em config JSON +
+ * fallback universal. Retorna SUBSTITUINDO completamente qualquer atributo
+ * anterior — não preserva nada do payload base.
+ *
+ * Estratégia (Gap B+C — fallback universal):
+ *   1) Aplica config específica da categoria (se mapeada no JSON).
+ *   2) Aplica fallback universal pra obrigatórios genéricos
+ *      (BRAND/GTIN/SELLER_SKU/PACKAGE_WEIGHT/ITEM_CONDITION) — só se
+ *      ML aceita o atributo, ainda não foi adicionado, e há dado real.
+ *   3) Pra VEHICLE_TYPE/ORIGIN: fallback só se ML marcar como required
+ *      (evita risco de value_name não aceito em categoria estranha).
+ *
+ * @param {string} categoryId        - MLB...
+ * @param {object} produto           - Bling raw OU adaptado (normalizador absorve)
+ * @param {object} dadosTitulo       - extrairDadosDoTitulo() (marca, modelo, posicao, lado, cor)
+ * @param {array}  requiredAttrsML   - resposta de /categories/{id}/attributes
+ * @returns {array} - lista de {id, value_name} pronta pro payload
+ */
+function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttrsML) {
+  const norm = _normalizarProdutoFaseB(produto);
+  const config = carregarCategoriasAtributos();
+  const catCfg = config[categoryId];
+  const attrsCfg = catCfg?.atributos || {};
+  const idsML = new Set((requiredAttrsML || []).map(a => a.id));
+  const requiredML = new Set((requiredAttrsML || []).filter(a => a.tags?.required).map(a => a.id));
+  const resultado = [];
+  const idsJaAdicionados = new Set();
+
+  // ============================================================
+  // PARTE 1 — Config específica da categoria (prioridade)
+  // ============================================================
+  if (catCfg) {
+    for (const [attrId, regra] of Object.entries(attrsCfg)) {
+      if (!idsML.has(attrId)) {
+        console.log(`[ATTR] ${attrId} ignorado: não está nos atributos do ML pra ${categoryId}`);
+        continue;
+      }
+      let valor = null;
+      switch (regra.tipo) {
+        case 'fixo':
+          valor = regra.value_name;
+          break;
+        case 'fixo_0000':
+          valor = '0000';
+          break;
+        case 'fallback_0000': {
+          // Pra OEM: tenta produto.codigo se for diferente de "Sem código", senão "0000"
+          const cod = String(norm.codigo).trim();
+          valor = (cod && cod.toLowerCase() !== 'sem código' && cod.toLowerCase() !== 'sem codigo')
+            ? cod : '0000';
+          break;
+        }
+        case 'do_titulo': {
+          const v = dadosTitulo?.[regra.campo];
+          if (v && String(v).trim()) {
+            valor = String(v).trim();
+            if (regra.transformar === 'lado_para_eo') {
+              if (/^esquerd/i.test(valor)) valor = 'Esquerdo';
+              else if (/^direit/i.test(valor)) valor = 'Direito';
+            }
+          } else {
+            valor = (regra.se_vazio === 'fallback_0000') ? '0000' : null;
+          }
+          break;
+        }
+        case 'do_bling': {
+          // Lê do produto normalizado primeiro, depois do produto raw
+          const valNorm = norm[regra.campo];
+          const valRaw  = produto[regra.campo];
+          const v = (valNorm && String(valNorm).trim()) ? valNorm
+                  : ((valRaw && String(valRaw).trim()) ? valRaw : null);
+          if (v) {
+            valor = String(v).trim();
+          } else if (regra.fallback) {
+            valor = regra.fallback;
+          }
+          break;
+        }
+        case 'do_bling_dim': {
+          const n = numeroSeValido(norm.dim[regra.campo]);
+          if (n !== null) valor = `${n} ${regra.unidade || 'cm'}`;
+          break;
+        }
+        case 'mapear_cor_de': {
+          const main = mapearCorPrincipal(dadosTitulo?.[regra.campo]);
+          if (main) valor = main;
+          break;
+        }
+        case 'regra_negocio': {
+          if (regra.regra === 'detectar_fuel_type') valor = detectarFuelType(norm.nome);
+          else if (regra.regra === 'extrair_dentes_bendix') {
+            const n = extrairDentesBendix(norm.nome);
+            if (n !== null) valor = String(n);
+          }
+          break;
+        }
+        case 'nao_enviar':
+          valor = null;
+          break;
+        default:
+          console.warn(`[ATTR] Tipo desconhecido em config: ${regra.tipo} (${attrId})`);
+          valor = null;
+      }
+      if (valor !== null && valor !== '' && valor !== undefined) {
+        resultado.push({ id: attrId, value_name: String(valor) });
+        idsJaAdicionados.add(attrId);
+      } else {
+        console.log(`[ATTR] ${attrId} descartado (sem dado)`);
+      }
+    }
+  } else {
+    console.log(`[ATTR] ${categoryId} fora da config Fase-B; aplicando só fallback universal`);
+  }
+
+  // ============================================================
+  // PARTE 2 — Fallback universal (Gap B+C)
+  // Cobre obrigatórios universais. Só preenche se:
+  //   - ML aceita o attr nessa categoria (idsML.has)
+  //   - Config específica não cobriu antes (idsJaAdicionados não tem)
+  //   - Há dado real (sem chutar)
+  // ============================================================
+  const adicionarFallback = (attrId, valor, opcoes = {}) => {
+    if (!idsML.has(attrId)) return;
+    if (idsJaAdicionados.has(attrId)) return;
+    if (valor === null || valor === '' || valor === undefined) return;
+    if (opcoes.soSeRequired && !requiredML.has(attrId)) return;
+    resultado.push({ id: attrId, value_name: String(valor) });
+    idsJaAdicionados.add(attrId);
+    console.log(`[ATTR-FB] ${attrId}=${valor}`);
+  };
+
+  // BRAND — preferência: dadosTitulo.marca > produto normalizado
+  const marcaResolvida = (dadosTitulo?.marca && String(dadosTitulo.marca).trim())
+                       || (norm.marca && String(norm.marca).trim());
+  if (marcaResolvida) adicionarFallback('BRAND', String(marcaResolvida).trim());
+
+  // GTIN
+  if (norm.gtin && String(norm.gtin).trim()) adicionarFallback('GTIN', String(norm.gtin).trim());
+
+  // SELLER_SKU
+  if (norm.codigo && String(norm.codigo).trim()) adicionarFallback('SELLER_SKU', String(norm.codigo).trim());
+
+  // PACKAGE_WEIGHT — só se >0
+  if (norm.pesoG > 0) adicionarFallback('PACKAGE_WEIGHT', `${norm.pesoG} g`);
+
+  // ITEM_CONDITION — Cosmos sempre vende usado (regra negocial fixa)
+  adicionarFallback('ITEM_CONDITION', 'Usado');
+
+  // VEHICLE_TYPE / ORIGIN — só se ML marcar como required (evita value_name
+  // não aceito numa categoria fora do escopo Cosmos)
+  adicionarFallback('VEHICLE_TYPE', 'Carro/Caminhonete', { soSeRequired: true });
+  adicionarFallback('ORIGIN',       'Brasil',            { soSeRequired: true });
+
+  console.log(`[ATTR] ${categoryId} (${catCfg?.nome || 'sem config'}): ${resultado.length} atributos preparados`);
+  return resultado;
+}
+// ============================================================
+// FIM Fase B
+// ============================================================
+
+// ============================================================
 // FASE 1.6 - FRENTE A: Detecção de tipo de peça via categoria ML
 // ============================================================
 
@@ -4248,37 +4527,34 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         if (!pr.ok || !pr.data.data) return send(res, 200, { success:false, error:'Produto não encontrado no Bling', raw: pr.data });
         const produto = pr.data.data;
 
-        // 2) Predição de categoria no ML
-        let categoryId = 'MLB1747'; // fallback autopeças
-        try {
-          const cr = await mlFetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?q=${encodeURIComponent(produto.nome || '')}`, {
-            headers: { 'Authorization': 'Bearer ' + mlToken }
-          });
-          const cj = await cr.json().catch(() => []);
-          if (Array.isArray(cj) && cj[0]?.category_id) categoryId = cj[0].category_id;
-        } catch(_) {}
+        // 2) Predição de categoria no ML — com pré-detecção Cosmos (Fase B)
+        let categoryId = detectarCategoriaCosmos(produto.nome || '') || 'MLB1747'; // fallback autopeças
+        if (categoryId === 'MLB1747') {
+          try {
+            const cr = await mlFetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?q=${encodeURIComponent(produto.nome || '')}`, {
+              headers: { 'Authorization': 'Bearer ' + mlToken }
+            });
+            const cj = await cr.json().catch(() => []);
+            if (Array.isArray(cj) && cj[0]?.category_id) categoryId = cj[0].category_id;
+          } catch(_) {}
+        } else {
+          console.log(`[FASE-B] Categoria pré-detectada Cosmos: ${categoryId} para "${(produto.nome||'').slice(0,50)}"`);
+        }
 
-        // 3) Atributos obrigatórios
+        // 3) Atributos completos via Fase B (montarAtributosCompletos com fallback universal)
         let requiredAttrs = [];
         try {
           const ar = await mlFetch(`https://api.mercadolibre.com/categories/${categoryId}/attributes`, {
             headers: { 'Authorization': 'Bearer ' + mlToken }
           });
-          const attrs = await ar.json().catch(() => []);
-          if (Array.isArray(attrs)) {
-            requiredAttrs = attrs
-              .filter(a => a.tags && a.tags.required)
-              .map(a => ({
-                id: a.id,
-                value_name:
-                  a.id === 'BRAND'      ? (produto.marca || 'Genérico') :
-                  a.id === 'GTIN'       ? (produto.gtin || '') :
-                  a.id === 'SELLER_SKU' ? (produto.codigo || '') :
-                  (a.values?.[0]?.name || ''),
-              }))
-              .filter(a => a.value_name);
+          const attrsML = await ar.json().catch(() => []);
+          if (Array.isArray(attrsML)) {
+            const dadosTituloP1 = extrairDadosDoTitulo(produto.nome || '', produto.marca);
+            requiredAttrs = montarAtributosCompletos(categoryId, produto, dadosTituloP1, attrsML);
           }
-        } catch(_) {}
+        } catch(e) {
+          console.error(`[FASE-B] Erro buscando atributos da categoria ${categoryId}: ${e.message}`);
+        }
 
         // 4) Título + descrição otimizados via SEO (AUTOMÁTICO — IA faz tudo)
         // Se o cliente mandou tituloOtimizado, respeita; senão gera.
@@ -6331,6 +6607,13 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           descricaoEstruturada = produto.descricao || produto.titulo || '';
         }
 
+        // FASE B: pré-detecção de categoria Cosmos (sobrescreve categoria_ml se houver match)
+        const categoriaPredetectada = detectarCategoriaCosmos(produto.titulo || produto.nome || '');
+        if (categoriaPredetectada) {
+          console.log(`[FASE-B] Categoria pré-detectada Cosmos: ${produto.categoria_ml} → ${categoriaPredetectada}`);
+          produto.categoria_ml = categoriaPredetectada;
+        }
+
         const payload = {
           title: tituloFinal.substring(0, 60),
           category_id: produto.categoria_ml,
@@ -6338,24 +6621,16 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           currency_id: 'BRL',
           available_quantity: Math.min(estoqueParaML, 50),
           buying_mode: 'buy_it_now',
-          condition: produto.condicao,
+          condition: 'used', // FASE B: Cosmos vende SEMPRE peças usadas (regra negocial fixa)
           listing_type_id: listingType,
           description: { plain_text: descricaoEstruturada },
           pictures: processarFotos(produto.imagens || []).map(url => ({ source: url })),
           shipping: { mode: 'me2', local_pick_up: true, free_shipping: false },  // FIX 2026-05-02: Cosmos pediu combinar com cliente, sem frete grátis
           seller_custom_field: produto.sku,
-          attributes: [
-            { id: 'BRAND',              value_name: produto.marca },
-            { id: 'ITEM_CONDITION',     value_id:   '2230284' },
-            { id: 'MODEL',              value_name: String(produto.modelo || produto.sku || 'Padrão') },
-            { id: 'POWER_SUPPLY_TYPES', value_name: 'Mecânico' },
-          ],
+          attributes: [], // FASE B: payload.attributes preenchido por montarAtributosCompletos no bloco GAP1+P2 abaixo
         };
-
-        // FASE 1.6 - FRENTE A: PART_NUMBER apenas pra mecânica com código OEM real
-        if (decisaoPartNumber.enviarPartNumber) {
-          payload.attributes.push({ id: 'PART_NUMBER', value_name: decisaoPartNumber.partNumber });
-        }
+        // FASE 1.6 - FRENTE A: PART_NUMBER decisão é aplicada DENTRO do bloco GAP1+P2 abaixo,
+        // sobrescrevendo o resultado do montarAtributosCompletos quando necessário.
 
         // FIX 2026-05-04: Pré-check categoria que força frete grátis (regra Cosmos: zero frete grátis)
         if (categoriaForcaFrete(payload.category_id)) {
@@ -6388,8 +6663,10 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           }
         } catch (_) { /* segue com a categoria atual */ }
 
-        // GAP 1 + Problema 2 — auto-preenchimento de atributos obrigatórios da categoria.
-        // Também adiciona INMETRO_CERTIFICATION (Problema 3) APENAS se a categoria aceitar.
+        // FASE B: auto-preenchimento de atributos via montarAtributosCompletos (config JSON +
+        // fallback universal cobrindo BRAND/GTIN/SELLER_SKU/PACKAGE_WEIGHT/ITEM_CONDITION).
+        // Override de PART_NUMBER respeita decisaoPartNumber (Frente 1.6-A: carroceria/codigo
+        // interno usa 'SEM CODIGO' literal; mecânica usa OEM real).
         if (payload.category_id && token) {
           try {
             const attrResp = await mlFetch(
@@ -6397,62 +6674,41 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
               { headers: { 'Authorization': 'Bearer ' + token } }
             );
             if (attrResp.ok) {
-              const attrs = await attrResp.json().catch(() => []);
-              const lista = Array.isArray(attrs) ? attrs : [];
-              const allIds = new Set(lista.map(a => a.id));
-              const obrigatorios = lista.filter(a => a.tags?.required);
-              for (const attr of obrigatorios) {
-                if (payload.attributes.some(a => a.id === attr.id)) continue; // já temos
-                // FASE 1.6 - FRENTE A: respeita decisão sobre PART_NUMBER (carroceria não envia)
-                if (attr.id === 'PART_NUMBER') {
-                  if (decisaoPartNumber.enviarPartNumber) {
-                    payload.attributes.push({ id: 'PART_NUMBER', value_name: decisaoPartNumber.partNumber });
-                  } else {
-                    console.log(`[FASE1.6-A] Auto-fill PART_NUMBER suprimido: ${decisaoPartNumber.motivo}`);
-                  }
-                  continue;
+              const attrsML = await attrResp.json().catch(() => []);
+              const lista = Array.isArray(attrsML) ? attrsML : [];
+              const atributosFaseB = montarAtributosCompletos(
+                payload.category_id,
+                produto,
+                dadosTituloFrenteB,
+                lista
+              );
+              // PART_NUMBER override: respeita decisaoPartNumber (Fase 1.6-A)
+              const idxPartNumber = atributosFaseB.findIndex(a => a.id === 'PART_NUMBER');
+              if (idxPartNumber >= 0 && !decisaoPartNumber.enviarPartNumber) {
+                console.log(`[FASE1.6-A] PART_NUMBER suprimido após Fase-B: ${decisaoPartNumber.motivo}`);
+                atributosFaseB.splice(idxPartNumber, 1);
+              } else if (decisaoPartNumber.enviarPartNumber && decisaoPartNumber.partNumber) {
+                if (idxPartNumber >= 0) {
+                  // Sobrescreve com decisão Fase 1.6-A (ex: 'SEM CODIGO' pra carroceria)
+                  atributosFaseB[idxPartNumber] = { id: 'PART_NUMBER', value_name: decisaoPartNumber.partNumber };
+                } else if (lista.some(a => a.id === 'PART_NUMBER')) {
+                  // ML aceita PART_NUMBER mas Fase-B não preencheu (ex: categoria fora do JSON
+                  // sem dado real) — adiciona conforme decisão da Fase 1.6-A
+                  atributosFaseB.push({ id: 'PART_NUMBER', value_name: decisaoPartNumber.partNumber });
                 }
-                if (attr.id === 'GTIN' && produto.ean) {
-                  payload.attributes.push({ id: 'GTIN', value_name: String(produto.ean) });
-                } else if (attr.id === 'SELLER_SKU' && produto.sku) {
-                  payload.attributes.push({ id: 'SELLER_SKU', value_name: String(produto.sku) });
-                } else if (attr.id === 'PACKAGE_WEIGHT' && produto.peso_g) {
-                  payload.attributes.push({ id: 'PACKAGE_WEIGHT', value_name: String(produto.peso_g) + ' g' });
-                } else if (attr.id === 'ALPHANUMERIC_MODEL') {
-                  payload.attributes.push({ id: 'ALPHANUMERIC_MODEL', value_name: String(produto.modelo || produto.sku || 'Padrão') });
-                } else if (attr.id === 'MANUFACTURER') {
-                  payload.attributes.push({ id: 'MANUFACTURER', value_name: String(produto.marca || '') });
-                } else if (attr.id === 'POWER_SUPPLY_TYPES' && Array.isArray(attr.values) && attr.values.length > 0) {
-                  // Usa primeiro valor permitido (cobre quando "Mecânico" não está na lista)
-                  payload.attributes.push({ id: 'POWER_SUPPLY_TYPES', value_id: attr.values[0].id });
-                } else if (Array.isArray(attr.values) && attr.values.length > 0) {
-                  payload.attributes.push({ id: attr.id, value_id: attr.values[0].id });
-                } else {
-                  // Sem `values` na definição: cai no produto.modelo / sku / 'Padrão'
-                  payload.attributes.push({
-                    id: attr.id,
-                    value_name: String(produto.modelo || produto.sku || 'Padrão'),
-                  });
-                }
-                console.log(`📋 [agente] Atributo obrigatório adicionado: ${attr.id}`);
               }
-
-              // PROBLEMA 3 — INMETRO só entra se a categoria aceitar
-              if (produto.inmetro && allIds.has('INMETRO_CERTIFICATION')
+              payload.attributes = atributosFaseB;
+              // INMETRO_CERTIFICATION — só se Bling tem inmetro real e categoria aceita,
+              // e Fase-B ainda não cobriu
+              const idsML = new Set(lista.map(a => a.id));
+              if (produto.inmetro && idsML.has('INMETRO_CERTIFICATION')
                   && !payload.attributes.some(a => a.id === 'INMETRO_CERTIFICATION')) {
                 payload.attributes.push({ id: 'INMETRO_CERTIFICATION', value_name: String(produto.inmetro) });
                 console.log(`📋 [agente] Inmetro aceito pela categoria — adicionado`);
               }
-
-              // Sanity: se a categoria NÃO aceita MODEL/POWER_SUPPLY_TYPES, remove o que pré-adicionamos
-              for (const presetId of ['MODEL', 'POWER_SUPPLY_TYPES']) {
-                if (!allIds.has(presetId)) {
-                  payload.attributes = payload.attributes.filter(a => a.id !== presetId);
-                }
-              }
             }
           } catch (e) {
-            console.log('[agente] ⚠️ Atributos da categoria não puderam ser lidos:', e.message);
+            console.log('[FASE-B] ⚠️ Atributos da categoria não puderam ser lidos:', e.message);
           }
         }
 
