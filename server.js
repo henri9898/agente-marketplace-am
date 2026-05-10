@@ -2522,7 +2522,7 @@ async function verificarFlexUsuario(mlToken, mlUserId) {
     return _shippingPrefsCache.user;
   }
   try {
-    const resp = await fetch(
+    const resp = await mlFetch(
       `https://api.mercadolibre.com/users/${mlUserId}/shipping_preferences`,
       { headers: { 'Authorization': 'Bearer ' + mlToken } }
     );
@@ -2555,7 +2555,7 @@ async function verificarFlexCategoria(categoryId, mlToken) {
     return cached.aceita;
   }
   try {
-    const resp = await fetch(
+    const resp = await mlFetch(
       `https://api.mercadolibre.com/categories/${categoryId}/shipping_preferences`,
       { headers: { 'Authorization': 'Bearer ' + mlToken } }
     );
@@ -2606,7 +2606,7 @@ async function simularFreteML(dimensoes, pesoG, precoBase, mlToken, mlUserId, lo
             + `&logistic_type=${lt}`
             + `&free_shipping=True`;
   try {
-    const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + mlToken } });
+    const resp = await mlFetch(url, { headers: { 'Authorization': 'Bearer ' + mlToken } });
     if (!resp.ok) {
       console.log(`[FRETE] HTTP ${resp.status}, fallback`);
       return { custo: 0, valido: false, motivo: `http_${resp.status}` };
