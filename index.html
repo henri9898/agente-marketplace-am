@@ -3298,7 +3298,7 @@ function useAgentStore({ notif } = {}) {
     const sincronizar = async () => {
       try {
         // Busca status (publicacoesHoje, etc)
-        const statusResp = await fetch(/api/agente/status).catch(() => null);
+        const statusResp = await fetch('/api/agente/status').catch(() => null);
         if (!cancelado && statusResp?.ok) {
           const sd = await statusResp.json();
           if (sd?.success) {
@@ -3312,7 +3312,7 @@ function useAgentStore({ notif } = {}) {
         }
 
         // Busca fila real do backend
-        const filaResp = await fetch(/api/agente/fila).catch(() => null);
+        const filaResp = await fetch('/api/agente/fila').catch(() => null);
         if (!cancelado && filaResp?.ok) {
           const fd = await filaResp.json();
           if (fd?.success && Array.isArray(fd.fila)) {
