@@ -2494,6 +2494,248 @@ function marcarCategoriaProblematica(catId, motivo, mlbExemplo, tipo) {
   try { _stmtMarcarCategoriaProblematica.run(String(catId), String(motivo || ""), String(mlbExemplo || ""), String(tipo || "forca_frete")); }
   catch (e) { console.error("[cat-frete] erro ao marcar:", e.message); }
 }
+
+// ============================================================
+// SESSAO 17 - PRECIFICACAO AUTOMATICA + FRETE
+// Formula: preco_final = (produto.preco * 1.45 + frete_API) / (1 - 0.17)
+// Detecta Flex automatico (vendedor + categoria); senao cai pra drop_off.
+// Substitui o bloco antigo categoriaForcaMarkupExtra * 1.35 (que vira fallback).
+// ============================================================
+
+// Cache em memoria - shipping preferences do usuario (TTL 1h)
+const _shippingPrefsCache = { user: null, ts: 0 };
+const SHIPPING_PREFS_TTL_MS = 60 * 60 * 1000;
+
+// Cache em memoria - shipping preferences por categoria (TTL 24h)
+const _categoryPrefsCache = new Map();
+const CATEGORY_PREFS_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Cache em memoria - simulacao de frete (TTL 24h, chave por dim+peso+faixa+logistic)
+const _freteCache = new Map();
+const FRETE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Verifica se vendedor tem Flex (logistic_type self_service ativo)
+async function verificarFlexUsuario(mlToken, mlUserId) {
+  if (!mlToken || !mlUserId) return false;
+  const now = Date.now();
+  if (_shippingPrefsCache.user !== null && (now - _shippingPrefsCache.ts < SHIPPING_PREFS_TTL_MS)) {
+    return _shippingPrefsCache.user;
+  }
+  try {
+    const resp = await fetch(
+      `https://api.mercadolibre.com/users/${mlUserId}/shipping_preferences`,
+      { headers: { 'Authorization': 'Bearer ' + mlToken } }
+    );
+    if (!resp.ok) {
+      console.log(`[FLEX-USER] HTTP ${resp.status}, assumindo sem Flex`);
+      _shippingPrefsCache.user = false;
+      _shippingPrefsCache.ts = now;
+      return false;
+    }
+    const data = await resp.json();
+    const temFlex = (data?.logistics || []).some(l =>
+      l.mode === 'me2' &&
+      (l.types || []).some(t => t.type === 'self_service' && t.status === 'active')
+    );
+    _shippingPrefsCache.user = temFlex;
+    _shippingPrefsCache.ts = now;
+    console.log(`[FLEX-USER] Vendedor ${mlUserId} tem Flex: ${temFlex}`);
+    return temFlex;
+  } catch (e) {
+    console.log('[FLEX-USER] Erro:', e.message);
+    return false;
+  }
+}
+
+// Verifica se categoria aceita Flex
+async function verificarFlexCategoria(categoryId, mlToken) {
+  if (!categoryId || !mlToken) return false;
+  const cached = _categoryPrefsCache.get(categoryId);
+  if (cached && (Date.now() - cached.ts < CATEGORY_PREFS_TTL_MS)) {
+    return cached.aceita;
+  }
+  try {
+    const resp = await fetch(
+      `https://api.mercadolibre.com/categories/${categoryId}/shipping_preferences`,
+      { headers: { 'Authorization': 'Bearer ' + mlToken } }
+    );
+    if (!resp.ok) {
+      console.log(`[FLEX-CAT] ${categoryId} HTTP ${resp.status}, assumindo NAO`);
+      _categoryPrefsCache.set(categoryId, { aceita: false, ts: Date.now() });
+      return false;
+    }
+    const data = await resp.json();
+    const aceita = (data?.logistics || []).some(l =>
+      l.mode === 'me2' && (l.types || []).includes('self_service')
+    );
+    _categoryPrefsCache.set(categoryId, { aceita, ts: Date.now() });
+    console.log(`[FLEX-CAT] ${categoryId} aceita Flex: ${aceita}`);
+    return aceita;
+  } catch (e) {
+    console.log('[FLEX-CAT] Erro:', e.message);
+    return false;
+  }
+}
+
+// Simula custo de frete via API ML (shipping_options/free)
+async function simularFreteML(dimensoes, pesoG, precoBase, mlToken, mlUserId, logisticType) {
+  const a = Number(dimensoes?.altura) || 0;
+  const l = Number(dimensoes?.largura) || 0;
+  const p = Number(dimensoes?.profundidade) || 0;
+  const peso = Number(pesoG) || 0;
+  if (a <= 0 || l <= 0 || p <= 0 || peso <= 0) {
+    return { custo: 0, valido: false, motivo: 'sem_dim_peso' };
+  }
+  if (!mlToken || !mlUserId) {
+    return { custo: 0, valido: false, motivo: 'sem_token' };
+  }
+  const lt = logisticType || 'drop_off';
+  const faixaPreco = Math.floor(precoBase / 100) * 100;
+  const cacheKey = `${peso}_${a}x${l}x${p}_${faixaPreco}_${lt}`;
+  const cached = _freteCache.get(cacheKey);
+  if (cached && (Date.now() - cached.ts < FRETE_CACHE_TTL_MS)) {
+    console.log(`[FRETE] Cache HIT: ${cacheKey} = R$ ${cached.custo}`);
+    return { custo: cached.custo, valido: true, motivo: 'cache' };
+  }
+  const url = `https://api.mercadolibre.com/users/${mlUserId}/shipping_options/free`
+            + `?dimensions=${a}x${l}x${p},${peso}`
+            + `&verbose=true`
+            + `&item_price=${precoBase}`
+            + `&listing_type_id=gold_pro`
+            + `&mode=me2&condition=used`
+            + `&logistic_type=${lt}`
+            + `&free_shipping=True`;
+  try {
+    const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + mlToken } });
+    if (!resp.ok) {
+      console.log(`[FRETE] HTTP ${resp.status}, fallback`);
+      return { custo: 0, valido: false, motivo: `http_${resp.status}` };
+    }
+    const json = await resp.json();
+    const custo = json?.coverage?.all_country?.list_cost;
+    if (typeof custo !== 'number' || custo <= 0) {
+      return { custo: 0, valido: false, motivo: 'resposta_invalida' };
+    }
+    _freteCache.set(cacheKey, { custo, ts: Date.now() });
+    const billable = json?.coverage?.all_country?.billable_weight;
+    console.log(`[FRETE] OK: ${cacheKey} = R$ ${custo} (billable: ${billable}g)`);
+    return { custo, valido: true, motivo: 'api_ok' };
+  } catch (e) {
+    console.log('[FRETE] Excecao:', e.message);
+    return { custo: 0, valido: false, motivo: 'excecao' };
+  }
+}
+
+// Calcula preco final aplicando formula validada (validada vs MLB4653008701 R$ 1.550)
+// FORMULA: preco_final = (preco_bling * 1.45 + frete) / (1 - comissao)
+function calcularPrecoFinal(precoBling, freteML, comissaoML) {
+  const MARKUP = 1.45;
+  const com = (typeof comissaoML === 'number' && comissaoML > 0 && comissaoML < 1) ? comissaoML : 0.17;
+  const preco = Number(precoBling) || 0;
+  const frete = Number(freteML) || 0;
+  if (preco <= 0) {
+    return { precoFinal: 0, valido: false, motivo: 'preco_invalido' };
+  }
+  const numerador = (preco * MARKUP) + frete;
+  const denominador = 1 - com;
+  const precoFinalRaw = numerador / denominador;
+  const precoFinal = Math.ceil(precoFinalRaw * 100) / 100;
+  return {
+    precoFinal,
+    valido: true,
+    detalhes: {
+      precoBling: preco,
+      markup: MARKUP,
+      frete,
+      comissao: com,
+      precoComMarkup: Math.round(preco * MARKUP * 100) / 100,
+      precoFinalRaw: Math.round(precoFinalRaw * 100) / 100,
+    }
+  };
+}
+
+// Wrapper principal — junta deteccao Flex + simulacao frete + formula.
+// Retorna { precoFinal, shipping, valido, freteML, freteFonte, usarFlex, detalhes }
+async function calcularPrecoComFreteEFlex(produto, categoryId, mlToken, mlUserId) {
+  const precoBling = Number(produto?.preco) || 0;
+  if (precoBling <= 0) {
+    console.log('[PRECO] produto.preco invalido, abortando');
+    return { precoFinal: 0, valido: false, motivo: 'preco_bling_invalido' };
+  }
+
+  // Peso em gramas (Bling raw em kg, ou adapter ja em peso_g)
+  let pesoG = Number(produto?.peso_g) || 0;
+  if (pesoG <= 0) {
+    const kg = Number(produto?.pesoBruto) || Number(produto?.pesoLiquido) || 0;
+    if (kg > 0) pesoG = Math.round(kg * 1000);
+  }
+
+  // Dimensoes (Bling raw OU adapter)
+  const dimensoes = produto?.dimensoes || {
+    altura:       Number(produto?.altura_cm)       || Number(produto?.altura)       || 0,
+    largura:      Number(produto?.largura_cm)      || Number(produto?.largura)      || 0,
+    profundidade: Number(produto?.comprimento_cm)  || Number(produto?.profundidade_cm) || Number(produto?.profundidade) || 0,
+  };
+
+  // Detecta Flex (vendedor + categoria) em paralelo
+  const [temFlexUser, catAceitaFlex] = await Promise.all([
+    verificarFlexUsuario(mlToken, mlUserId),
+    verificarFlexCategoria(categoryId, mlToken),
+  ]);
+  const usarFlex = temFlexUser && catAceitaFlex;
+  const logisticType = usarFlex ? 'self_service' : 'drop_off';
+
+  console.log(`[FLEX] User=${temFlexUser} Cat=${catAceitaFlex} -> usar=${usarFlex} (${logisticType})`);
+
+  // Pre-calcula preco base pra simular frete (markup sem comissao ainda)
+  const precoBaseEstimado = Math.round(precoBling * 1.45 * 100) / 100;
+
+  // Simula frete via API
+  const fretInfo = await simularFreteML(dimensoes, pesoG, precoBaseEstimado, mlToken, mlUserId, logisticType);
+
+  let freteML;
+  let freteFonte;
+  if (fretInfo.valido && fretInfo.custo > 0) {
+    freteML = fretInfo.custo;
+    freteFonte = 'api_ml';
+  } else {
+    // Fallback: 35% sobre preco base (mantem comportamento antigo se API falhar)
+    freteML = Math.round(precoBaseEstimado * 0.35 * 100) / 100;
+    freteFonte = 'fallback_35pct';
+    console.log(`[FRETE] Fallback +35%: R$ ${freteML} (motivo: ${fretInfo.motivo})`);
+  }
+
+  // Aplica formula validada
+  const precoCalc = calcularPrecoFinal(precoBling, freteML, 0.17);
+  if (!precoCalc.valido) {
+    return { precoFinal: 0, valido: false, motivo: precoCalc.motivo };
+  }
+
+  // Monta shipping (free_shipping sempre true; logistic_type Flex se disponivel)
+  const shipping = {
+    mode: 'me2',
+    free_shipping: true,
+    local_pick_up: false,
+    logistic_type: logisticType,
+  };
+
+  console.log(`[PRECO] preco_bling=R$ ${precoBling} markup=1.45 frete=R$ ${freteML} (${freteFonte})`);
+  console.log(`[PRECO] precoFinal=R$ ${precoCalc.precoFinal} | shipping.logistic_type=${logisticType}`);
+
+  return {
+    precoFinal: precoCalc.precoFinal,
+    shipping,
+    valido: true,
+    freteML,
+    freteFonte,
+    usarFlex,
+    detalhes: precoCalc.detalhes,
+  };
+}
+// ============================================================
+// FIM Sessao 17 - Precificacao automatica + frete + Flex
+// ============================================================
+
 const _stmtListarComDuplicatas = db.prepare(`
   SELECT bling_id, COUNT(*) AS qtd
   FROM produtos_publicados
@@ -6645,11 +6887,41 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           });
         }
 
-        // FIX 2026-05-06: Pré-check categoria que força markup +35% (Cosmos pediu pra absorver custo do frete)
-        if (categoriaForcaMarkupExtra(payload.category_id)) {
-          const precoOriginal = payload.price;
-          payload.price = +(payload.price * 1.35).toFixed(2);
-          console.log(`💰 [markup-35] Categoria ${payload.category_id} marcada — preço ajustado: R$ ${precoOriginal.toFixed(2)} → R$ ${payload.price.toFixed(2)} (+35%)`);
+        // SESSAO 17 - calcula preco final com frete real (API ML) e Flex inteligente.
+        // Substitui o markup +35% genérico antigo (categoriaForcaMarkupExtra) por
+        // formula validada vs MLB4653008701: (preco_bling * 1.45 + frete) / (1 - 0.17).
+        // Detecta Flex automaticamente: vendedor tem Flex && categoria aceita -> self_service,
+        // senao drop_off. free_shipping: true sempre.
+        try {
+          const tokens17 = loadTokens();
+          const mlUserId17 = tokens17?.ml_user_id || process.env.ML_USER_ID || '2947005156';
+          const precoInfo17 = await calcularPrecoComFreteEFlex(produto, payload.category_id, token, mlUserId17);
+
+          if (precoInfo17.valido) {
+            const precoOriginal17 = payload.price;
+            payload.price = precoInfo17.precoFinal;
+            payload.shipping = {
+              ...(payload.shipping || {}),
+              ...precoInfo17.shipping,
+            };
+            console.log(`[SESSAO-17] ${payload.category_id}: R$ ${precoOriginal17} -> R$ ${payload.price} (frete R$ ${precoInfo17.freteML} ${precoInfo17.freteFonte}, Flex=${precoInfo17.usarFlex})`);
+          } else {
+            console.warn(`[SESSAO-17] Falha calculo preco (${precoInfo17.motivo}), mantendo preco original R$ ${payload.price}`);
+            // Fallback duplo: se nova logica falhou E categoria estava marcada como markup-35, aplica markup antigo
+            if (categoriaForcaMarkupExtra(payload.category_id)) {
+              const precoFallback = payload.price;
+              payload.price = +(payload.price * 1.35).toFixed(2);
+              console.log(`[FALLBACK-35] Categoria ${payload.category_id} +35% aplicado: R$ ${precoFallback} -> R$ ${payload.price}`);
+            }
+          }
+        } catch (errSess17) {
+          console.error(`[SESSAO-17] Excecao no calculo: ${errSess17.message} — mantendo preco original`);
+          // Mesmo fallback duplo em caso de excecao
+          if (categoriaForcaMarkupExtra(payload.category_id)) {
+            const precoFallback = payload.price;
+            payload.price = +(payload.price * 1.35).toFixed(2);
+            console.log(`[FALLBACK-35] Excecao + cat ${payload.category_id}: R$ ${precoFallback} -> R$ ${payload.price}`);
+          }
         }
 
         // PROBLEMA 1 — Categoria pode ter migrado (ex: MLB180634 → MLB120316).
