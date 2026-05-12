@@ -569,8 +569,10 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
   // SELLER_SKU
   if (norm.codigo && String(norm.codigo).trim()) adicionarFallback('SELLER_SKU', String(norm.codigo).trim());
 
-  // PACKAGE_WEIGHT — só se >0
-  if (norm.pesoG > 0) adicionarFallback('PACKAGE_WEIGHT', `${norm.pesoG} g`);
+  // PACKAGE_WEIGHT removido (Sessão 19) — ML retorna warning
+  // "ignored because it is not modifiable". Peso vai pelo shipping.dimensions
+  // que é o canal oficial do ML.
+  // if (norm.pesoG > 0) adicionarFallback('PACKAGE_WEIGHT', `${norm.pesoG} g`);
 
   // ITEM_CONDITION — Cosmos sempre vende usado (regra negocial fixa)
   // SESSAO 18: value_id '2230581' = "Usado" no ML BR (algumas categorias exigem id, ex: Airbag MLB47007)

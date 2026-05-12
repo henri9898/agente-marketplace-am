@@ -1,6 +1,6 @@
 {
-  "versao": "1.0",
-  "atualizado_em": "2026-04-27",
+  "versao": "1.1",
+  "atualizado_em": "2026-05-12",
   "fontes": [
     "Concessionária Metropeças (oficial GM)",
     "Daytona Parts (top seller VW)",
@@ -147,6 +147,47 @@
         { "marca": "Fiat", "modelo": "Strada", "anoIni": 2020, "anoFim": 2023 }
       ],
       "fonte": "Capa retrovisor compartilhada - Castelo Auto Peças"
+    },
+    {
+      "id": "JEEP_COMMANDER_WS",
+      "nome": "Jeep Commander WS (3 fileiras) — exclusivo",
+      "carros": [
+        { "marca": "Jeep", "modelo": "Commander", "anoIni": 2025, "anoFim": 2026 }
+      ],
+      "fonte": "Modelo pendente Sessão 19 (id 14, 8 produtos no Bling). Plataforma WS exclusiva, não compartilha carroceria com Compass."
+    },
+    {
+      "id": "JEEP_COMPASS_MP",
+      "nome": "Jeep Compass MP — exclusivo",
+      "carros": [
+        { "marca": "Jeep", "modelo": "Compass", "anoIni": 2017, "anoFim": 2024 }
+      ],
+      "fonte": "Modelo pendente Sessão 19 (id 11, 7 produtos). Plataforma MP exclusiva BR."
+    },
+    {
+      "id": "NISSAN_KICKS_P15_FASE2",
+      "nome": "Nissan Kicks P15 facelift",
+      "carros": [
+        { "marca": "Nissan", "modelo": "Kicks", "anoIni": 2022, "anoFim": 2025 }
+      ],
+      "fonte": "Modelo pendente Sessão 19 (id 8, 4 produtos). Carroceria própria, sem compartilhamento."
+    },
+    {
+      "id": "NISSAN_SENTRA_B17",
+      "nome": "Nissan Sentra B17",
+      "carros": [
+        { "marca": "Nissan", "modelo": "Sentra", "anoIni": 2017, "anoFim": 2020 }
+      ],
+      "fonte": "Modelo pendente Sessão 19 (id 7, 4 produtos). Geração B17 exclusiva."
+    },
+    {
+      "id": "RENAULT_B0_SANDERO_FASE2",
+      "nome": "Renault B0 Fase 2 — Sandero/Logan facelift",
+      "carros": [
+        { "marca": "Renault", "modelo": "Sandero", "anoIni": 2022, "anoFim": 2024 },
+        { "marca": "Renault", "modelo": "Logan", "anoIni": 2022, "anoFim": 2024 }
+      ],
+      "fonte": "Modelo pendente Sessão 19 (id 16, 3 produtos). Continuação da plataforma B0 com facelift visual; carroceria mantém compartilhamento Sandero/Logan."
     }
   ]
 }

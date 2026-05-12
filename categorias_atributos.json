@@ -136,5 +136,74 @@
       "OEM":            { "tipo": "fallback_0000" },
       "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" }
     }
+  },
+  "MLB7863": {
+    "nome": "Farol Dianteiro",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "POSITION":       { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
+      "SIDE":           { "tipo": "do_titulo", "campo": "lado", "se_vazio": "fallback_0000" },
+      "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" }
+    }
+  },
+  "MLB447349": {
+    "nome": "Friso",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "MODEL":          { "tipo": "do_titulo", "campo": "modelo", "se_vazio": "fixo_0000" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "POSITION":       { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
+      "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" }
+    }
+  },
+  "MLB101765": {
+    "nome": "Tampa Traseira",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "POSITION":       { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
+      "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "MATERIAL":       { "tipo": "nao_enviar" }
+    }
+  },
+  "MLB63801": {
+    "nome": "Para-choque Dianteiro",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "POSITION":       { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
+      "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "MATERIAL":       { "tipo": "nao_enviar" }
+    }
+  },
+  "MLB101762": {
+    "nome": "Capô",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "MATERIAL":       { "tipo": "nao_enviar" }
+    }
   }
 }
