@@ -2328,12 +2328,69 @@ function adaptarProdutoBlingParaSimulado(blingProduto) {
 // ============================================================
 // QUALIFICAÇÃO: 13 critérios → selo + pendências
 // ============================================================
+
+// ============================================================
+// SESSAO 19 — Filtro de segurança Cosmos
+// Cosmos não vende peças de segurança (airbag, cinto, freios).
+// Publicar pode derrubar conta MercadoLíder. Match exato de
+// FRASE (não substring): "freio" sozinho NÃO bloqueia.
+// ============================================================
+const PALAVRAS_BLOQUEIO_SEGURANCA = [
+  'airbag',
+  'air bag',
+  'air-bag',
+  'cinto de segurança',
+  'cintos de segurança',
+  'pastilha de freio',
+  'pastilhas de freio',
+  'lona de freio',
+  'lonas de freio',
+  'disco de freio',
+  'discos de freio',
+  'tambor de freio',
+  'tambores de freio',
+  'pinça de freio',
+  'pinças de freio',
+  'cilindro de freio',
+  'servo freio',
+  'servo-freio',
+];
+
+function ehPecaSeguranca(titulo) {
+  if (!titulo) return null;
+  const t = String(titulo).toLowerCase();
+  for (const palavra of PALAVRAS_BLOQUEIO_SEGURANCA) {
+    if (t.includes(palavra)) return palavra;
+  }
+  return null;
+}
+
 function qualificarProduto(produto) {
   if (!produto) {
     return {
       selo: 'BLOQUEADO', score: 0,
       pendencias: ['produto_inexistente'],
       obrigatorios_ok: 0, recomendados_ok: 0, premium_ok: 0,
+    };
+  }
+
+  // SESSAO 19 — Filtro de segurança ANTES de qualquer outro cálculo.
+  // Match no título (campo do adapter Bling) ou no nome (Bling raw, robustez).
+  const _palavraGatilho = ehPecaSeguranca(produto.titulo || produto.nome);
+  if (_palavraGatilho) {
+    return {
+      selo:                'BLOQUEADO_SEGURANCA',
+      score:               0,
+      score_max:           13,
+      obrigatorios_ok:     0,
+      obrigatorios_total:  8,
+      recomendados_ok:     0,
+      recomendados_total:  4,
+      premium_ok:          0,
+      premium_total:       1,
+      pendencias:          [`peca_seguranca:${_palavraGatilho}`],
+      pronto_para_publicar: false,
+      motivo_bloqueio:     `Peça de segurança (palavra: "${_palavraGatilho}") — Cosmos não vende`,
     };
   }
 
@@ -6153,7 +6210,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         // 2) Pra cada produto, busca detalhe (pra ter midia.imagens) + qualifica.
         // Sequencial pra não estourar rate limit do Bling (~3 req/s).
         const resultado = [];
-        const contadores = { OURO: 0, PRONTO: 0, PUBLICAVEL: 0, BLOQUEADO: 0 };
+        const contadores = { OURO: 0, PRONTO: 0, PUBLICAVEL: 0, BLOQUEADO: 0, BLOQUEADO_SEGURANCA: 0 };
         for (const item of lj.data) {
           try {
             const dr = await fetch(`https://api.bling.com.br/Api/v3/produtos/${item.id}`,
