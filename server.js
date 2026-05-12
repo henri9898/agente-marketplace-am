@@ -550,9 +550,12 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
     if (idsJaAdicionados.has(attrId)) return;
     if (valor === null || valor === '' || valor === undefined) return;
     if (opcoes.soSeRequired && !requiredML.has(attrId)) return;
-    resultado.push({ id: attrId, value_name: String(valor) });
+    // SESSAO 18: aceita opcoes.value_id pra atributos que ML exige id (ex: ITEM_CONDITION)
+    const attr = { id: attrId, value_name: String(valor) };
+    if (opcoes.value_id) attr.value_id = String(opcoes.value_id);
+    resultado.push(attr);
     idsJaAdicionados.add(attrId);
-    console.log(`[ATTR-FB] ${attrId}=${valor}`);
+    console.log(`[ATTR-FB] ${attrId}=${valor}${opcoes.value_id ? ` (id ${opcoes.value_id})` : ''}`);
   };
 
   // BRAND — preferência: dadosTitulo.marca > produto normalizado
@@ -570,7 +573,8 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
   if (norm.pesoG > 0) adicionarFallback('PACKAGE_WEIGHT', `${norm.pesoG} g`);
 
   // ITEM_CONDITION — Cosmos sempre vende usado (regra negocial fixa)
-  adicionarFallback('ITEM_CONDITION', 'Usado');
+  // SESSAO 18: value_id '2230581' = "Usado" no ML BR (algumas categorias exigem id, ex: Airbag MLB47007)
+  adicionarFallback('ITEM_CONDITION', 'Usado', { value_id: '2230581' });
 
   // VEHICLE_TYPE / ORIGIN — só se ML marcar como required (evita value_name
   // não aceito numa categoria fora do escopo Cosmos)
@@ -7029,44 +7033,24 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         });
         const pubData = await pubResp.json().catch(() => ({}));
 
-        // FIX 2026-05-04 v2: Pós-check via GET (resposta inicial do POST não tem free_shipping decidido)
-        if (pubData.id) {
-          // Espera 3s pra ML processar e decidir frete
-          await new Promise(r => setTimeout(r, 3000));
-          try {
-            const checkResp = await mlFetch("https://api.mercadolibre.com/items/" + pubData.id, {
-              headers: { "Authorization": "Bearer " + token },
-            });
-            const checkData = await checkResp.json().catch(() => ({}));
-            if (checkData.shipping && checkData.shipping.free_shipping === true) {
-              // FIX 2026-05-06: ML forçou frete grátis — em vez de pausar, aplica +35% no preço pra cobrir custo (decisão Henri)
-              const precoAtual = checkData.price || payload.price;
-              const precoNovo = +(precoAtual * 1.35).toFixed(2);
-              console.warn("⚠️ [markup-35] ML forçou free_shipping em " + pubData.id + " (cat " + payload.category_id + "). Aplicando +35% no preço: R$ " + precoAtual.toFixed(2) + " → R$ " + precoNovo.toFixed(2));
-              try {
-                const updateResp = await mlFetch("https://api.mercadolibre.com/items/" + pubData.id, {
-                  method: "PUT",
-                  headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
-                  body: JSON.stringify({ price: precoNovo }),
-                });
-                if (updateResp.ok) {
-                  console.log("✅ [markup-35] Preço atualizado com sucesso em " + pubData.id);
-                  marcarCategoriaProblematica(payload.category_id, "ml_forcou_aplicar_markup_35", pubData.id, "aplicar_markup_35");
-                } else {
-                  const errTxt = await updateResp.text().catch(() => "");
-                  console.error("[markup-35] erro ao atualizar preço (HTTP " + updateResp.status + "):", errTxt);
-                  // Fallback: se PUT falhou, marca categoria mesmo assim pra próximas publicações já saírem corrigidas
-                  marcarCategoriaProblematica(payload.category_id, "ml_forcou_aplicar_markup_35_put_falhou", pubData.id, "aplicar_markup_35");
-                }
-              } catch (e) {
-                console.error("[markup-35] exceção no PUT:", e.message);
-                marcarCategoriaProblematica(payload.category_id, "ml_forcou_aplicar_markup_35_excecao", pubData.id, "aplicar_markup_35");
-              }
-            }
-          } catch (e) {
-            console.error("[cat-frete] erro no GET pós-check:", e.message);
-          }
-        }
+        // SESSAO 18 (11/05/2026 BRT) — DESATIVADO
+        // ------------------------------------------------------------
+        // O pós-check markup-35 antigo (Sessão 14) aplicava +35% em cima
+        // do preço já calculado pela Sessão 17 sempre que free_shipping
+        // estava ativo. Causava DUPLA aplicação de markup.
+        //
+        // Exemplo real: Farol Jeep MLB6745680488
+        //   Sessão 17 calcula:  R$ 1800 × 1.45 + R$ 96 frete ÷ 0.83 = R$ 3.260,37
+        //   Pós-check aplicava: R$ 3.260,37 × 1.35 = R$ 4.401,50  (erro)
+        //
+        // A Sessão 17 já cobre o cenário com elegância:
+        //   - Calcula preço com frete real da API ML
+        //   - Embute frete na fórmula (preco × 1.45 + frete) / 0.83
+        //   - Sempre publica com free_shipping: true (decisão Cosmos)
+        //   - Tem FALLBACK-35 inline se API falhar (linhas 6912 e 6921)
+        //
+        // Por isso o pós-check ficou redundante e prejudicial. Removido.
+        // ------------------------------------------------------------
 
         if (pubResp.ok) {
           console.log(`🤖 [agente] ✅ PUBLICADO: ${produto.titulo} → ${pubData.id} (R$ ${precoVenda.toFixed(2)})`);
