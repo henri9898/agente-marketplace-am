@@ -550,9 +550,15 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
     if (idsJaAdicionados.has(attrId)) return;
     if (valor === null || valor === '' || valor === undefined) return;
     if (opcoes.soSeRequired && !requiredML.has(attrId)) return;
-    // SESSAO 18: aceita opcoes.value_id pra atributos que ML exige id (ex: ITEM_CONDITION)
-    const attr = { id: attrId, value_name: String(valor) };
-    if (opcoes.value_id) attr.value_id = String(opcoes.value_id);
+    // SESSAO 19: quando value_id é passado, NÃO enviar value_name (atributos list
+    // no ML são estritos — recebendo os dois, algumas categorias rejeitam com
+    // 'item.attributes.condition.invalid'). Sem value_id, fluxo normal (value_name).
+    const attr = { id: attrId };
+    if (opcoes.value_id) {
+      attr.value_id = String(opcoes.value_id);
+    } else {
+      attr.value_name = String(valor);
+    }
     resultado.push(attr);
     idsJaAdicionados.add(attrId);
     console.log(`[ATTR-FB] ${attrId}=${valor}${opcoes.value_id ? ` (id ${opcoes.value_id})` : ''}`);
