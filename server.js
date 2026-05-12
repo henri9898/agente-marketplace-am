@@ -1623,7 +1623,7 @@ async function refreshBlingToken() {
   try {
     console.log('[bling-refresh] 🔄 renovando token Bling...');
     const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-    const r = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
+    const r = await fetch('https://api.bling.com.br/Api/v3/oauth/token', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -4584,7 +4584,7 @@ const server = http.createServer(async (req, res) => {
       const { clientId, redirectUri } = blingCreds();
       if (!clientId) return send(res, 400, { success:false, error:'BLING_CLIENT_ID não configurado no servidor (.env)' });
       const state = crypto.randomBytes(8).toString('hex');
-      const url = 'https://www.bling.com.br/Api/v3/oauth/authorize?' + new URLSearchParams({
+      const url = 'https://api.bling.com.br/Api/v3/oauth/authorize?' + new URLSearchParams({
         response_type: 'code',
         client_id:     clientId,
         redirect_uri:  redirectUri,
@@ -4603,7 +4603,7 @@ const server = http.createServer(async (req, res) => {
 
       try {
         const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-        const r = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
+        const r = await fetch('https://api.bling.com.br/Api/v3/oauth/token', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -4646,7 +4646,7 @@ const server = http.createServer(async (req, res) => {
       if (!refreshToken) return send(res, 400, { success:false, error:'refresh_token obrigatório' });
       try {
         const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-        const r = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
+        const r = await fetch('https://api.bling.com.br/Api/v3/oauth/token', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -4700,7 +4700,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       const pagina = Math.max(1, parseInt(u.query.page || u.query.pagina || '1', 10));
       const limite = Math.min(100, Math.max(1, parseInt(u.query.limit || u.query.limite || '100', 10)));
       try {
-        const r = await blingFetch(`https://www.bling.com.br/Api/v3/produtos?pagina=${pagina}&limite=${limite}`, token);
+        const r = await blingFetch(`https://api.bling.com.br/Api/v3/produtos?pagina=${pagina}&limite=${limite}`, token);
         if (!r.ok) return send(res, 200, { success:false, error: r.data.error?.description || 'Falha ao listar produtos', status:r.status });
         const list = Array.isArray(r.data.data) ? r.data.data : [];
         return send(res, 200, {
@@ -4739,7 +4739,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 200, { success:false, error:'Token Bling não fornecido' });
       const id = u.pathname.split('/')[4];
       try {
-        const r = await blingFetch(`https://www.bling.com.br/Api/v3/estoques/produtos/${id}`, token);
+        const r = await blingFetch(`https://api.bling.com.br/Api/v3/estoques/produtos/${id}`, token);
         return send(res, 200, { success: r.ok, estoque: r.data.data || null, raw: r.ok ? null : r.data });
       } catch(err) {
         return send(res, 200, { success:false, error: err.message });
@@ -4752,7 +4752,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       if (!token) return send(res, 200, { success:false, error:'Token Bling não fornecido' });
       const id = u.pathname.split('/').pop();
       try {
-        const r = await blingFetch(`https://www.bling.com.br/Api/v3/produtos/${id}`, token);
+        const r = await blingFetch(`https://api.bling.com.br/Api/v3/produtos/${id}`, token);
         return send(res, 200, { success: r.ok, produto: r.data.data || null, raw: r.ok ? null : r.data });
       } catch(err) {
         return send(res, 200, { success:false, error: err.message });
@@ -4769,7 +4769,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
       }
       try {
         // 1) Detalhe do produto no Bling
-        const pr = await blingFetch(`https://www.bling.com.br/Api/v3/produtos/${produtoId}`, blingToken);
+        const pr = await blingFetch(`https://api.bling.com.br/Api/v3/produtos/${produtoId}`, blingToken);
         if (!pr.ok || !pr.data.data) return send(res, 200, { success:false, error:'Produto não encontrado no Bling', raw: pr.data });
         const produto = pr.data.data;
 
@@ -6143,7 +6143,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
 
       try {
         // 1) Lista paginada (campos básicos)
-        const lr = await fetch(`https://www.bling.com.br/Api/v3/produtos?pagina=${pagina}&limite=${limite}`,
+        const lr = await fetch(`https://api.bling.com.br/Api/v3/produtos?pagina=${pagina}&limite=${limite}`,
           { headers: { 'Authorization': 'Bearer ' + blingToken } });
         const lj = await lr.json().catch(() => ({}));
         if (!lr.ok || !Array.isArray(lj.data)) {
@@ -6156,7 +6156,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         const contadores = { OURO: 0, PRONTO: 0, PUBLICAVEL: 0, BLOQUEADO: 0 };
         for (const item of lj.data) {
           try {
-            const dr = await fetch(`https://www.bling.com.br/Api/v3/produtos/${item.id}`,
+            const dr = await fetch(`https://api.bling.com.br/Api/v3/produtos/${item.id}`,
               { headers: { 'Authorization': 'Bearer ' + blingToken } });
             const dj = await dr.json().catch(() => ({}));
             const adapt = dj.data ? adaptarProdutoBlingParaSimulado(dj.data) : null;
@@ -6456,7 +6456,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
 
         try {
-          const r = await fetch(`https://www.bling.com.br/Api/v3/produtos/${blingId}`,
+          const r = await fetch(`https://api.bling.com.br/Api/v3/produtos/${blingId}`,
             { headers: { 'Authorization': 'Bearer ' + blingToken } });
           const j = await r.json().catch(() => ({}));
           if (!r.ok || !j.data) return send(res, 200, { success:false, error:'Produto Bling não encontrado' });
@@ -6511,7 +6511,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
       if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
 
       try {
-        const r = await fetch(`https://www.bling.com.br/Api/v3/produtos/${id}`,
+        const r = await fetch(`https://api.bling.com.br/Api/v3/produtos/${id}`,
           { headers: { 'Authorization': 'Bearer ' + blingToken } });
         const j = await r.json().catch(() => ({}));
         if (!r.ok || !j.data) return send(res, 200, { success:false, error:'Produto não encontrado', raw: j });
@@ -6580,7 +6580,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
       if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
 
       try {
-        const r = await fetch(`https://www.bling.com.br/Api/v3/produtos/${id}`,
+        const r = await fetch(`https://api.bling.com.br/Api/v3/produtos/${id}`,
           { headers: { 'Authorization': 'Bearer ' + blingToken } });
         const j = await r.json().catch(() => ({}));
         if (!r.ok || !j.data) return send(res, 200, { success:false, error:'Produto não encontrado', raw: j });
@@ -6738,7 +6738,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
             return { ok: r.ok, status: r.status, data };
           };
 
-          const r = await blingFetchLocal(`https://www.bling.com.br/Api/v3/produtos/${produtoId}`, blingToken);
+          const r = await blingFetchLocal(`https://api.bling.com.br/Api/v3/produtos/${produtoId}`, blingToken);
           if (!r.ok || !r.data?.data) {
             return send(res, 200, { success:false, error:'Produto não encontrado no Bling', bling_id: produtoId, raw_status: r.status });
           }
