@@ -2376,7 +2376,9 @@ function ehPecaSeguranca(titulo) {
 // Cosmos: peças que o ML classifica errado e bloqueiam VEHICLE_TYPE
 // Lista cresce conforme casos aparecerem em produção (Sessão 19)
 const PALAVRAS_BLOQUEIO_CATEGORIA = [
-  'guia farol'
+  'guia farol',
+  'bomba vácuo',
+  'bomba vacuo'
 ];
 
 function ehCategoriaProblematica(titulo) {

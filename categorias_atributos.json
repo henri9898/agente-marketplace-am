@@ -205,5 +205,21 @@
       "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
       "MATERIAL":       { "tipo": "nao_enviar" }
     }
+  },
+  "MLB193934": {
+    "nome": "Polia Virabrequim",
+    "atributos": {
+      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "MODEL":          { "tipo": "do_titulo", "campo": "modelo", "se_vazio": "fixo_0000" },
+      "OEM":            { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
+      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "ENGINE_CRANKSHAFT_PULLEY_MATERIAL":   { "tipo": "nao_enviar" },
+      "ENGINE_CRANKSHAFT_PULLEY_BELT_TYPE":  { "tipo": "nao_enviar" },
+      "GROOVE_QUANTITY":                     { "tipo": "nao_enviar" },
+      "MOUNTING_HOLE_QUANTITY":              { "tipo": "nao_enviar" }
+    }
   }
 }
