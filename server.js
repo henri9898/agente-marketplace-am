@@ -2605,7 +2605,8 @@ function marcarCategoriaProblematica(catId, motivo, mlbExemplo, tipo) {
 
 // ============================================================
 // SESSAO 17 - PRECIFICACAO AUTOMATICA + FRETE
-// Formula: preco_final = (produto.preco * 1.45 + frete_API) / (1 - 0.17)
+// Formula: preco_final = (produto.preco * 1.5515 + frete_API) / (1 - 0.17)
+//          (1.5515 = 1.45 base Henri × 1.07 absorve taxa MercadoPago 12x)
 // Detecta Flex automatico (vendedor + categoria); senao cai pra drop_off.
 // Substitui o bloco antigo categoriaForcaMarkupExtra * 1.35 (que vira fallback).
 // ============================================================
@@ -2735,9 +2736,10 @@ async function simularFreteML(dimensoes, pesoG, precoBase, mlToken, mlUserId, lo
 }
 
 // Calcula preco final aplicando formula validada (validada vs MLB4653008701 R$ 1.550)
-// FORMULA: preco_final = (preco_bling * 1.45 + frete) / (1 - comissao)
+// FORMULA: preco_final = (preco_bling * 1.5515 + frete) / (1 - comissao)
+//          (1.5515 = 1.45 base Henri × 1.07 absorve taxa MercadoPago 12x)
 function calcularPrecoFinal(precoBling, freteML, comissaoML) {
-  const MARKUP = 1.45;
+  const MARKUP = 1.5515; // 1.45 base Henri × 1.07 absorve taxa MercadoPago 12x sem juros
   const com = (typeof comissaoML === 'number' && comissaoML > 0 && comissaoML < 1) ? comissaoML : 0.17;
   const preco = Number(precoBling) || 0;
   const frete = Number(freteML) || 0;
@@ -2796,7 +2798,7 @@ async function calcularPrecoComFreteEFlex(produto, categoryId, mlToken, mlUserId
   console.log(`[FLEX] User=${temFlexUser} Cat=${catAceitaFlex} -> usar=${usarFlex} (${logisticType})`);
 
   // Pre-calcula preco base pra simular frete (markup sem comissao ainda)
-  const precoBaseEstimado = Math.round(precoBling * 1.45 * 100) / 100;
+  const precoBaseEstimado = Math.round(precoBling * 1.5515 * 100) / 100;
 
   // Simula frete via API
   const fretInfo = await simularFreteML(dimensoes, pesoG, precoBaseEstimado, mlToken, mlUserId, logisticType);
@@ -2819,15 +2821,18 @@ async function calcularPrecoComFreteEFlex(produto, categoryId, mlToken, mlUserId
     return { precoFinal: 0, valido: false, motivo: precoCalc.motivo };
   }
 
-  // Monta shipping (free_shipping sempre true; logistic_type Flex se disponivel)
+  // Monta shipping — SESSAO 20: alinhado com regra Cosmos (sem frete grátis, com retirada).
+  // Spread em /api/agente/publicar mescla este objeto sobre o do payload original;
+  // mantemos free_shipping:false e local_pick_up:true pra não sobrescrever as regras.
+  // logistic_type Flex se disponivel, senao drop_off.
   const shipping = {
     mode: 'me2',
-    free_shipping: true,
-    local_pick_up: false,
+    free_shipping: false,  // FIX SESSAO 20: regra Cosmos = sem frete gratis (era true, conflitava com payload)
+    local_pick_up: true,   // FIX SESSAO 20: retirada pessoalmente sempre ativa (era false, sobrescrevia payload)
     logistic_type: logisticType,
   };
 
-  console.log(`[PRECO] preco_bling=R$ ${precoBling} markup=1.45 frete=R$ ${freteML} (${freteFonte})`);
+  console.log(`[PRECO] preco_bling=R$ ${precoBling} markup=1.5515 frete=R$ ${freteML} (${freteFonte})`);
   console.log(`[PRECO] precoFinal=R$ ${precoCalc.precoFinal} | shipping.logistic_type=${logisticType}`);
 
   return {
@@ -4945,7 +4950,7 @@ ${err ? `<div class="err"><b>Erro:</b> ${err}<br>${u.query.error_description||''
         if (titulo.length > 60) titulo = titulo.slice(0, 57) + '...';
 
         // 4.1) Precificação top-seller — bloqueia prejuízo, alerta margem crítica
-        let precoFinal = Math.ceil((Number(produto.preco) || 0) * 1.45);  // FIX 2026-05-03: markup 45% Cosmos (era preço cru)
+        let precoFinal = Math.ceil((Number(produto.preco) || 0) * 1.5515);  // FIX 2026-05-03: markup 45% Cosmos (era preço cru) | SESSAO 20: 1.45 -> 1.5515 absorve taxa MercadoPago 12x
         let precificacaoInfo = null;
         // Bug #1 — `precoCusto` NÃO existe na raiz do produto Bling v3.
         // Está em `produto.fornecedor.precoCusto` (ou `precoCompra` como fallback).
@@ -6977,6 +6982,13 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           pictures: processarFotos(produto.imagens || []).map(url => ({ source: url })),
           shipping: { mode: 'me2', local_pick_up: true, free_shipping: false },  // FIX 2026-05-02: Cosmos pediu combinar com cliente, sem frete grátis
           seller_custom_field: produto.sku,
+          // SESSAO 20: Garantia oficial via sale_terms (era só na descricao antes)
+          // WARRANTY_TYPE value_id 2230280 = "Garantia do vendedor" (validado via GET /categories/MLB7863/sale_terms)
+          // WARRANTY_TIME = 3 meses (regra negocial fixa Cosmos — handoff 186)
+          sale_terms: [
+            { id: 'WARRANTY_TYPE', value_id: '2230280', value_name: 'Garantia do vendedor' },
+            { id: 'WARRANTY_TIME', value_name: '3 meses' }
+          ],
           attributes: [], // FASE B: payload.attributes preenchido por montarAtributosCompletos no bloco GAP1+P2 abaixo
         };
         // FASE 1.6 - FRENTE A: PART_NUMBER decisão é aplicada DENTRO do bloco GAP1+P2 abaixo,
@@ -6997,7 +7009,8 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
 
         // SESSAO 17 - calcula preco final com frete real (API ML) e Flex inteligente.
         // Substitui o markup +35% genérico antigo (categoriaForcaMarkupExtra) por
-        // formula validada vs MLB4653008701: (preco_bling * 1.45 + frete) / (1 - 0.17).
+        // formula validada vs MLB4653008701: (preco_bling * 1.5515 + frete) / (1 - 0.17).
+        //          (1.5515 = 1.45 base Henri × 1.07 absorve taxa MercadoPago 12x)
         // Detecta Flex automaticamente: vendedor tem Flex && categoria aceita -> self_service,
         // senao drop_off. free_shipping: true sempre.
         try {
