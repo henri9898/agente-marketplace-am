@@ -6725,68 +6725,106 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
     // ============================================================
     if (u.pathname === '/api/agente/publicar-fila' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}));
-      const pagina      = body.pagina || 1;
-      const limite      = Math.min(100, body.limite || 100);
-      const max         = body.max || 10; // máx publicações por chamada (segurança)
-      const somenteSelo = body.somenteSelo || ['OURO', 'PRONTO']; // padrão: só os melhores
-      const dryRun      = body.dryRun !== false; // default true (preview)
+      const paginaInicial = body.pagina || 1;
+      const limite        = Math.min(100, body.limite || 100);
+      const max           = body.max || 10; // máx publicações por chamada (segurança)
+      const somenteSelo   = body.somenteSelo || ['OURO', 'PRONTO']; // padrão: só os melhores
+      const dryRun        = body.dryRun !== false; // default true (preview)
+      const MAX_PAGINAS   = 50; // SESSAO 20 PARTE 2: limite de seguranca pra evitar loop infinito
 
       let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
       if (!blingToken) blingToken = lerTokenBlingDoArquivo();
       if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
 
       try {
-        // 1) Pega lista qualificada
-        const qResp = await fetch(`http://127.0.0.1:${PORT}/api/agente/produtos-qualificados?pagina=${pagina}&limite=${limite}`,
-          { headers: { 'Authorization': 'Bearer ' + blingToken } });
-        const qData = await qResp.json().catch(() => ({}));
-        if (!qData.success) return send(res, 200, { success:false, error:'Falha ao qualificar', raw: qData });
-
-        // 2) Filtra elegíveis
-        const elegiveis = (qData.produtos || [])
-          .filter(p => somenteSelo.includes(p.selo))
-          .slice(0, max);
-
+        // SESSAO 20 PARTE 2: pagina automaticamente ate atingir max ou esgotar paginas
         const resultados = [];
-        for (const p of elegiveis) {
-          if (dryRun) {
-            resultados.push({ id: p.id, titulo: p.nome, selo: p.selo, status: 'preview-only' });
-            continue;
+        let totaisAcumulados = null;
+        let paginaAtual = paginaInicial;
+        let paginasVisitadas = 0;
+        let elegiveisEncontrados = 0;
+
+        while (resultados.length < max && paginasVisitadas < MAX_PAGINAS) {
+          // 1) Pega lista qualificada da pagina atual
+          const qResp = await fetch(`http://127.0.0.1:${PORT}/api/agente/produtos-qualificados?pagina=${paginaAtual}&limite=${limite}`,
+            { headers: { 'Authorization': 'Bearer ' + blingToken } });
+          const qData = await qResp.json().catch(() => ({}));
+          if (!qData.success) {
+            // Se a primeira pagina ja falha, retorna erro. Caso contrario, para o loop com o que ja tem.
+            if (paginasVisitadas === 0) {
+              return send(res, 200, { success:false, error:'Falha ao qualificar', raw: qData });
+            }
+            console.log(`[publicar-fila] pagina ${paginaAtual} falhou, parando loop`);
+            break;
           }
-          // Publica chamando o próprio handler
-          try {
-            const pubResp = await fetch(`http://127.0.0.1:${PORT}/api/agente/publicar`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body:    JSON.stringify({ produtoId: String(p.id), modoTeste: false }),
-            });
-            const pubData = await pubResp.json().catch(() => ({}));
-            resultados.push({
-              id:      p.id,
-              titulo:  p.nome,
-              selo:    p.selo,
-              status:  pubData.success ? 'publicado' : (pubData.skipped ? 'pulado' : 'falhou'),
-              skipped: pubData.skipped || false,
-              mlb_existente: pubData.mlb_existente || null,
-              mlb_id:  pubData.mlbId || null,
-              erro:    pubData.error || null,
-            });
-            // Throttle entre publicações
-            await new Promise(r => setTimeout(r, 1500));
-          } catch (e) {
-            resultados.push({ id: p.id, titulo: p.nome, status: 'erro', erro: e.message });
+
+          // Acumula totais da primeira pagina pra retorno
+          if (totaisAcumulados === null) {
+            totaisAcumulados = qData.totais || {};
           }
+
+          // 2) Filtra elegiveis dessa pagina
+          const produtosPagina = qData.produtos || [];
+          const elegiveisPagina = produtosPagina.filter(p => somenteSelo.includes(p.selo));
+          elegiveisEncontrados += elegiveisPagina.length;
+          console.log(`[publicar-fila] pagina ${paginaAtual}: ${produtosPagina.length} produtos, ${elegiveisPagina.length} elegiveis`);
+
+          // Se nao tem mais produtos na pagina, esgotou o Bling
+          if (produtosPagina.length === 0) {
+            console.log(`[publicar-fila] pagina ${paginaAtual} vazia, parando loop`);
+            break;
+          }
+
+          // 3) Processa os elegiveis dessa pagina ate atingir max
+          for (const p of elegiveisPagina) {
+            if (resultados.length >= max) break;
+            if (dryRun) {
+              resultados.push({ id: p.id, titulo: p.nome, selo: p.selo, status: 'preview-only' });
+              continue;
+            }
+            // Publica chamando o proprio handler
+            try {
+              const pubResp = await fetch(`http://127.0.0.1:${PORT}/api/agente/publicar`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ produtoId: String(p.id), modoTeste: false }),
+              });
+              const pubData = await pubResp.json().catch(() => ({}));
+              resultados.push({
+                id:      p.id,
+                titulo:  p.nome,
+                selo:    p.selo,
+                status:  pubData.success ? 'publicado' : (pubData.skipped ? 'pulado' : 'falhou'),
+                skipped: pubData.skipped || false,
+                mlb_existente: pubData.mlb_existente || null,
+                mlb_id:  pubData.mlbId || null,
+                erro:    pubData.error || null,
+              });
+              // Throttle entre publicacoes
+              await new Promise(r => setTimeout(r, 1500));
+            } catch (e) {
+              resultados.push({ id: p.id, titulo: p.nome, status: 'erro', erro: e.message });
+            }
+          }
+
+          paginaAtual++;
+          paginasVisitadas++;
+        }
+
+        if (paginasVisitadas >= MAX_PAGINAS) {
+          console.log(`[publicar-fila] atingiu limite seguranca de ${MAX_PAGINAS} paginas`);
         }
 
         return send(res, 200, {
           success:     true,
           dryRun,
-          totais:      qData.totais,
-          elegiveis:   elegiveis.length,
+          totais:      totaisAcumulados || {},
+          elegiveis:   elegiveisEncontrados,
           processados: resultados.length,
           publicados:  resultados.filter(r => r.status === 'publicado').length,
           pulados:     resultados.filter(r => r.status === 'pulado').length,
           falhas:      resultados.filter(r => r.status === 'falhou' || r.status === 'erro').length,
+          paginas_visitadas: paginasVisitadas,
           resultados,
         });
       } catch (err) {
