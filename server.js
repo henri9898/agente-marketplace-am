@@ -2373,12 +2373,49 @@ function ehPecaSeguranca(titulo) {
   return null;
 }
 
+// Cosmos: peças que o ML classifica errado e bloqueiam VEHICLE_TYPE
+// Lista cresce conforme casos aparecerem em produção (Sessão 19)
+const PALAVRAS_BLOQUEIO_CATEGORIA = [
+  'guia farol'
+];
+
+function ehCategoriaProblematica(titulo) {
+  if (!titulo) return null;
+  const t = String(titulo).toLowerCase();
+  for (const palavra of PALAVRAS_BLOQUEIO_CATEGORIA) {
+    if (t.includes(palavra)) return palavra;
+  }
+  return null;
+}
+
 function qualificarProduto(produto) {
   if (!produto) {
     return {
       selo: 'BLOQUEADO', score: 0,
       pendencias: ['produto_inexistente'],
       obrigatorios_ok: 0, recomendados_ok: 0, premium_ok: 0,
+    };
+  }
+
+  // SESSAO 19 — Filtro de categoria mal classificada pelo ML.
+  // Pra peças onde o ML escolhe categoria errada (ex: Guia Farol -> Linha Pesada)
+  // e rejeita o payload por VEHICLE_TYPE incompatível. Bloqueia antes de tentar
+  // publicar; Cosmos publica manualmente no painel ML escolhendo categoria certa.
+  const _palavraCategoria = ehCategoriaProblematica(produto.titulo || produto.nome);
+  if (_palavraCategoria) {
+    return {
+      selo:                'BLOQUEADO_CATEGORIA',
+      score:               0,
+      score_max:           13,
+      obrigatorios_ok:     0,
+      obrigatorios_total:  8,
+      recomendados_ok:     0,
+      recomendados_total:  4,
+      premium_ok:          0,
+      premium_total:       1,
+      pendencias:          [`categoria_ml_errada:${_palavraCategoria}`],
+      pronto_para_publicar: false,
+      motivo_bloqueio:     `Categoria ML errada (palavra: "${_palavraCategoria}") — publicar manualmente`,
     };
   }
 
@@ -6218,7 +6255,7 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
         // 2) Pra cada produto, busca detalhe (pra ter midia.imagens) + qualifica.
         // Sequencial pra não estourar rate limit do Bling (~3 req/s).
         const resultado = [];
-        const contadores = { OURO: 0, PRONTO: 0, PUBLICAVEL: 0, BLOQUEADO: 0, BLOQUEADO_SEGURANCA: 0 };
+        const contadores = { OURO: 0, PRONTO: 0, PUBLICAVEL: 0, BLOQUEADO: 0, BLOQUEADO_SEGURANCA: 0, BLOQUEADO_CATEGORIA: 0 };
         for (const item of lj.data) {
           try {
             const dr = await fetch(`https://api.bling.com.br/Api/v3/produtos/${item.id}`,
