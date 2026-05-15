@@ -507,6 +507,30 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
           if (n !== null) valor = `${n} ${regra.unidade || 'cm'}`;
           break;
         }
+        case 'do_bling_campo_customizado': {
+          // SESSAO 21 - FASE C CAMADA 1: lê camposCustomizados da API Bling
+          // regra.id_campo: array de IDs (tenta cada um até achar valor)
+          // regra.usar_item: true = usa c.item (texto humano), false = usa c.valor (default)
+          // regra.transformar: opcional - 'maiusculo_primeira', 'true_false_para_sim_nao', etc
+          const camposCust = produto.camposCustomizados || [];
+          const idsTentativa = Array.isArray(regra.id_campo) ? regra.id_campo : [regra.id_campo];
+          for (const idTent of idsTentativa) {
+            const campo = camposCust.find(c => c.idCampoCustomizado === idTent);
+            if (!campo) continue;
+            const bruto = regra.usar_item ? campo.item : campo.valor;
+            if (!bruto || !String(bruto).trim()) continue;
+            valor = String(bruto).trim();
+            // Transformações opcionais
+            if (regra.transformar === 'maiusculo_primeira') {
+              valor = valor.charAt(0).toUpperCase() + valor.slice(1).toLowerCase();
+            } else if (regra.transformar === 'true_false_para_sim_nao') {
+              valor = (valor.toLowerCase() === 'true') ? 'Sim' : 'Não';
+            }
+            console.log(`[FASE-C1] ${attrId} ← camposCustomizados[${idTent}] = "${valor}"`);
+            break;
+          }
+          break;
+        }
         case 'mapear_cor_de': {
           const main = mapearCorPrincipal(dadosTitulo?.[regra.campo]);
           if (main) valor = main;

@@ -2,9 +2,11 @@
   "MLB101763": {
     "nome": "Porta",
     "atributos": {
-      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "BRAND":          { "tipo": "do_bling_campo_customizado", "id_campo": [474458, 399076], "transformar": "maiusculo_primeira" },
+      "MODEL":          { "tipo": "do_bling_campo_customizado", "id_campo": [399085] },
       "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
-      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "VEHICLE_TYPE":   { "tipo": "do_bling_campo_customizado", "id_campo": [1173925] },
+      "ITEM_CONDITION": { "tipo": "do_bling_campo_customizado", "id_campo": [433464], "usar_item": true },
       "POSITION":       { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
       "SIDE":           { "tipo": "do_titulo", "campo": "lado", "se_vazio": "fallback_0000" },
       "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
@@ -12,7 +14,7 @@
       "OEM":            { "tipo": "fallback_0000" },
       "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
       "DETRAN_TRACKING_NUMBER": { "tipo": "fixo_0000" },
-      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "ORIGIN":         { "tipo": "do_bling_campo_customizado", "id_campo": [399080] },
       "MATERIAL":       { "tipo": "nao_enviar" }
     }
   },
@@ -140,29 +142,33 @@
   "MLB7863": {
     "nome": "Farol Dianteiro",
     "atributos": {
-      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
-      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
-      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
-      "POSITION":       { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
-      "SIDE":           { "tipo": "do_titulo", "campo": "lado", "se_vazio": "fallback_0000" },
-      "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
-      "OEM":            { "tipo": "fallback_0000" },
+      "BRAND":            { "tipo": "do_bling_campo_customizado", "id_campo": [474458, 399076], "transformar": "maiusculo_primeira" },
+      "MODEL":            { "tipo": "do_bling_campo_customizado", "id_campo": [399085], "transformar": "maiusculo_primeira" },
+      "PART_NUMBER":      { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":     { "tipo": "do_bling_campo_customizado", "id_campo": [1173925] },
+      "BULB_TECHNOLOGY":  { "tipo": "do_bling_campo_customizado", "id_campo": [506932], "transformar": "maiusculo_primeira" },
+      "EMPTY_GTIN_REASON":{ "tipo": "do_bling_campo_customizado", "id_campo": [1812498], "usar_item": true },
+      "POSITION":         { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
+      "SIDE":             { "tipo": "do_titulo", "campo": "lado", "se_vazio": "fallback_0000" },
+      "COLOR":            { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
+      "OEM":              { "tipo": "fallback_0000" },
       "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
-      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" }
+      "ORIGIN":           { "tipo": "do_bling_campo_customizado", "id_campo": [399080] }
     }
   },
   "MLB447349": {
     "nome": "Friso",
     "atributos": {
-      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
-      "MODEL":          { "tipo": "do_titulo", "campo": "modelo", "se_vazio": "fixo_0000" },
-      "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
-      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
-      "POSITION":       { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
-      "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
-      "OEM":            { "tipo": "fallback_0000" },
+      "BRAND":            { "tipo": "do_bling_campo_customizado", "id_campo": [474458, 399076], "transformar": "maiusculo_primeira" },
+      "MODEL":            { "tipo": "do_bling_campo_customizado", "id_campo": [399085] },
+      "PART_NUMBER":      { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
+      "VEHICLE_TYPE":     { "tipo": "do_bling_campo_customizado", "id_campo": [1173925] },
+      "EMPTY_GTIN_REASON":{ "tipo": "do_bling_campo_customizado", "id_campo": [1812498], "usar_item": true },
+      "POSITION":         { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
+      "COLOR":            { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
+      "OEM":              { "tipo": "fallback_0000" },
       "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
-      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" }
+      "ORIGIN":           { "tipo": "do_bling_campo_customizado", "id_campo": [399080] }
     }
   },
   "MLB101765": {
@@ -196,13 +202,14 @@
   "MLB101762": {
     "nome": "Capô",
     "atributos": {
-      "BRAND":          { "tipo": "do_titulo", "campo": "marca" },
+      "BRAND":          { "tipo": "do_bling_campo_customizado", "id_campo": [474458, 399076], "transformar": "maiusculo_primeira" },
+      "MODEL":          { "tipo": "do_bling_campo_customizado", "id_campo": [399085] },
       "PART_NUMBER":    { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
-      "VEHICLE_TYPE":   { "tipo": "fixo", "value_name": "Carro/Caminhonete" },
+      "VEHICLE_TYPE":   { "tipo": "do_bling_campo_customizado", "id_campo": [1173925] },
       "COLOR":          { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
       "OEM":            { "tipo": "fallback_0000" },
       "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
-      "ORIGIN":         { "tipo": "fixo", "value_name": "Brasil" },
+      "ORIGIN":         { "tipo": "do_bling_campo_customizado", "id_campo": [399080] },
       "MATERIAL":       { "tipo": "nao_enviar" }
     }
   },
@@ -220,6 +227,22 @@
       "ENGINE_CRANKSHAFT_PULLEY_BELT_TYPE":  { "tipo": "nao_enviar" },
       "GROOVE_QUANTITY":                     { "tipo": "nao_enviar" },
       "MOUNTING_HOLE_QUANTITY":              { "tipo": "nao_enviar" }
+    }
+  },
+  "MLB60608": {
+    "nome": "Compressor AC",
+    "atributos": {
+      "BRAND":                  { "tipo": "do_bling_campo_customizado", "id_campo": [474458, 399076], "transformar": "maiusculo_primeira" },
+      "MODEL":                  { "tipo": "do_bling_campo_customizado", "id_campo": [399085], "transformar": "maiusculo_primeira" },
+      "PART_NUMBER":            { "tipo": "do_bling_campo_customizado", "id_campo": [399071] },
+      "ORIGIN":                 { "tipo": "do_bling_campo_customizado", "id_campo": [399080] },
+      "VEHICLE_TYPE":           { "tipo": "do_bling_campo_customizado", "id_campo": [1173925] },
+      "EMPTY_GTIN_REASON":      { "tipo": "do_bling_campo_customizado", "id_campo": [1812498], "usar_item": true },
+      "CONNECTOR_GENDER":       { "tipo": "do_bling_campo_customizado", "id_campo": [635647], "usar_item": true },
+      "BELT_GROOVE_COMPRESSOR": { "tipo": "do_bling_campo_customizado", "id_campo": [433988] },
+      "CONNECTORS_NUMBER":      { "tipo": "do_bling_campo_customizado", "id_campo": [434065] },
+      "MOUNTING_HOLES_NUMBER":  { "tipo": "do_bling_campo_customizado", "id_campo": [435046] },
+      "INCLUDES_CLUTCH":        { "tipo": "do_bling_campo_customizado", "id_campo": [2210836], "transformar": "true_false_para_sim_nao" }
     }
   }
 }
