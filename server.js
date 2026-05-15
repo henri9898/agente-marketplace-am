@@ -6896,9 +6896,9 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
           produto = catalogoSimulado.find(p => p.id === produtoId);
           if (!produto) return send(res, 200, { success:false, error:'Produto SIM não encontrado' });
         } else {
-          // Busca no Bling (token híbrido: header > tokens.json)
-          let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
-          if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+          // SESSAO 22 FIX: header vinha com token ML do painel, Bling devolvia 401 (mascarado como 404).
+          // Token Bling SEMPRE vem do tokens.json (auto-refresh mantem atualizado).
+          const blingToken = lerTokenBlingDoArquivo();
           if (!blingToken) {
             return send(res, 200, { success:false, error:'Token Bling não disponível. Conecte o Bling em Config.' });
           }
