@@ -7154,6 +7154,33 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
                 }
               }
               payload.attributes = atributosFaseB;
+
+              // SESSAO 22 - FASE C CAMADA 4: marca atributos string vazios como "Não aplica".
+              // ML rejeita score se atributo string opcional fica em branco. Marcar "Não aplica"
+              // sobe score em 17 pontos por anuncio (handoff 209 + 215).
+              // REGRA: NUNCA marcar MOUNTING_HARDWARE_INCLUDED (derruba score em carroceria).
+              try {
+                const idsJaPreenchidos = new Set(payload.attributes.map(a => a.id));
+                const excecoes = new Set(['MOUNTING_HARDWARE_INCLUDED']);
+                let countNA = 0;
+                for (const attrML of lista) {
+                  const aid = attrML.id;
+                  if (!aid) continue;
+                  if (idsJaPreenchidos.has(aid)) continue;
+                  if (excecoes.has(aid)) continue;
+                  const tags = attrML.tags || {};
+                  if (tags.hidden || tags.read_only) continue;
+                  if (attrML.value_type !== 'string') continue;
+                  payload.attributes.push({ id: aid, value_name: 'Não aplica' });
+                  countNA++;
+                }
+                if (countNA > 0) {
+                  console.log(`[FASE-C4] ${countNA} atributos marcados "Nao aplica" em ${payload.category_id}`);
+                }
+              } catch (errC4) {
+                console.error(`[FASE-C4] erro ignorado: ${errC4.message}`);
+              }
+
               // INMETRO_CERTIFICATION — só se Bling tem inmetro real e categoria aceita,
               // e Fase-B ainda não cobriu
               const idsML = new Set(lista.map(a => a.id));
