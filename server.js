@@ -2353,6 +2353,7 @@ function adaptarProdutoBlingParaSimulado(blingProduto) {
     comprimento_cm:   comprimento,
     ativo:            blingProduto.situacao === 'A',
     situacao:         blingProduto.situacao || 'I',
+    camposCustomizados: blingProduto.camposCustomizados || [],  // SESSAO 22: bridge pra Camada 1 (FASE-C1)
     fonte:            'bling',
   };
 }
