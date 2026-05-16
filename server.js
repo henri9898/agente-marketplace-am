@@ -349,6 +349,17 @@ function extrairDentesBendix(titulo) {
   return m ? parseInt(m[1], 10) : null;
 }
 
+// SESSAO 22 - FASE C CAMADA 2: extrai tecnologia da lampada do titulo
+// Retorna 'LED', 'Xenon', 'Halogena' ou null (deixa Camada 4 marcar 'Nao aplica')
+function extrairTecnologiaFarol(titulo) {
+  if (!titulo) return null;
+  const t = String(titulo);
+  if (/\b(full[\s-]?led|led[\s-]?drl|leds?)\b/i.test(t)) return 'LED';
+  if (/\b(x[eê]non|hid)\b/i.test(t)) return 'Xenon';
+  if (/\bhal[oó]gen[ao]?\b/i.test(t)) return 'Halogena';
+  return null;
+}
+
 function detectarFuelType(titulo) {
   if (!titulo) return 'Gasolina';
   const t = String(titulo);
@@ -541,6 +552,17 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
           else if (regra.regra === 'extrair_dentes_bendix') {
             const n = extrairDentesBendix(norm.nome);
             if (n !== null) valor = String(n);
+          }
+          // SESSAO 22 - FASE C CAMADA 2: tecnologia da lampada via titulo
+          else if (regra.regra === 'extrair_tecnologia_farol') {
+            const tec = extrairTecnologiaFarol(norm.nome);
+            if (tec) valor = tec;
+          }
+          // SESSAO 22 - FASE C CAMADA 2: se titulo menciona LED, marca INCLUDES_LED_LIGHT=Sim
+          else if (regra.regra === 'tem_led_no_titulo') {
+            const tec = extrairTecnologiaFarol(norm.nome);
+            if (tec === 'LED') valor = 'Sim';
+            else if (tec) valor = 'Não';
           }
           break;
         }

@@ -153,7 +153,8 @@
       "COLOR":            { "tipo": "do_titulo", "campo": "cor", "se_vazio": "nao_enviar" },
       "OEM":              { "tipo": "fallback_0000" },
       "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" },
-      "ORIGIN":           { "tipo": "do_bling_campo_customizado", "id_campo": [399080] }
+      "ORIGIN":           { "tipo": "do_bling_campo_customizado", "id_campo": [399080] },
+      "INCLUDES_LED_LIGHT":{ "tipo": "regra_negocio", "regra": "tem_led_no_titulo" }
     }
   },
   "MLB447349": {
