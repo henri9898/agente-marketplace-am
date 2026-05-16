@@ -6266,8 +6266,8 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
     // Query: ?pagina=1&limite=100&selo=PRONTO (filtra por selo)
     // ============================================================
     if (u.pathname === '/api/agente/produtos-qualificados' && req.method === 'GET') {
-      let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
-      if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+      // SESSAO 22 BLOCO B: header Authorization contem token ML do front, nao Bling. Sempre ler tokens.json.
+      const blingToken = lerTokenBlingDoArquivo();
       if (!blingToken) {
         return send(res, 200, { success:false, error:'Token Bling não disponível' });
       }
@@ -6640,8 +6640,8 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
     // ============================================================
     if (u.pathname.startsWith('/api/agente/explicar/') && req.method === 'GET') {
       const id = u.pathname.replace('/api/agente/explicar/', '');
-      let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
-      if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+      // SESSAO 22 BLOCO B: header Authorization contem token ML do front, nao Bling. Sempre ler tokens.json.
+      const blingToken = lerTokenBlingDoArquivo();
       if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
 
       try {
@@ -6709,8 +6709,8 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
     // ============================================================
     if (u.pathname.startsWith('/api/agente/pendencias/') && req.method === 'GET') {
       const id = u.pathname.replace('/api/agente/pendencias/', '');
-      let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
-      if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+      // SESSAO 22 BLOCO B: header Authorization contem token ML do front, nao Bling. Sempre ler tokens.json.
+      const blingToken = lerTokenBlingDoArquivo();
       if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
 
       try {
@@ -6757,8 +6757,8 @@ Responda de forma curta (máximo 350 caracteres), profissional e convidando pra 
       const dryRun        = body.dryRun !== false; // default true (preview)
       const MAX_PAGINAS   = 50; // SESSAO 20 PARTE 2: limite de seguranca pra evitar loop infinito
 
-      let blingToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
-      if (!blingToken) blingToken = lerTokenBlingDoArquivo();
+      // SESSAO 22 BLOCO B: header Authorization contem token ML do front, nao Bling. Sempre ler tokens.json.
+      const blingToken = lerTokenBlingDoArquivo();
       if (!blingToken) return send(res, 200, { success:false, error:'Token Bling não disponível' });
 
       try {
