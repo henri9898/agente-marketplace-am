@@ -625,8 +625,14 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
     || '0000';
   adicionarFallback('MODEL', _modeloResolvido);
 
-  // GTIN
-  if (norm.gtin && String(norm.gtin).trim()) adicionarFallback('GTIN', String(norm.gtin).trim());
+  // GTIN (Sessao 23 Camada 3) - se Bling tem, usa; senao "0000" (regra Cosmos
+  // texto livre vazio - regra 10 doc 186). Padrao Cosmos aplicado em anuncios reais.
+  // Se ML reclamar do valor "0000" em alguma categoria, ajustar caso a caso
+  // ou combinar com EMPTY_GTIN_REASON.
+  const _gtinFallback = (norm.gtin && String(norm.gtin).trim())
+    ? String(norm.gtin).trim()
+    : '0000';
+  adicionarFallback('GTIN', _gtinFallback);
 
   // SELLER_SKU
   if (norm.codigo && String(norm.codigo).trim()) adicionarFallback('SELLER_SKU', String(norm.codigo).trim());
