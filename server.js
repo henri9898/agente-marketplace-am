@@ -550,6 +550,21 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
             console.log(`[FASE-C1] ${attrId} ← camposCustomizados[${idTent}] = "${valor}"`);
             break;
           }
+          // SESSAO 23 T5 - Cascata Camada 1 -> Camada 2: se Bling vazio E config
+          // tem 'cascata', tentar extrair do titulo via funcao mapeada.
+          if (!valor && regra.cascata) {
+            if (regra.cascata === 'extrair_tecnologia_farol') {
+              valor = extrairTecnologiaFarol(norm.nome);
+            } else if (regra.cascata === 'extrair_cilindrada') {
+              valor = extrairCilindrada(norm.nome);
+            } else if (regra.cascata === 'extrair_dentes_bendix') {
+              const n = extrairDentesBendix(norm.nome);
+              if (n !== null) valor = String(n);
+            }
+            if (valor) {
+              console.log(`[FASE-C2] ${attrId} ← cascata titulo (${regra.cascata}) = "${valor}"`);
+            }
+          }
           break;
         }
         case 'mapear_cor_de': {

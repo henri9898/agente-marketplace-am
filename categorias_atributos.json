@@ -146,7 +146,7 @@
       "MODEL":            { "tipo": "do_bling_campo_customizado", "id_campo": [399085], "transformar": "maiusculo_primeira" },
       "PART_NUMBER":      { "tipo": "do_bling", "campo": "codigo", "fallback": "Sem código" },
       "VEHICLE_TYPE":     { "tipo": "do_bling_campo_customizado", "id_campo": [1173925] },
-      "BULB_TECHNOLOGY":  { "tipo": "do_bling_campo_customizado", "id_campo": [506932], "transformar": "maiusculo_primeira" },
+      "BULB_TECHNOLOGY":  { "tipo": "do_bling_campo_customizado", "id_campo": [506932], "transformar": "maiusculo_primeira", "cascata": "extrair_tecnologia_farol" },
       "EMPTY_GTIN_REASON":{ "tipo": "do_bling_campo_customizado", "id_campo": [1812498], "usar_item": true },
       "POSITION":         { "tipo": "do_titulo", "campo": "posicao", "se_vazio": "nao_enviar" },
       "SIDE":             { "tipo": "do_titulo", "campo": "lado", "se_vazio": "fallback_0000" },
