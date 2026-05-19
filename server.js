@@ -2445,7 +2445,27 @@ function ehPecaSeguranca(titulo) {
 const PALAVRAS_BLOQUEIO_CATEGORIA = [
   'guia farol',
   'bomba vácuo',
-  'bomba vacuo'
+  'bomba vacuo',
+  // SESSAO 23: Linha Pesada (Cosmos nao vende caminhao/onibus — Bug 3 handoff 209)
+  'caminhão',
+  'caminhao',
+  'ônibus',
+  'onibus',
+  'scania',
+  'iveco',
+  'agrale',
+  'volvo fh',
+  'volvo fm',
+  'mercedes axor',
+  'mercedes atego',
+  'mercedes accelo',
+  'mercedes actros',
+  'vw constellation',
+  'volkswagen constellation',
+  'man tg',
+  'ford cargo',
+  'ford f-4000',
+  'f4000'
 ];
 
 function ehCategoriaProblematica(titulo) {
