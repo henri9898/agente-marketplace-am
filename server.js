@@ -1605,12 +1605,17 @@ function persistMLTokens(data) {
 function persistBlingTokens(data) {
   if (!data || !data.access_token) return null;
   const expiresIn = Number(data.expires_in) || 21600;
-  return saveTokens({
-    bling_access_token:     data.access_token,
-    bling_refresh_token:    data.refresh_token || loadTokens().bling_refresh_token,
-    bling_expires_in:       expiresIn,
-    bling_token_expires_at: new Date(Date.now() + expiresIn * 1000).toISOString(),
-  });
+  try {
+    return saveTokens({
+      bling_access_token:     data.access_token,
+      bling_refresh_token:    data.refresh_token || loadTokens().bling_refresh_token,
+      bling_expires_in:       expiresIn,
+      bling_token_expires_at: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    });
+  } catch (err) {
+    console.error('[bling-refresh] persistBlingTokens falhou:', err.message);
+    return null;
+  }
 }
 
 // ---------- refreshMLToken ----------
@@ -1663,48 +1668,63 @@ async function refreshMLToken() {
 }
 
 // ---------- refreshBlingToken ----------
+// Sessao 23: flag anti-race pra evitar refresh duplicado simultaneo (boot + timer).
+// Bling revoga refresh_token quando detecta uso duplicado (causa raiz do invalid_grant da S23).
+let refreshingBling = false;
 async function refreshBlingToken() {
-  const tokens = loadTokens();
-  const currentEnv = loadEnv();
-  const refresh = tokens.bling_refresh_token || '';
-  if (!refresh) return null;
-  const clientId     = process.env.BLING_CLIENT_ID     || currentEnv.BLING_CLIENT_ID     || '';
-  const clientSecret = process.env.BLING_CLIENT_SECRET || currentEnv.BLING_CLIENT_SECRET || '';
-  if (!clientId || !clientSecret) {
-    console.log('[bling-refresh] credenciais ausentes no .env');
+  if (refreshingBling) {
+    console.log('[bling-refresh] ja em andamento, skip');
     return null;
   }
+  refreshingBling = true;
   try {
-    console.log('[bling-refresh] 🔄 renovando token Bling...');
-    const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-    const r = await fetch('https://api.bling.com.br/Api/v3/oauth/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept':       '1.0',
-        'Authorization': 'Basic ' + credentials,
-      },
-      body: new URLSearchParams({
-        grant_type:    'refresh_token',
-        refresh_token: refresh,
-      }),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!data.access_token) {
-      console.error('[bling-refresh] ❌ falhou:', data.error_description || data.error || 'sem access_token');
+    const tokens = loadTokens();
+    const currentEnv = loadEnv();
+    const refresh = tokens.bling_refresh_token || '';
+    if (!refresh) return null;
+    const clientId     = process.env.BLING_CLIENT_ID     || currentEnv.BLING_CLIENT_ID     || '';
+    const clientSecret = process.env.BLING_CLIENT_SECRET || currentEnv.BLING_CLIENT_SECRET || '';
+    if (!clientId || !clientSecret) {
+      console.log('[bling-refresh] credenciais ausentes no .env');
       return null;
     }
-    const saved = persistBlingTokens(data);
-    console.log('[bling-refresh] ✅ ok');
-    return saved;
-  } catch (err) {
-    console.error('[bling-refresh] exceção:', err.message);
-    return null;
+    try {
+      console.log('[bling-refresh] 🔄 renovando token Bling...');
+      const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+      const r = await fetch('https://api.bling.com.br/Api/v3/oauth/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept':       '1.0',
+          'Authorization': 'Basic ' + credentials,
+        },
+        body: new URLSearchParams({
+          grant_type:    'refresh_token',
+          refresh_token: refresh,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!data.access_token) {
+        console.error('[bling-refresh] ❌ falhou:', data.error_description || data.error || 'sem access_token');
+        if (data.error === 'invalid_grant') {
+          console.error('[bling-refresh] 🚨 REFRESH_TOKEN REVOGADO — precisa reconectar Bling via OAuth em /api/bling/authorize');
+        }
+        return null;
+      }
+      const saved = persistBlingTokens(data);
+      console.log('[bling-refresh] ✅ ok · expira em 6h');
+      return saved;
+    } catch (err) {
+      console.error('[bling-refresh] exceção:', err.message);
+      return null;
+    }
+  } finally {
+    refreshingBling = false;
   }
 }
 
 // ---------- Timer: verifica a cada 5h + on-boot ----------
-const REFRESH_INTERVAL_MS = 5 * 60 * 60 * 1000; // 5h
+const REFRESH_INTERVAL_MS = 1 * 60 * 60 * 1000; // 1h (Sessao 23: era 5h - reduzido pra dar 5-6 oportunidades de renovar antes de expirar)
 async function checkAndRefresh() {
   const tokens = loadTokens();
   const now = Date.now();
@@ -1717,11 +1737,11 @@ async function checkAndRefresh() {
       await refreshMLToken();
     }
   }
-  // Bling: renova se expira em <0.5h
+  // Bling: renova se expira em <2.0h (Sessao 23: era 0.5h - antecipa pra evitar janela de risco)
   if (tokens.bling_token_expires_at) {
     const expAt = new Date(tokens.bling_token_expires_at).getTime();
     const hoursLeft = (expAt - now) / 3600000;
-    if (hoursLeft < 0.5) {
+    if (hoursLeft < 2.0) {
       console.log(`[bling-refresh] ⏰ token expira em ${hoursLeft.toFixed(2)}h, renovando...`);
       await refreshBlingToken();
     }
