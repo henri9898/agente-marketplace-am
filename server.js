@@ -360,6 +360,16 @@ function extrairTecnologiaFarol(titulo) {
   return null;
 }
 
+// SESSAO 23 T3 — Camada 2: cilindrada do motor extraida do titulo.
+// Regex captura padroes tipo "1.6", "2.0 16v", "1.4 TSI", "2.0 Turbo".
+// Range 1.0-5.9 evita pegar dimensoes ("10.0 cm") ou anos ("20.10").
+// Retorna string ("1.6", "2.0") ou null.
+function extrairCilindrada(titulo) {
+  if (!titulo) return null;
+  const m = String(titulo).match(/\b([1-5]\.\d)\b(?:\s*(?:16v|8v|12v|v|turbo|tsi|hdi|tdi|cdi|multijet))?/i);
+  return m ? m[1] : null;
+}
+
 function detectarFuelType(titulo) {
   if (!titulo) return 'Gasolina';
   const t = String(titulo);
@@ -632,6 +642,14 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
   const _modeloResolvido = (dadosTitulo?.modelo && String(dadosTitulo.modelo).trim())
     || '0000';
   adicionarFallback('MODEL', _modeloResolvido);
+
+  // ENGINE_DISPLACEMENT (Sessao 23 T3 / Camada 2) — fallback universal.
+  // Cilindrada extraida do titulo via extrairCilindrada (regex 1.0-5.9).
+  // Sem fallback "0000": cilindrada e numero especifico (lista ML possivel),
+  // chutar piora score. Se nao extrair, NAO envia (adicionarFallback ignora null).
+  // Cobre Motor de Arranque, Bomba Combustivel, Polia Virabrequim, etc.
+  const _cilindrada = extrairCilindrada(norm.nome);
+  if (_cilindrada) adicionarFallback('ENGINE_DISPLACEMENT', _cilindrada);
 
   // GTIN (Sessao 23 Camada 3) - se Bling tem, usa; senao "0000" (regra Cosmos
   // texto livre vazio - regra 10 doc 186). Padrao Cosmos aplicado em anuncios reais.
