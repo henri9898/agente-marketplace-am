@@ -621,6 +621,17 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
   // SELLER_SKU
   if (norm.codigo && String(norm.codigo).trim()) adicionarFallback('SELLER_SKU', String(norm.codigo).trim());
 
+  // PART_NUMBER (Sessao 23 Bug Extra A) — fallback universal pra categorias nao
+  // mapeadas no JSON Fase B. Usa produto.codigo do Bling, ou 'Sem código' como
+  // ultimo recurso (mesmo padrao das 16 categorias mapeadas com do_bling).
+  // Cobre 18 falhas historicas 'attributes [PART_NUMBER] are required'.
+  // Tambem serve de rede de seguranca quando categoria E mapeada com
+  // do_bling_campo_customizado mas o campo Bling esta vazio.
+  const _partNumberFallback = (norm.codigo && String(norm.codigo).trim())
+    ? String(norm.codigo).trim()
+    : 'Sem código';
+  adicionarFallback('PART_NUMBER', _partNumberFallback);
+
   // PACKAGE_WEIGHT removido (Sessão 19) — ML retorna warning
   // "ignored because it is not modifiable". Peso vai pelo shipping.dimensions
   // que é o canal oficial do ML.
