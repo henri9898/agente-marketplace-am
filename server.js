@@ -615,6 +615,14 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
                        || (norm.marca && String(norm.marca).trim());
   if (marcaResolvida) adicionarFallback('BRAND', String(marcaResolvida).trim());
 
+  // SIDE (Sessao 23 T2 / Camada 2) — fallback universal.
+  // dadosTitulo.lado vem de extrairDadosDoTitulo (regex 'esquerd[oa]'/'direit[oa]').
+  // Fallback '0000' = padrao Cosmos texto livre vazio (regra 10 doc 186).
+  // Cobre Farol/Lanterna/Macaneta/Friso/Tampa/Para-choque que pedem SIDE.
+  const _ladoResolvido = (dadosTitulo?.lado && String(dadosTitulo.lado).trim())
+    || '0000';
+  adicionarFallback('SIDE', _ladoResolvido);
+
   // MODEL (Sessao 23 Bug Extra B) — fallback universal.
   // dadosTitulo.modelo vem de extrairDadosDoTitulo (regex no titulo).
   // Fallback '0000' = padrao Cosmos texto livre vazio (regra 10 doc 186).
