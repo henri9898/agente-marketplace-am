@@ -651,6 +651,17 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
   const _cilindrada = extrairCilindrada(norm.nome);
   if (_cilindrada) adicionarFallback('ENGINE_DISPLACEMENT', _cilindrada);
 
+  // COLOR + MAIN_COLOR (Sessao 23 T4 / Camada 2) — fallback universal.
+  // dadosTitulo.cor vem de extrairDadosDoTitulo (regex de cores PT).
+  // COLOR e texto livre - manda string direto.
+  // MAIN_COLOR e lista fechada ML - traduz via mapearCorPrincipal (mapa Pt->ML).
+  // Se Bling/titulo nao tem cor, ambos sao pulados (cor nao faz sentido "0000").
+  if (dadosTitulo?.cor && String(dadosTitulo.cor).trim()) {
+    adicionarFallback('COLOR', String(dadosTitulo.cor).trim());
+    const _mainColor = mapearCorPrincipal(dadosTitulo.cor);
+    if (_mainColor) adicionarFallback('MAIN_COLOR', _mainColor);
+  }
+
   // GTIN (Sessao 23 Camada 3) - se Bling tem, usa; senao "0000" (regra Cosmos
   // texto livre vazio - regra 10 doc 186). Padrao Cosmos aplicado em anuncios reais.
   // Se ML reclamar do valor "0000" em alguma categoria, ajustar caso a caso
