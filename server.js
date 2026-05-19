@@ -615,6 +615,16 @@ function montarAtributosCompletos(categoryId, produto, dadosTitulo, requiredAttr
                        || (norm.marca && String(norm.marca).trim());
   if (marcaResolvida) adicionarFallback('BRAND', String(marcaResolvida).trim());
 
+  // MODEL (Sessao 23 Bug Extra B) — fallback universal.
+  // dadosTitulo.modelo vem de extrairDadosDoTitulo (regex no titulo).
+  // Fallback '0000' = padrao Cosmos texto livre vazio (regra 10 doc 186).
+  // Cobre 6 falhas historicas 'attributes [MODEL] are required' do handoff 216.
+  // Tambem serve de rede de seguranca pra categorias mapeadas com
+  // do_bling_campo_customizado quando o campo Bling esta vazio.
+  const _modeloResolvido = (dadosTitulo?.modelo && String(dadosTitulo.modelo).trim())
+    || '0000';
+  adicionarFallback('MODEL', _modeloResolvido);
+
   // GTIN
   if (norm.gtin && String(norm.gtin).trim()) adicionarFallback('GTIN', String(norm.gtin).trim());
 
