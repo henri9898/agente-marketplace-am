@@ -243,7 +243,9 @@
       "BELT_GROOVE_COMPRESSOR": { "tipo": "do_bling_campo_customizado", "id_campo": [433988] },
       "CONNECTORS_NUMBER":      { "tipo": "do_bling_campo_customizado", "id_campo": [434065] },
       "MOUNTING_HOLES_NUMBER":  { "tipo": "do_bling_campo_customizado", "id_campo": [435046] },
-      "INCLUDES_CLUTCH":        { "tipo": "do_bling_campo_customizado", "id_campo": [2210836], "transformar": "true_false_para_sim_nao" }
+      "INCLUDES_CLUTCH":        { "tipo": "do_bling_campo_customizado", "id_campo": [2210836], "transformar": "true_false_para_sim_nao" },
+      "OEM":                    { "tipo": "fallback_0000" },
+      "INMETRO_CERTIFICATION_REGISTRATION_NUMBER": { "tipo": "fixo_0000" }
     }
   }
 }
